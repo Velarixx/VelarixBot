@@ -1,9 +1,12 @@
 name: CI
 
+# Ubuntu only on every PR and main. macOS is 10× and Windows is 2×
+# GitHub-hosted minutes. Run those via the Portable workflow (manual).
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -11,18 +14,10 @@ concurrency:
 
 jobs:
   test:
-    name: typecheck + test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        # the harness must stay portable Node — the windows leg is the
-        # guardrail for the in-progress Windows port (POSIX-only tests
-        # self-skip there)
-        os: [macos-latest, ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: typecheck + test
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      # tests never launch Electron; skip the binary download
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v4
@@ -35,5 +30,4 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - name: production UI build
-        if: matrix.os == 'ubuntu-latest'
         run: pnpm exec vite build
