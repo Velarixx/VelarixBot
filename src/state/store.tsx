@@ -57,6 +57,7 @@ export interface Bot {
   notifications: boolean;
   color: MausColor;
   mascotExpression?: string | null;
+  iconShape?: string | null;
   unread: boolean;
   busy?: boolean;
   state: BotState;
@@ -70,6 +71,8 @@ export interface Bot {
   requireApproval?: boolean;
   /** Connected-app slugs this bot may use. Empty/missing = none. */
   enabledApps?: string[];
+  /** Taught skill attached to every turn this bot runs. */
+  skillId?: string;
   /** Other bots sharing this transcript (group mention / ask_bot). */
   threadParticipants?: string[];
   pinned?: boolean;
@@ -126,6 +129,7 @@ interface AppState {
   computerOpen: boolean;
   appSettingsOpen: boolean;
   routinesOpen: boolean;
+  skillsOpen: boolean;
   routinesCreating: boolean;
   routineCreateBotId: string | null;
   routines: Routine[];
@@ -176,6 +180,7 @@ type Action =
   | { type: "toggleComputer"; open?: boolean }
   | { type: "toggleAppSettings"; open?: boolean }
   | { type: "toggleRoutines"; open?: boolean; creating?: boolean; botId?: string }
+  | { type: "toggleSkills"; open?: boolean }
   | { type: "routinesLoaded"; routines: Routine[] }
   | { type: "routineSaved"; routine: Routine }
   | { type: "routineDeleted"; routineId: string }
@@ -192,10 +197,12 @@ type Action =
           | "computer"
           | "color"
           | "mascotExpression"
+          | "iconShape"
           | "pinned"
           | "hidden"
           | "requireApproval"
           | "enabledApps"
+          | "skillId"
         >
       >;
     };
@@ -390,10 +397,11 @@ function reducer(state: AppState, action: Action): AppState {
         computerOpen: open ? false : state.computerOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
         routinesOpen: open ? false : state.routinesOpen,
+        skillsOpen: open ? false : state.skillsOpen,
       };
     }
     case "togglePlugins":
-      return { ...state, pluginsOpen: action.open ?? !state.pluginsOpen, routinesOpen: false };
+      return { ...state, pluginsOpen: action.open ?? !state.pluginsOpen, routinesOpen: false, skillsOpen: false };
     case "toggleComputer": {
       const open = action.open ?? !state.computerOpen;
       return {
@@ -402,6 +410,7 @@ function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open ? false : state.settingsOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
         routinesOpen: open ? false : state.routinesOpen,
+        skillsOpen: open ? false : state.skillsOpen,
       };
     }
     case "toggleAppSettings": {
@@ -413,6 +422,7 @@ function reducer(state: AppState, action: Action): AppState {
         computerOpen: open ? false : state.computerOpen,
         pluginsOpen: open ? false : state.pluginsOpen,
         routinesOpen: open ? false : state.routinesOpen,
+        skillsOpen: open ? false : state.skillsOpen,
       };
     }
     case "toggleRoutines": {
@@ -426,12 +436,26 @@ function reducer(state: AppState, action: Action): AppState {
         computerOpen: open ? false : state.computerOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
         pluginsOpen: open ? false : state.pluginsOpen,
+        skillsOpen: open ? false : state.skillsOpen,
+      };
+    }
+    case "toggleSkills": {
+      const open = action.open ?? !state.skillsOpen;
+      return {
+        ...state,
+        skillsOpen: open,
+        settingsOpen: open ? false : state.settingsOpen,
+        computerOpen: open ? false : state.computerOpen,
+        appSettingsOpen: open ? false : state.appSettingsOpen,
+        pluginsOpen: open ? false : state.pluginsOpen,
+        routinesOpen: open ? false : state.routinesOpen,
       };
     }
     case "updateBot": {
       const mascotChanged =
         Object.prototype.hasOwnProperty.call(action.patch, "color") ||
-        Object.prototype.hasOwnProperty.call(action.patch, "mascotExpression");
+        Object.prototype.hasOwnProperty.call(action.patch, "mascotExpression") ||
+        Object.prototype.hasOwnProperty.call(action.patch, "iconShape");
       const next = mascotChanged
         ? withMascotMotion(state, action.botId, "customize")
         : state;
@@ -457,6 +481,7 @@ const initialState: AppState = {
   computerOpen: false,
   appSettingsOpen: false,
   routinesOpen: false,
+  skillsOpen: false,
   routinesCreating: false,
   routineCreateBotId: null,
   routines: [],

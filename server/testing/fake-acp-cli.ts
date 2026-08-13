@@ -138,7 +138,12 @@ function handle(msg: any) {
         process.exit(3);
       }
       const authMethods = mode === "no-auth" ? [] : [{ id: "cached_token" }];
-      result(msg.id, { protocolVersion: 1, authMethods, _meta: { modelState: { currentModelId: "fake-acp-model" } } });
+      result(msg.id, {
+        protocolVersion: 1,
+        authMethods,
+        agentCapabilities: { promptCapabilities: { image: mode !== "no-image" } },
+        _meta: { modelState: { currentModelId: "fake-acp-model" } },
+      });
       break;
     }
     case "authenticate":
@@ -159,6 +164,7 @@ function handle(msg: any) {
       break;
     }
     case "session/prompt": {
+      writeDump({ sessionPrompt: msg.params });
       if (mode === "hang") {
         // never resolve the prompt — lets tests exercise interrupt
         setInterval(() => {}, 1_000);

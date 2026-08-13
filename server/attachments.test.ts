@@ -3,7 +3,16 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "./config.ts";
-import { attachmentPathRefs, claudeImageBlocks, expandAttachmentPaths, isSecretConfigPath } from "./attachments.ts";
+import {
+  acpImageBlocks,
+  agentAcceptsImagePrompts,
+  attachmentPathRefs,
+  claudeImageBlocks,
+  codexImageInput,
+  expandAttachmentPaths,
+  isSecretConfigPath,
+  readImageBytes,
+} from "./attachments.ts";
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
@@ -49,5 +58,42 @@ describe("attachment paths", () => {
     expect(blocks[0]).toMatchObject({ type: "image", source: { type: "base64", media_type: "image/png" } });
     expect(blocks[0].source.data).toBe(PNG.toString("base64"));
     expect(JSON.stringify(blocks)).not.toContain("ghp_secret_token");
+  });
+
+  it("reads image bytes for Codex data URLs and ACP blocks, never from config.json", () => {
+    const img = join(DATA_DIR, "shot.png");
+    writeFileSync(img, PNG);
+    const secret = join(DATA_DIR, "config.json");
+    writeFileSync(secret, JSON.stringify({ github: { token: "ghp_secret_token" } }));
+    const note = join(DATA_DIR, "note.md");
+    writeFileSync(note, "hi");
+    const items = [{ path: img, mime: "image/png" }, { path: secret }, { path: note }];
+
+    const bytes = readImageBytes(items);
+    expect(bytes).toHaveLength(1);
+    expect(bytes[0].data).toBe(PNG.toString("base64"));
+
+    const acp = acpImageBlocks(items);
+    expect(acp).toEqual([{ type: "image", mimeType: "image/png", data: PNG.toString("base64") }]);
+    expect(JSON.stringify(acp)).not.toContain("ghp_secret_token");
+
+    const codex = codexImageInput(items);
+    expect(codex).toEqual([{ type: "image", url: `data:image/png;base64,${PNG.toString("base64")}` }]);
+    expect(JSON.stringify(codex)).not.toContain("ghp_secret_token");
+  });
+
+  it("falls back to Codex localImage path refs when bytes cannot be read", () => {
+    const missing = join(DATA_DIR, "gone.png");
+    expect(codexImageInput([{ path: missing, mime: "image/png" }])).toEqual([
+      { type: "localImage", path: missing },
+    ]);
+  });
+
+  it("does not treat missing ACP image capability as vision support", () => {
+    expect(agentAcceptsImagePrompts(undefined)).toBe(false);
+    expect(agentAcceptsImagePrompts({})).toBe(false);
+    expect(agentAcceptsImagePrompts({ agentCapabilities: { promptCapabilities: { image: false } } })).toBe(false);
+    expect(agentAcceptsImagePrompts({ agentCapabilities: { promptCapabilities: { image: true } } })).toBe(true);
+    expect(agentAcceptsImagePrompts({ promptCapabilities: { image: true } })).toBe(true);
   });
 });

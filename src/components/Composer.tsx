@@ -170,7 +170,7 @@ export function Composer({ bot }: { bot: Bot }) {
                   i === highlight ? "bg-raised-hover" : "",
                 )}
               >
-                <MausAvatar color={peer.color} state={normalizeState(peer.mascotExpression) ?? "happy"} size={24} />
+                <MausAvatar color={peer.color} iconShape={peer.iconShape} state={normalizeState(peer.mascotExpression) ?? "happy"} size={24} />
                 <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink">{peer.name}</span>
                 <span className="shrink-0 text-xs text-ink-secondary">Agent</span>
               </button>

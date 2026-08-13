@@ -352,16 +352,45 @@ describe("harness HTTP API", () => {
     expect(listed.body.skills.some((s: { id: string }) => s.id === skill.body.skill.id)).toBe(true);
   });
 
-  it("records a teach session into a reviewable skill without a live box", async () => {
+    it("records a teach session into a reviewable skill without a live box", async () => {
     const { body } = await api("GET", "/api/bots");
     const bot = body.bots[0];
     const start = await api("POST", `/api/bots/${bot.id}/teach/start`);
     expect(start.status).toBe(200);
     expect(start.body.recording).toBe(true);
+    expect(start.body.session.status).toBe("recording");
+    const listed = await api("GET", "/api/teach-sessions");
+    expect(listed.status).toBe(200);
+    expect(listed.body.sessions.some((s: { botId: string; status: string }) => s.botId === bot.id && s.status === "recording")).toBe(true);
+    const current = await api("GET", `/api/bots/${bot.id}/teach`);
+    expect(current.body.session.status).toBe("recording");
     const stop = await api("POST", `/api/bots/${bot.id}/teach/stop`, { name: "Empty session" });
     expect(stop.status).toBe(200);
     expect(stop.body.skill.markdown).toMatch(/1\./);
     expect(stop.body.skill.name).toBe("Empty session");
+    expect(stop.body.session.status).toBe("completed");
+    expect(stop.body.session.skillId).toBe(stop.body.skill.id);
+    const after = await api("GET", "/api/teach-sessions");
+    expect(after.body.sessions.some((s: { id: string; status: string }) => s.id === stop.body.session.id && s.status === "completed")).toBe(true);
+  });
+
+  it("attaches a skill to a bot and persists iconShape", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const skill = await api("POST", "/api/skills", {
+      botId: bot.id,
+      name: "Desk skill",
+      markdown: "# Desk skill\n\n1. Open the inbox\n",
+    });
+    expect(skill.status).toBe(201);
+    const patched = await api("PATCH", `/api/bots/${bot.id}`, { skillId: skill.body.skill.id, iconShape: "hexagon" });
+    expect(patched.status).toBe(200);
+    expect(patched.body.bot.skillId).toBe(skill.body.skill.id);
+    expect(patched.body.bot.iconShape).toBe("hexagon");
+    const listed = await api("GET", "/api/bots");
+    const found = listed.body.bots.find((b: { id: string }) => b.id === bot.id);
+    expect(found.skillId).toBe(skill.body.skill.id);
+    expect(found.iconShape).toBe("hexagon");
   });
 
   it("stores per-bot enabledApps toggles", async () => {

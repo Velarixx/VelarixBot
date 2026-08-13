@@ -5,6 +5,11 @@ import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
 
 export type MausColor = "green" | "blue" | "red" | "orange" | "purple" | "cyan" | "pink" | "yellow" | "teal" | "coral";
 export type MausExpression = string;
+export const ICON_SHAPES = ["cursor", "blob", "circle", "squircle", "diamond", "hexagon", "teardrop", "shield"] as const;
+export type IconShape = (typeof ICON_SHAPES)[number];
+export function resolveIconShape(value: unknown): IconShape {
+  return ICON_SHAPES.includes(value as IconShape) ? (value as IconShape) : "cursor";
+}
 export type BotState = "IDLE" | "RUNNING" | "DONE" | "BLOCKED" | "NEEDS_INPUT";
 export interface Usage { input: number; output: number; cost: number | null }
 export interface OptionCardData { title: string; subtitle: string; options: string[]; answered?: string; dismissed?: boolean; requestId?: string; requestType?: "permission" | "question" | "credential" }
@@ -14,11 +19,13 @@ export interface Message {
 }
 export interface BotRecord {
   id: string; threadId: ThreadId; name: string; title: string; description: string; notifications: boolean; color: MausColor;
-  mascotExpression?: MausExpression | null; unread: boolean; modelSelection: ModelSelection; resumeCursors: Record<string, unknown>;
+  mascotExpression?: MausExpression | null; iconShape?: IconShape; unread: boolean; modelSelection: ModelSelection; resumeCursors: Record<string, unknown>;
   computer: "cloud" | "local" | "off"; pinned?: boolean; hidden?: boolean; busy: boolean; state: BotState; stateDetail?: string;
   usage: Usage; currentTurnUsage?: Usage; createdAt: number; requireApproval?: boolean;
   /** Connected-app slugs this bot may use (Composio). Empty/missing = none. */
   enabledApps?: string[];
+  /** Taught skill attached to every turn this bot runs. */
+  skillId?: string;
   /** Bots sharing this thread's transcript (group mention / ask_bot). */
   threadParticipants?: string[];
 }
@@ -65,12 +72,14 @@ function migrateBot(v: unknown): BotRecord | null {
   return {
     id: b.id!, threadId: b.threadId!, name: b.name!, title: typeof b.title === "string" ? b.title : "", description: typeof b.description === "string" ? b.description : "",
     notifications: b.notifications !== false, color: COLORS.includes(b.color as MausColor) ? b.color! : "blue", mascotExpression: b.mascotExpression,
+    iconShape: resolveIconShape(b.iconShape),
     unread: b.unread === true, modelSelection: b.modelSelection, resumeCursors: b.resumeCursors && typeof b.resumeCursors === "object" ? b.resumeCursors : {},
     computer: MODES.has(String(b.computer)) ? b.computer! : "off", pinned: b.pinned, hidden: b.hidden, busy: false,
     state: crashed ? "BLOCKED" : STATES.has(b.state as BotState) ? b.state! : "IDLE", ...(crashed ? { stateDetail: "interrupted" } : b.stateDetail ? { stateDetail: b.stateDetail } : {}),
     usage: validUsage(b.usage), currentTurnUsage: b.currentTurnUsage ? validUsage(b.currentTurnUsage) : undefined, createdAt: Number.isFinite(b.createdAt) ? b.createdAt! : Date.now(),
     ...(b.requireApproval === true ? { requireApproval: true } : {}),
     ...(validStringList(b.enabledApps) ? { enabledApps: validStringList(b.enabledApps) } : {}),
+    ...(typeof b.skillId === "string" && b.skillId.trim() ? { skillId: b.skillId.trim() } : {}),
     ...(validStringList(b.threadParticipants) ? { threadParticipants: validStringList(b.threadParticipants) } : {}),
   };
 }
@@ -140,9 +149,34 @@ export class Store {
   appendMessage(threadId:string,message:Omit<Message,"id"|"at">&{at?:number}):Message{const full={id:newId(),at:Date.now(),...message};this.messagesFor(threadId).push(full);this.saveMessages(threadId);return full;}
   patchMessage(threadId:string,id:string,patch:Partial<Message>):Message|null{const list=this.messagesFor(threadId),i=list.findIndex(m=>m.id===id);if(i<0)return null;list[i]={...list[i],...patch,card:patch.card??list[i].card};this.saveMessages(threadId);return list[i];}
   bot(id:string){return this.bots.find(b=>b.id===id)??null} botByThread(id:string){return this.bots.find(b=>b.threadId===id)??null}
-  createBot():BotRecord{const bot:BotRecord={id:newId(),threadId:newId(),name:"New Bot",title:"",description:"",notifications:true,color:COLORS[this.bots.length%COLORS.length],unread:false,modelSelection:this.defaultSelection(),resumeCursors:{},computer:"off",busy:false,state:"IDLE",usage:zeroUsage(),createdAt:Date.now()};this.bots.unshift(bot);this.saveBots();this.appendMessage(bot.threadId,{role:"bot",kind:"text",text:"Hey — I'm your new bot. Nice to meet you."});this.appendMessage(bot.threadId,{role:"bot",kind:"options",card:onboardingCard()});return bot;}
+  createBot():BotRecord{const bot:BotRecord={id:newId(),threadId:newId(),name:"New Bot",title:"",description:"",notifications:true,color:COLORS[this.bots.length%COLORS.length],iconShape:ICON_SHAPES[this.bots.length%ICON_SHAPES.length],unread:false,modelSelection:this.defaultSelection(),resumeCursors:{},computer:"off",busy:false,state:"IDLE",usage:zeroUsage(),createdAt:Date.now()};this.bots.unshift(bot);this.saveBots();this.appendMessage(bot.threadId,{role:"bot",kind:"text",text:"Hey — I'm your new bot. Nice to meet you."});this.appendMessage(bot.threadId,{role:"bot",kind:"options",card:onboardingCard()});return bot;}
   deleteBot(id:string){const b=this.bot(id);if(!b)return false;this.bots=this.bots.filter(x=>x.id!==id);this.routines=this.routines.filter(r=>r.botId!==id);this.saveBots();this.saveRoutines();this.messages.delete(b.threadId);try{unlinkSync(messagesFile(b.threadId))}catch{}return true;}
-  patchBot(id:string,patch:Partial<BotRecord>){const b=this.bot(id);if(!b)return null;if(patch.computer&&!MODES.has(patch.computer))throw new Error("invalid computer mode");if(patch.state&&!STATES.has(patch.state))throw new Error("invalid bot state");Object.assign(b,patch);this.saveBots();return b;}
+  patchBot(id:string,patch:Partial<BotRecord>){
+    const b=this.bot(id);if(!b)return null;if(patch.computer&&!MODES.has(patch.computer))throw new Error("invalid computer mode");if(patch.state&&!STATES.has(patch.state))throw new Error("invalid bot state");
+    const next: Partial<BotRecord> = { ...patch };
+    if (next.iconShape !== undefined) next.iconShape = resolveIconShape(next.iconShape);
+    if (Object.prototype.hasOwnProperty.call(next, "skillId")) {
+      const skillId = typeof next.skillId === "string" ? next.skillId.trim() : "";
+      delete next.skillId;
+      if (skillId) b.skillId = skillId;
+      else delete b.skillId;
+    }
+    Object.assign(b,next);this.saveBots();return b;
+  }
+  clearSkillRefs(skillId:string){
+    for (const bot of this.bots) {
+      if (bot.skillId === skillId) delete bot.skillId;
+    }
+    let routinesChanged = false;
+    for (const routine of this.routines) {
+      if (routine.skillId === skillId) {
+        delete routine.skillId;
+        routinesChanged = true;
+      }
+    }
+    this.saveBots();
+    if (routinesChanged) this.saveRoutines();
+  }
   setResumeCursor(id:string,instance:string,cursor:unknown){const b=this.bot(id);if(b){b.resumeCursors[instance]=cursor;this.saveBots();}}
   recordTurnUsage(id:string,usage:Usage){const b=this.bot(id);if(!b)return;const u=validUsage(usage);b.currentTurnUsage=u;b.usage={input:b.usage.input+u.input,output:b.usage.output+u.output,cost:b.usage.cost===null&&u.cost===null?null:(b.usage.cost??0)+(u.cost??0)};this.saveBots();}
   seedIfEmpty(){if(this.bots.length)return;const b=this.createBot();this.patchBot(b.id,{name:"Milind",color:"blue"});}

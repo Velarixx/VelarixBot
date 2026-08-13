@@ -5,13 +5,14 @@
 //
 // Spawn-based tests are POSIX-only until Windows CLI spawning lands (the
 // fake is a shebang script — same constraint as codex.cmd itself).
-import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ProviderInstance } from "../contracts.ts";
+import { DATA_DIR } from "../config.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { FALLBACK_CODEX_MODELS } from "./codex-models.ts";
 import { CodexDriver, isCodexPermissionUserInput, isCodexUserInputMethod } from "./codex.ts";
@@ -202,6 +203,34 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     // no integrations → no mcp overlay on thread/start
     expect(seen.threadStartConfig).toBeNull();
     expect(seen.threadResumeConfig).toBeNull();
+  });
+
+  it("puts image bytes on turn/start input, not argv", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    const img = join(scratch, "shot.png");
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    writeFileSync(img, png);
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify({ github: { token: "ghp_secret_token" } }));
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-image",
+      text: "look",
+      attachments: [{ path: img, mime: "image/png" }, { path: join(DATA_DIR, "config.json") }],
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const turnStart = seen.calls.find((c: { method: string }) => c.method === "turn/start");
+    expect(turnStart.params.input[0]).toEqual({ type: "text", text: "look" });
+    expect(turnStart.params.input[1]).toEqual({ type: "image", url: `data:image/png;base64,${png.toString("base64")}` });
+    expect(JSON.stringify(seen.argv)).not.toContain(png.toString("base64"));
+    expect(JSON.stringify(seen)).not.toContain("ghp_secret_token");
   });
 
   it("streams agentMessage deltas without re-emitting the settled text", async () => {

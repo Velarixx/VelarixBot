@@ -11,6 +11,7 @@ import { ComputerPanel } from "@/components/ComputerPanel";
 import { AppSettingsPanel } from "@/components/AppSettingsPanel";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { RoutinesPanel } from "@/components/RoutinesPanel";
+import { SkillsPanel } from "@/components/SkillsPanel";
 
 function Shell() {
   const { state, dispatch } = useStore();
@@ -55,6 +56,7 @@ function Shell() {
       {state.appSettingsOpen && <AppSettingsPanel />}
       {state.pluginsOpen && <PluginsPanel />}
       {state.routinesOpen && <RoutinesPanel />}
+      {state.skillsOpen && <SkillsPanel />}
       </div>
     </div>
   );

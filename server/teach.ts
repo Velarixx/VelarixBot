@@ -1,7 +1,9 @@
 // Teach-a-task lite: record a supervised Box session (canonical events +
 // frame counts, not pixels) and distill a reviewable ordered-step skill.
-// Skills live in ~/.velarixbot/skills.json. No pixel replay.
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+// Skills live in ~/.velarixbot/skills.json. Teach sessions live in
+// ~/.velarixbot/teach-sessions.json so a harness restart can list and
+// resume them. No pixel replay.
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
@@ -28,7 +30,22 @@ export interface TeachFrame {
   at: number;
 }
 
+export type TeachStatus = "recording" | "completed";
+
+export interface TeachSessionRecord {
+  id: string;
+  botId: string;
+  status: TeachStatus;
+  events: TeachEvent[];
+  frames: TeachFrame[];
+  startedAt: number;
+  stoppedAt?: number;
+  name?: string;
+  skillId?: string;
+}
+
 const SKILLS_FILE = join(DATA_DIR, "skills.json");
+const SESSIONS_FILE = join(DATA_DIR, "teach-sessions.json");
 
 function atomicWrite(path: string, value: unknown) {
   mkdirSync(DATA_DIR, { recursive: true });
@@ -45,6 +62,27 @@ function isSkill(v: unknown): v is SkillRecord {
     typeof s.markdown === "string" &&
     Number.isFinite(s.createdAt)
   );
+}
+
+function isTeachEvent(v: unknown): v is TeachEvent {
+  if (!v || typeof v !== "object") return false;
+  const e = v as Partial<TeachEvent>;
+  return typeof e.type === "string";
+}
+
+function isTeachFrame(v: unknown): v is TeachFrame {
+  if (!v || typeof v !== "object") return false;
+  return Number.isFinite((v as Partial<TeachFrame>).at);
+}
+
+function isTeachSession(v: unknown): v is TeachSessionRecord {
+  if (!v || typeof v !== "object") return false;
+  const s = v as Partial<TeachSessionRecord>;
+  if (typeof s.id !== "string" || typeof s.botId !== "string") return false;
+  if (s.status !== "recording" && s.status !== "completed") return false;
+  if (!Number.isFinite(s.startedAt)) return false;
+  if (!Array.isArray(s.events) || !Array.isArray(s.frames)) return false;
+  return s.events.every(isTeachEvent) && s.frames.every(isTeachFrame);
 }
 
 export function loadSkills(): SkillRecord[] {
@@ -91,6 +129,80 @@ export function deleteSkill(id: string): boolean {
 
 export function deleteSkillsForBot(botId: string): void {
   saveSkills(loadSkills().filter((s) => s.botId !== botId));
+  saveTeachSessions(loadTeachSessions().filter((s) => s.botId !== botId));
+}
+
+export function loadTeachSessions(): TeachSessionRecord[] {
+  try {
+    const raw: unknown = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(isTeachSession);
+  } catch {
+    return [];
+  }
+}
+
+function saveTeachSessions(sessions: TeachSessionRecord[]) {
+  atomicWrite(SESSIONS_FILE, sessions);
+}
+
+export function listTeachSessions(botId?: string): TeachSessionRecord[] {
+  const all = loadTeachSessions();
+  const filtered = botId ? all.filter((s) => s.botId === botId) : all;
+  return filtered.sort((a, b) => b.startedAt - a.startedAt);
+}
+
+export function getTeachSession(id: string): TeachSessionRecord | null {
+  return loadTeachSessions().find((s) => s.id === id) ?? null;
+}
+
+export function getRecordingSession(botId: string): TeachSessionRecord | null {
+  return loadTeachSessions().find((s) => s.botId === botId && s.status === "recording") ?? null;
+}
+
+export function startPersistedTeachSession(botId: string): TeachSessionRecord {
+  const sessions = loadTeachSessions().filter((s) => !(s.botId === botId && s.status === "recording"));
+  const session: TeachSessionRecord = {
+    id: newId(),
+    botId,
+    status: "recording",
+    events: [],
+    frames: [],
+    startedAt: Date.now(),
+  };
+  saveTeachSessions([...sessions, session]);
+  return session;
+}
+
+function patchSession(botId: string, fn: (session: TeachSessionRecord) => TeachSessionRecord): TeachSessionRecord | null {
+  const sessions = loadTeachSessions();
+  const index = sessions.findIndex((s) => s.botId === botId && s.status === "recording");
+  if (index < 0) return null;
+  const next = fn(sessions[index]);
+  sessions[index] = next;
+  saveTeachSessions(sessions);
+  return next;
+}
+
+export function appendTeachEvent(botId: string, event: TeachEvent): TeachSessionRecord | null {
+  return patchSession(botId, (session) => ({ ...session, events: [...session.events, event] }));
+}
+
+export function appendTeachFrame(botId: string, frame: TeachFrame = { at: Date.now() }): TeachSessionRecord | null {
+  return patchSession(botId, (session) => ({ ...session, frames: [...session.frames, frame] }));
+}
+
+export function completeTeachSession(
+  botId: string,
+  opts: { name?: string; skillId: string },
+): TeachSessionRecord | null {
+  return patchSession(botId, (session) => ({
+    ...session,
+    status: "completed",
+    stoppedAt: Date.now(),
+    name: opts.name?.trim() || session.name,
+    skillId: opts.skillId,
+  }));
 }
 
 /** Deterministic step list from a recorded session. Frames are counted,
@@ -139,7 +251,7 @@ export async function distillSkill(opts: {
     const out = (
       await opts.generateText(
         [
-          "Turn this recorded computer-use session into a short numbered skill the user can edit and attach to a routine.",
+          "Turn this recorded computer-use session into a short numbered skill the user can edit and attach to a bot or a routine.",
           "Ordered steps only. No pixel coordinates, no secrets, no replay instructions.",
           draft,
         ].join("\n\n"),
@@ -156,10 +268,7 @@ export function skillPrompt(skill: SkillRecord | null, routinePrompt: string): s
   return `${skill.markdown.trim()}\n\n${routinePrompt.trim()}`.trim();
 }
 
-export function deleteTeachScratch(botId: string): void {
-  try {
-    unlinkSync(join(DATA_DIR, `teach-${botId}.json`));
-  } catch {
-    /* missing is fine */
-  }
+export function skillSystemNote(skill: SkillRecord | null): string {
+  if (!skill?.markdown.trim()) return "";
+  return `\n\nFollow this attached skill:\n${skill.markdown.trim()}`;
 }

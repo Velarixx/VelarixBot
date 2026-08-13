@@ -70,14 +70,24 @@ export function attachmentPathRefs(text: string, paths: string[]): string {
   return text.trim() ? `${text.trim()}\n\n${block}` : block;
 }
 
-export function claudeImageBlocks(
-  paths: Array<{ path: string; mime?: string }>,
-): Array<{ type: "image"; source: { type: "base64"; media_type: string; data: string } }> {
-  const blocks: Array<{ type: "image"; source: { type: "base64"; media_type: string; data: string } }> = [];
+export interface ImageBytes {
+  path: string;
+  mime: string;
+  data: string;
+}
+
+function imageMediaType(item: { path: string; mime?: string }): string | undefined {
+  return item.mime && item.mime.startsWith("image/") ? item.mime : IMAGE_EXT[extname(item.path).toLowerCase()];
+}
+
+/** Readable local image files as bytes. Secrets and non-images are skipped.
+ * Callers must not invent vision for files this returns empty for. */
+export function readImageBytes(paths: Array<{ path: string; mime?: string }>): ImageBytes[] {
+  const out: ImageBytes[] = [];
   for (const item of paths) {
     if (isSecretConfigPath(item.path)) continue;
-    const media = item.mime && item.mime.startsWith("image/") ? item.mime : IMAGE_EXT[extname(item.path).toLowerCase()];
-    if (!media) continue;
+    const mime = imageMediaType(item);
+    if (!mime) continue;
     let buf: Buffer;
     try {
       buf = readFileSync(item.path);
@@ -85,7 +95,52 @@ export function claudeImageBlocks(
       continue;
     }
     if (!buf.length || buf.length > MAX_IMAGE_BYTES) continue;
-    blocks.push({ type: "image", source: { type: "base64", media_type: media, data: buf.toString("base64") } });
+    out.push({ path: item.path, mime, data: buf.toString("base64") });
   }
-  return blocks;
+  return out;
+}
+
+export function claudeImageBlocks(
+  paths: Array<{ path: string; mime?: string }>,
+): Array<{ type: "image"; source: { type: "base64"; media_type: string; data: string } }> {
+  return readImageBytes(paths).map((img) => ({
+    type: "image",
+    source: { type: "base64", media_type: img.mime, data: img.data },
+  }));
+}
+
+/** ACP session/prompt image content. Only send when the agent advertised
+ * promptCapabilities.image — otherwise keep path refs and do not fake vision. */
+export function acpImageBlocks(
+  paths: Array<{ path: string; mime?: string }>,
+): Array<{ type: "image"; mimeType: string; data: string }> {
+  return readImageBytes(paths).map((img) => ({ type: "image", mimeType: img.mime, data: img.data }));
+}
+
+export type CodexImageInput = { type: "image"; url: string } | { type: "localImage"; path: string };
+
+/** Codex turn/start image items: inline bytes as a data URL when the file
+ * is readable, else a localImage path ref. Non-images stay in text refs. */
+export function codexImageInput(paths: Array<{ path: string; mime?: string }>): CodexImageInput[] {
+  const byPath = new Map(readImageBytes(paths).map((img) => [img.path, img]));
+  const out: CodexImageInput[] = [];
+  for (const item of paths) {
+    if (isSecretConfigPath(item.path)) continue;
+    if (!imageMediaType(item)) continue;
+    const bytes = byPath.get(item.path);
+    if (bytes) {
+      out.push({ type: "image", url: `data:${bytes.mime};base64,${bytes.data}` });
+    } else {
+      out.push({ type: "localImage", path: item.path });
+    }
+  }
+  return out;
+}
+
+/** True when an ACP initialize result advertises image prompts. Missing
+ * capability means path refs only — do not send image blocks. */
+export function agentAcceptsImagePrompts(init: unknown): boolean {
+  if (!init || typeof init !== "object") return false;
+  const o = init as { agentCapabilities?: { promptCapabilities?: { image?: unknown } }; promptCapabilities?: { image?: unknown } };
+  return o.agentCapabilities?.promptCapabilities?.image === true || o.promptCapabilities?.image === true;
 }

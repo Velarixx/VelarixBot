@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, Trash2, X } from "lucide-react";
-import { api, useStore, type Bot } from "@/state/store";
+import { api, useStore, type Bot, type Skill } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import {
   PICKABLE_STATES,
@@ -8,6 +8,7 @@ import {
   MAUS_COLORS,
   MAUS_COLOR_NAMES,
 } from "@/lib/mascot";
+import { ICON_SHAPE_NAMES } from "@/lib/mascot-shapes";
 import { ModelPicker } from "./ModelPicker";
 import { cn } from "@/lib/cn";
 
@@ -33,13 +34,27 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const patch = (
     p: Partial<
-      Pick<Bot, "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotExpression" | "requireApproval" | "enabledApps">
+      Pick<Bot, "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotExpression" | "iconShape" | "requireApproval" | "enabledApps" | "skillId">
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   const activeState = stateForBot(bot);
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const [apps, setApps] = useState<Array<{ slug: string; label: string }>>([]);
   const [rules, setRules] = useState<Array<{ id: string; tool: string; pattern: string; action: "allow" | "deny" }>>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    api("/api/skills")
+      .then((r) => {
+        if (!alive) return;
+        setSkills(r.skills ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -97,6 +112,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             color={bot.color}
             state={activeState}
             size={112}
+            iconShape={bot.iconShape}
             motion={mascotMotion?.kind ?? "none"}
             motionKey={mascotMotion?.nonce ?? 0}
           />
@@ -109,7 +125,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 Bot
               </span>
               <button
-                onClick={() => patch({ color: "green", mascotExpression: null })}
+                onClick={() => patch({ color: "green", mascotExpression: null, iconShape: "cursor" })}
                 className="rounded-md px-2 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
               >
                 Reset
@@ -132,7 +148,27 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                     title={expression}
                     aria-label={`Use ${expression} expression`}
                   >
-                    <MausAvatar color={bot.color} state={expression} size={42} animated={false} />
+                    <MausAvatar color={bot.color} state={expression} iconShape={bot.iconShape} size={42} animated={false} />
+                  </button>
+                ))}
+              </div>
+
+              <div className="mb-2 mt-4 text-[12px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
+                Shape
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {ICON_SHAPE_NAMES.map((shape) => (
+                  <button
+                    key={shape}
+                    onClick={() => patch({ iconShape: shape })}
+                    className={cn(
+                      "flex h-[58px] flex-col items-center justify-center rounded-xl bg-inset transition-colors hover:bg-raised",
+                      (bot.iconShape ?? "cursor") === shape && "ring-2 ring-accent-border",
+                    )}
+                    title={shape}
+                    aria-label={`Use ${shape} icon`}
+                  >
+                    <MausAvatar color={bot.color} state={activeState} iconShape={shape} size={36} animated={false} />
                   </button>
                 ))}
               </div>
@@ -180,6 +216,21 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               value={bot.description}
               onChange={(e) => patch({ description: e.target.value })}
             />
+          </Field>
+
+          <Field label="Taught skill">
+            <select
+              className={inputCls}
+              value={bot.skillId ?? ""}
+              onChange={(e) => patch({ skillId: e.target.value || "" })}
+            >
+              <option value="">None</option>
+              {skills.map((skill) => (
+                <option key={skill.id} value={skill.id}>
+                  {skill.name}
+                </option>
+              ))}
+            </select>
           </Field>
 
           <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">

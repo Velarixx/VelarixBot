@@ -150,10 +150,10 @@ describe("Store", () => {
     expect(reloaded.routine(routine.id)?.thenStartTurn).toEqual({ botId: other.id, prompt: "Follow up." });
   });
 
-  it("persists enabledApps and a routine skillId", () => {
+  it("persists enabledApps, a bot skillId, and a routine skillId", () => {
     const store = new Store(selection);
     const bot = store.createBot();
-    store.patchBot(bot.id, { enabledApps: ["googledrive"] });
+    store.patchBot(bot.id, { enabledApps: ["googledrive"], skillId: "skill-bot" });
     const routine = store.createRoutine({
       botId: bot.id,
       name: "Taught",
@@ -163,7 +163,25 @@ describe("Store", () => {
     });
     const reloaded = new Store(selection);
     expect(reloaded.bot(bot.id)?.enabledApps).toEqual(["googledrive"]);
+    expect(reloaded.bot(bot.id)?.skillId).toBe("skill-bot");
     expect(reloaded.routine(routine.id)?.skillId).toBe("skill-1");
+  });
+
+  it("persists icon shape, rotates defaults, and falls back for legacy bots", () => {
+    const store = new Store(selection);
+    const first = store.createBot();
+    const second = store.createBot();
+    expect(first.iconShape).toBe("cursor");
+    expect(second.iconShape).not.toBe(first.iconShape);
+    store.patchBot(first.id, { iconShape: "hexagon" });
+    expect(new Store(selection).bot(first.id)?.iconShape).toBe("hexagon");
+    store.patchBot(first.id, { iconShape: "not-a-shape" as never });
+    expect(store.bot(first.id)?.iconShape).toBe("cursor");
+    const file = join(DATA_DIR, "bots.json");
+    const legacy = JSON.parse(readFileSync(file, "utf8"));
+    delete legacy[0].iconShape;
+    writeFileSync(file, JSON.stringify(legacy));
+    expect(new Store(selection).bot(second.id)?.iconShape).toBe("cursor");
   });
 
   it("validates daily and interval routines", () => {

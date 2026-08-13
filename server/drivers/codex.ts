@@ -27,6 +27,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
+import { codexImageInput } from "../attachments.ts";
 import { cliVersion, killProcessTree, spawnCliHidden } from "./cli.ts";
 import { FALLBACK_CODEX_MODELS, loadCodexModelCatalog } from "./codex-models.ts";
 import { appendNative } from "./native.ts";
@@ -474,7 +475,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           emit({ ...base(threadId, turnId), type: "session.started", sessionId: codexThreadId, model: startedModel ?? turn.model ?? null });
           await request("turn/start", {
             threadId: codexThreadId,
-            input: [{ type: "text", text: turn.text }],
+            input: [{ type: "text", text: turn.text }, ...codexImageInput(turn.attachments ?? [])],
           });
         } catch (e) {
           if (!state.settled) {

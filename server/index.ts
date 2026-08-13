@@ -34,15 +34,21 @@ import { createProactive } from "./proactive.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "./response-options.ts";
 import { mentionedBots, nextRunAt, Store, type Message, type Usage } from "./store.ts";
 import {
+  appendTeachEvent,
+  appendTeachFrame,
+  completeTeachSession,
   deleteSkillsForBot,
   distillSkill,
+  getRecordingSession,
   getSkill,
+  listTeachSessions,
   loadSkills,
   saveSkill,
   deleteSkill,
   skillPrompt,
+  skillSystemNote,
+  startPersistedTeachSession,
   type TeachEvent,
-  type TeachFrame,
 } from "./teach.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
@@ -230,37 +236,46 @@ const peerQueue = createPeerQueue({
   budgetMs: ASK_BUDGET_MS,
 });
 
-type TeachSession = { botId: string; events: TeachEvent[]; frames: TeachFrame[]; unsub: () => void };
-const teachSessions = new Map<string, TeachSession>();
+type LiveTeach = { botId: string; threadId: string; unsub: () => void };
+const liveTeach = new Map<string, LiveTeach>();
+
+function teachEventFromRuntime(event: RuntimeEvent): TeachEvent {
+  const itemType = "itemType" in event ? event.itemType : undefined;
+  const title = "title" in event ? event.title : undefined;
+  const text = "text" in event ? event.text : undefined;
+  const tool = "tool" in event ? event.tool : undefined;
+  return {
+    type: event.type,
+    ...(typeof itemType === "string" ? { itemType } : {}),
+    ...(typeof title === "string" ? { title } : {}),
+    ...(typeof text === "string" ? { text } : {}),
+    ...(typeof tool === "string" ? { tool } : {}),
+    createdAt: event.createdAt,
+  };
+}
+
+function subscribeTeach(botId: string, threadId: string) {
+  liveTeach.get(botId)?.unsub();
+  const unsub = bus.subscribe((event: RuntimeEvent) => {
+    if (event.threadId !== threadId) return;
+    appendTeachEvent(botId, teachEventFromRuntime(event));
+  });
+  liveTeach.set(botId, { botId, threadId, unsub });
+}
+
 function startTeachSession(botId: string) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
-  teachSessions.get(botId)?.unsub();
-  const events: TeachEvent[] = [];
-  const frames: TeachFrame[] = [];
-  const unsub = bus.subscribe((event: RuntimeEvent) => {
-    if (event.threadId !== bot.threadId) return;
-    const itemType = "itemType" in event ? event.itemType : undefined;
-    const title = "title" in event ? event.title : undefined;
-    const text = "text" in event ? event.text : undefined;
-    const tool = "tool" in event ? event.tool : undefined;
-    events.push({
-      type: event.type,
-      ...(typeof itemType === "string" ? { itemType } : {}),
-      ...(typeof title === "string" ? { title } : {}),
-      ...(typeof text === "string" ? { text } : {}),
-      ...(typeof tool === "string" ? { tool } : {}),
-      createdAt: event.createdAt,
-    });
-  });
-  teachSessions.set(botId, { botId, events, frames, unsub });
-  return { ok: true, recording: true };
+  const session = getRecordingSession(botId) ?? startPersistedTeachSession(botId);
+  subscribeTeach(botId, bot.threadId);
+  return { ok: true, recording: true, session };
 }
+
 async function stopTeachSession(botId: string, name?: string) {
-  const session = teachSessions.get(botId);
+  const session = getRecordingSession(botId);
   if (!session) throw Object.assign(new Error("no teach session in progress"), { status: 404 });
-  session.unsub();
-  teachSessions.delete(botId);
+  liveTeach.get(botId)?.unsub();
+  liveTeach.delete(botId);
   const instance = registry.get(store.bot(botId)?.modelSelection.instanceId ?? "");
   const markdown = await distillSkill({
     name: name?.trim() || "Taught skill",
@@ -269,8 +284,19 @@ async function stopTeachSession(botId: string, name?: string) {
     generateText: instance?.generateText?.bind(instance),
   });
   const skill = saveSkill({ name: name?.trim() || "Taught skill", botId, markdown });
-  return { skill };
+  const completed = completeTeachSession(botId, { name: name?.trim() || skill.name, skillId: skill.id });
+  return { skill, session: completed };
 }
+
+function restoreTeachSubscriptions() {
+  for (const session of listTeachSessions()) {
+    if (session.status !== "recording") continue;
+    const bot = store.bot(session.botId);
+    if (!bot) continue;
+    subscribeTeach(bot.id, bot.threadId);
+  }
+}
+restoreTeachSubscriptions();
 
 const proactive = createProactive({
   now: () => Date.now(),
@@ -529,7 +555,7 @@ function startScreenPoller(botId: string) {
       const { png, format } = await box.screenshotBox(cfg, botId);
       const frame = { png, mime: format === "jpeg" ? "image/jpeg" : "image/png" };
       entry.last = frame;
-      teachSessions.get(botId)?.frames.push({ at: Date.now() });
+      appendTeachFrame(botId);
       broadcast({ kind: "screen", botId, ...frame });
     } catch {
       /* box asleep or mid-command — try again next tick */
@@ -635,6 +661,7 @@ async function startTurn(
     .slice(-40)
     .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: m.text! }));
 
+  const attachedSkill = bot.skillId ? getSkill(bot.skillId) : null;
   const persona = [
     `You are ${bot.name}, a personal bot in VelarixBot.`,
     bot.title && `Role: ${bot.title}.`,
@@ -642,7 +669,7 @@ async function startTurn(
     "Stay in that character. Coordinate in this VelarixBot workspace; do not implement the user's repo or run a coding audit unless they explicitly ask for code. Do not dump a feature tour or A/B/C onboarding.",
   ]
     .filter(Boolean)
-    .join(" ");
+    .join(" ") + skillSystemNote(attachedSkill);
 
   // busy flips immediately so the composer locks; the dispatch itself runs
   // in the background — box provisioning can take ~90s and must never
@@ -944,13 +971,23 @@ const server = createServer(async (req, res) => {
       });
       return json(res, 200, { skill });
     }
-    if (skillMatch && method === "DELETE") return deleteSkill(skillMatch[1]) ? json(res, 200, { ok: true }) : json(res, 404, { error: "no such skill" });
+    if (skillMatch && method === "DELETE") {
+      if (!deleteSkill(skillMatch[1])) return json(res, 404, { error: "no such skill" });
+      store.clearSkillRefs(skillMatch[1]);
+      return json(res, 200, { ok: true });
+    }
 
+    if (method === "GET" && path === "/api/teach-sessions") return json(res, 200, { sessions: listTeachSessions() });
     let teachMatch = path.match(/^\/api\/bots\/([\w-]+)\/teach\/(start|stop)$/);
     if (teachMatch && method === "POST") {
       if (teachMatch[2] === "start") return json(res, 200, startTeachSession(teachMatch[1]));
       const body = await readBody(req).catch(() => ({}));
       return json(res, 200, await stopTeachSession(teachMatch[1], typeof body.name === "string" ? body.name : undefined));
+    }
+    teachMatch = path.match(/^\/api\/bots\/([\w-]+)\/teach$/);
+    if (teachMatch && method === "GET") {
+      if (!store.bot(teachMatch[1])) return json(res, 404, { error: "no such bot" });
+      return json(res, 200, { session: getRecordingSession(teachMatch[1]), sessions: listTeachSessions(teachMatch[1]) });
     }
 
     // ── bots ──
@@ -967,7 +1004,7 @@ const server = createServer(async (req, res) => {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: Record<string, unknown> = {};
-      for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotExpression", "pinned", "hidden", "requireApproval", "enabledApps", "threadParticipants"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotExpression", "iconShape", "pinned", "hidden", "requireApproval", "enabledApps", "skillId", "threadParticipants"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (patch.enabledApps !== undefined) patch.enabledApps = parseAllowedToolkits(patch.enabledApps);
@@ -994,8 +1031,8 @@ const server = createServer(async (req, res) => {
       // a running turn dies with its bot
       await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
       stopScreenPoller(bot.id);
-      teachSessions.get(bot.id)?.unsub();
-      teachSessions.delete(bot.id);
+      liveTeach.get(bot.id)?.unsub();
+      liveTeach.delete(bot.id);
       deleteBotMemory(bot.id);
       deleteSkillsForBot(bot.id);
       store.deleteBot(bot.id);
