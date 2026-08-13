@@ -185,11 +185,11 @@ describe("harness HTTP/SSE scenarios (fake CLIs)", () => {
     expect(resolved.event).toMatchObject({ source: "rule" });
     await h.sse.untilAfter(resolved, turnDone(bot.threadId));
     const after = await publicBot(bot.id);
-    const autoCard = after.messages.findLast(
-      (m: { kind: string; card?: { requestId?: string; dismissed?: boolean; answered?: string } }) =>
-        m.kind === "options" && m.card?.requestId && m.card.dismissed,
+    const permissionCards = after.messages.filter(
+      (m: { kind: string; card?: { requestId?: string; answered?: string } }) => m.kind === "options" && m.card?.requestId,
     );
-    expect(autoCard?.card?.answered).toBe("allow");
+    expect(permissionCards).toHaveLength(1);
+    expect(permissionCards[0].card.answered).toBe("allow");
     expect(after.state).toBe("DONE");
   }, 40_000);
 
