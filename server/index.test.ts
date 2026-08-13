@@ -32,6 +32,71 @@ const api = async (method: string, path: string, body?: unknown, headers?: Recor
   return { status: res.status, body: await res.json() };
 };
 
+/** Open /api/events and fold JSON frames. Wait on stream events — no sleeps. */
+async function openSse(): Promise<{
+  frames: any[];
+  until: (pred: (frames: any[]) => boolean) => Promise<void>;
+  close: () => void;
+}> {
+  const res = await fetch(`${BASE}/api/events`);
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const frames: any[] = [];
+  const waiters: Array<() => void> = [];
+  let reading = true;
+  const close = () => {
+    reading = false;
+    reader.cancel().catch(() => {});
+  };
+  const notify = () => {
+    for (const w of waiters.splice(0)) w();
+  };
+  const pump = (async () => {
+    while (reading) {
+      const { done, value } = await reader.read();
+      if (done) {
+        reading = false;
+        break;
+      }
+      buf += decoder.decode(value, { stream: true });
+      const chunks = buf.split("\n\n");
+      buf = chunks.pop() ?? "";
+      for (const chunk of chunks) {
+        const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue;
+        try {
+          frames.push(JSON.parse(line.slice(6)));
+        } catch {
+          /* keepalive / non-JSON */
+        }
+      }
+      notify();
+    }
+    notify();
+  })();
+  void pump;
+  const until = async (pred: (frames: any[]) => boolean) => {
+    await new Promise<void>((resolve, reject) => {
+      const tick = () => {
+        if (pred(frames)) {
+          resolve();
+          return;
+        }
+        if (!reading) {
+          reject(new Error(`SSE closed before matching frame. saw ${JSON.stringify(frames.map((f) => f.kind))}`));
+          return;
+        }
+        if (!waiters.includes(tick)) waiters.push(tick);
+      };
+      waiters.push(tick);
+      tick();
+    });
+  };
+  await until((list) => list.some((f) => f.kind === "hello"));
+  return { frames, until, close };
+}
+
 beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), "omb-api-test-"));
   // a fleet of exactly one unknown driver: no CLI probes, no network
@@ -307,6 +372,54 @@ describe("harness HTTP API", () => {
     expect(patched.body.bot.enabledApps).toEqual(["googledrive"]);
     const other = await api("POST", "/api/bots");
     expect(other.body.bot.enabledApps ?? []).toEqual([]);
+  });
+
+  it("lists and revokes per-bot approval rules without echoing secrets", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const dir = join(home, ".velarixbot", "approvals");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `${bot.id}.json`),
+      JSON.stringify([
+        { id: "rule-keep", tool: "Bash", pattern: "git status", action: "allow", createdAt: 1 },
+        { id: "rule-drop", tool: "Bash", pattern: "rm -rf *", action: "deny", createdAt: 2 },
+      ]),
+    );
+    const listed = await api("GET", `/api/bots/${bot.id}/approvals`);
+    expect(listed.status).toBe(200);
+    expect(listed.body.rules.map((r: { id: string }) => r.id).sort()).toEqual(["rule-drop", "rule-keep"]);
+    expect(JSON.stringify(listed.body)).not.toMatch(/sk-|xai-|ghp_/i);
+    const revoked = await api("DELETE", `/api/bots/${bot.id}/approvals/rule-drop`);
+    expect(revoked.status).toBe(200);
+    const after = await api("GET", `/api/bots/${bot.id}/approvals`);
+    expect(after.body.rules.map((r: { id: string }) => r.id)).toEqual(["rule-keep"]);
+    const missing = await api("DELETE", `/api/bots/${bot.id}/approvals/rule-drop`);
+    expect(missing.status).toBe(404);
+  });
+
+  it("broadcasts routine SSE frames when markRoutine and delete run", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const created = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "SSE ping",
+      prompt: "Ping",
+      schedule: { kind: "interval", everyMinutes: 60 },
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.routine.id as string;
+    const sse = await openSse();
+    try {
+      const run = await api("POST", `/api/routines/${id}/run`);
+      expect(run.status).toBe(202);
+      await sse.until((frames) => frames.some((f) => f.kind === "routine" && f.routine?.id === id));
+      const deleted = await api("DELETE", `/api/routines/${id}`);
+      expect(deleted.status).toBe(200);
+      await sse.until((frames) => frames.some((f) => f.kind === "routine.deleted" && f.routineId === id));
+    } finally {
+      sse.close();
+    }
   });
 
   it("404s unknown routes with the route in the error", async () => {

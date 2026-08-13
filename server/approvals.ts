@@ -66,7 +66,7 @@ export function argumentPattern(summary: string): string {
 export function globMatch(value: string, pattern: string): boolean {
   if (!pattern || pattern === "*") return true;
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`, "s").test(value) || value.includes(pattern);
+  return new RegExp(`^${escaped}$`, "s").test(value);
 }
 
 export function matchRule(botId: string, tool: string, summary: string): ApprovalRule | null {
@@ -99,6 +99,19 @@ export function addRule(
 
 export function alwaysAllow(botId: string, tool: string, summary: string): ApprovalRule {
   return addRule(botId, { tool, pattern: argumentPattern(summary) || "*", action: "allow" });
+}
+
+export function deleteRule(botId: string, ruleId: string): boolean {
+  const rules = loadRules(botId);
+  const next = rules.filter((r) => r.id !== ruleId);
+  if (next.length === rules.length) return false;
+  saveRules(botId, next);
+  return true;
+}
+
+/** List for the settings UI — patterns are re-redacted so secrets never leave disk. */
+export function listRules(botId: string): ApprovalRule[] {
+  return loadRules(botId).map((r) => ({ ...r, pattern: redactSecrets(r.pattern) }));
 }
 
 /** Harness decision for a permission ask (not questions). */

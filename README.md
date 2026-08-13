@@ -9,7 +9,7 @@
 <sub>A private, local-first take on **Grok Bot**, using the agent subscriptions you already have.</sub>
 
 Every bot in the sidebar is a real agent. Claude, Codex, or Grok runs locally under the hood with its own
-personality, model, conversation, and connected apps. Bots can share one persistent Box cloud computer.
+personality, model, conversation, and connected apps. Each bot can have its own persistent Box cloud computer.
 Talk to them like contacts. Watch them work. Approve what matters.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
@@ -39,7 +39,7 @@ Talk to them like contacts. Watch them work. Approve what matters.
 
 One assistant in one box is the wrong shape for agents. VelarixBot applies the **Grok Bot** messaging model
 to a private team setup: a roster of bots with separate personalities, conversations, models, and apps,
-backed by local agent CLIs and an optional shared cloud computer.
+backed by local agent CLIs and optional per-bot cloud computers.
 
 - **Bring your own agents.** Bots run directly on the `claude`, `codex`, and `grok` CLIs installed on your computer. They use your
   existing CLI login or OAuth session and subscription, no VelarixBot account and no model proxy in the middle.
@@ -47,8 +47,9 @@ backed by local agent CLIs and an optional shared cloud computer.
   events live in `~/.velarixbot`, not a cloud.
 - **Explicit routing.** You choose the provider and model for each bot. If that engine is unavailable, the bot
   reports a blocked state; VelarixBot does not silently fail over to another provider or model.
-- **Agents with hands.** Bots can use one shared persistent Box cloud computer, visible while they work. On
-  macOS, a bot can instead use the local Mac after explicit approval. Composio Connect adds optional app integrations.
+- **Agents with hands.** Each bot can use its own persistent Box cloud computer, visible while it works — two
+  cloud bots can run at once. On macOS, a bot can instead use the local Mac after explicit approval. Composio
+  Connect adds optional app integrations, mounted per bot.
 
 ## Features
 
@@ -66,10 +67,11 @@ providers dimmed with the reason. Switch a bot's model mid-conversation.
 </td>
 <td width="50%" valign="top">
 
-### 🖥️ One shared cloud computer
+### 🖥️ Per-bot cloud computer
 
-Open the Computer panel to connect a bot to the team's persistent Box cloud desktop. You can watch it work
-or open the desktop in your browser. On macOS, you can explicitly switch a bot to *this Mac* instead.
+Open the Computer panel to give this bot its own persistent Box cloud desktop. You can watch it work
+or open the desktop in your browser. Two cloud bots do not share a VM. On macOS, you can explicitly
+switch a bot to *this Mac* instead.
 
 <img src="docs/screenshots/computer-panel.png" alt="Computer panel with live screen preview" width="100%">
 
@@ -82,6 +84,8 @@ or open the desktop in your browser. On macOS, you can explicitly switch a bot t
 
 Shell commands, file edits, and questions surface as inline cards — Allow / Deny / answer in chat. A
 permission broker turns every risky action into a decision you make, for cloud and local computers alike.
+**Always allow** writes a per-bot rule (glob patterns only — no substring catch-all, no raw secrets stored).
+List and revoke those rules in bot settings.
 
 <img src="docs/screenshots/approval-card.png" alt="Approval and question cards in chat" width="100%">
 
@@ -91,7 +95,7 @@ permission broker turns every risky action into a decision you make, for cloud a
 ### 🔌 Connected apps
 
 A one-click marketplace over Composio Connect: Gmail, Slack, GitHub, Notion, Linear and hundreds more.
-OAuth once, and every bot can use them as tools.
+OAuth once at the workspace, then toggle which apps each bot may use as tools.
 
 <img src="docs/screenshots/marketplace.png" alt="Connected apps marketplace" width="100%">
 
@@ -123,7 +127,8 @@ Secrets are write-only: the UI only ever sees "configured" flags.
 
 **Also in the box:** streaming replies with tool-run activity chips · native macOS dictation from the
 composer mic (on-device Apple speech recognition — desktop app) · SupaMaus cursor mascots with role-aware
-expressions · screenshots of the bot's work folded into the transcript · persistent scheduled routines.
+expressions · screenshots of the bot's work folded into the transcript · persistent scheduled routines ·
+OS notifications, sidebar search, local file attachments, and in-app updates from private GitHub Releases.
 
 ### Bot states, usage, and routines
 
@@ -133,7 +138,11 @@ input/output token totals and cost when the provider supplies it; unknown cost i
 
 Open **Routines** from the sidebar to create a persistent scheduled prompt for a bot, enable or pause it, inspect its
 next/last run, or delete it. Routines are stored locally and run while the harness server is running. A busy bot will
-not start overlapping routine work.
+not start overlapping routine work. An open Routines panel stays live over SSE as runs start, finish, or are deleted.
+
+Group chats: `@mention` another bot to share one transcript. Sign-in on a cloud computer pauses on a credential card
+(no secrets in events). **Teach a task** on the Computer panel distills a supervised session into an editable skill
+a routine can attach.
 
 ## How it works
 
@@ -159,7 +168,7 @@ flowchart LR
     BUS -- "one SSE stream" --> UI
     REG --> CL & CX & GR
     CL & CX & GR -- "MCP" --> BROKER
-    server -- "Box API" --> BOX[("Cloud computer<br/>box.ascii.dev")]
+    server -- "Box API" --> BOX[("Per-bot cloud computer<br/>box.ascii.dev")]
     server -- "Composio Connect" --> APPS[("Gmail · Slack · GitHub · …")]
 ```
 
@@ -192,7 +201,7 @@ Optional, pasted once in **App Settings** (gear in the sidebar footer):
 |---|---|
 | Composio Connect key (`ck_…`) | The connected-apps marketplace |
 | Composio API key (`ak_…`) | The full 500+ app catalog with official logos |
-| Box token ([box.ascii.dev](https://box.ascii.dev)) | The shared cloud computer |
+| Box token ([box.ascii.dev](https://box.ascii.dev)) | Per-bot cloud computers |
 
 ## Privacy and data storage
 
@@ -238,7 +247,13 @@ downloadable release artifacts.
 The main loop works end to end: message → explicitly selected agent/model → streamed reply → tools → approvals →
 computer use, with persistent scheduled routines and visible runtime/usage state. GitHub Actions builds internal macOS
 and Windows release candidates. Native dictation and local-computer control are unavailable in the first Windows release;
-chat, routines, provider CLIs, and the shared Box cloud computer remain available.
+chat, routines, provider CLIs, and per-bot Box cloud computers remain available.
+
+Shipped teammates runtime (local-first, no cloud service, no telemetry, no paid gating):
+
+- **Tier 1** — OS notifications (honors per-bot `notifications`), boxAgent permission cards, local chat attachments, persistent routines, sidebar search, in-app updater from private GitHub Releases (write-only token).
+- **Tier 2** — close-to-hide tray (Show/Quit) so the harness stays up, launch-at-login (off by default), per-bot markdown memory plus workspace notes, stall nudges, routine-complete `startTurn`, Always-allow rules with a require-approval override.
+- **Tier 3** — group mention threads, `ask_bot` depth 2 with a cycle guard and busy-peer queue, Box sign-in credential cards, teach-a-task → editable skill, per-bot Composio app mounts, per-bot Box workspaces so two cloud bots can run at once.
 
 The driver SPI in [`server/contracts.ts`](server/contracts.ts) is small. Adding a provider requires one driver in
 [`server/drivers/`](server/drivers/) plus registration in the built-in provider list.
