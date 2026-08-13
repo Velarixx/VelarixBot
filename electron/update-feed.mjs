@@ -14,6 +14,28 @@ export function parseVersion(input) {
   return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] ?? ""];
 }
 
+/** Numeric-aware prerelease compare so rc.10 > rc.2 (not lexicographic). */
+function comparePrerelease(a, b) {
+  const as = String(a).split(".");
+  const bs = String(b).split(".");
+  const n = Math.max(as.length, bs.length);
+  for (let i = 0; i < n; i++) {
+    if (i >= as.length) return -1;
+    if (i >= bs.length) return 1;
+    const an = /^\d+$/.test(as[i]);
+    const bn = /^\d+$/.test(bs[i]);
+    if (an && bn) {
+      const d = Number(as[i]) - Number(bs[i]);
+      if (d) return d;
+    } else if (an !== bn) {
+      return an ? -1 : 1;
+    } else if (as[i] !== bs[i]) {
+      return as[i] < bs[i] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
 /** Negative if a < b, 0 if equal, positive if a > b. */
 export function compareVersions(a, b) {
   const pa = parseVersion(a);
@@ -26,7 +48,7 @@ export function compareVersions(a, b) {
   if (!ar && !br) return 0;
   if (!ar) return 1;
   if (!br) return -1;
-  return ar < br ? -1 : ar > br ? 1 : 0;
+  return comparePrerelease(ar, br);
 }
 
 export function pickAsset(release, platform, arch) {
@@ -42,7 +64,7 @@ export function pickAsset(release, platform, arch) {
 }
 
 export function newestNewerRelease(releases, currentVersion) {
-  const list = Array.isArray(releases) ? [...releases] : [];
+  const list = (Array.isArray(releases) ? releases : []).filter((r) => !r?.draft);
   list.sort((a, b) => compareVersions(b.tag_name || b.name || "", a.tag_name || a.name || ""));
   const newest = list[0];
   if (!newest) return null;

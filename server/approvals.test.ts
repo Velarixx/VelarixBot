@@ -7,6 +7,9 @@ import {
   addRule,
   alwaysAllow,
   argumentPattern,
+  deleteRule,
+  globMatch,
+  listRules,
   loadRules,
   matchRule,
   redactSecrets,
@@ -55,5 +58,23 @@ describe("approval rules", () => {
   it("glob * matches any args for that tool", () => {
     addRule(BOT, { tool: "Read", pattern: "*", action: "allow" });
     expect(resolveOpenedRequest(BOT, "Read", "src/index.ts")?.source).toBe("rule");
+  });
+
+  it("does not treat a substring as a match", () => {
+    addRule(BOT, { tool: "Bash", pattern: "git status", action: "allow" });
+    expect(globMatch("prefix git status suffix", "git status")).toBe(false);
+    expect(resolveOpenedRequest(BOT, "Bash", "prefix git status suffix")).toBeNull();
+    expect(resolveOpenedRequest(BOT, "Bash", "git status")?.behavior).toBe("allow");
+  });
+
+  it("lists and revokes rules without echoing raw secrets", () => {
+    const written = alwaysAllow(BOT, "Bash", "token=sk-live-supersecret git status");
+    const listed = listRules(BOT);
+    expect(listed).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain("sk-live-supersecret");
+    expect(listed[0]?.pattern).toContain("[redacted]");
+    expect(deleteRule(BOT, written.id)).toBe(true);
+    expect(listRules(BOT)).toEqual([]);
+    expect(deleteRule(BOT, written.id)).toBe(false);
   });
 });

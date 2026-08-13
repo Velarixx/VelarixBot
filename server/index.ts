@@ -9,7 +9,7 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { attachmentPathRefs, expandAttachmentPaths } from "./attachments.ts";
-import { alwaysAllow, resolveOpenedRequest } from "./approvals.ts";
+import { alwaysAllow, deleteRule, listRules, resolveOpenedRequest } from "./approvals.ts";
 import * as box from "./box.ts";
 import * as composio from "./composio.ts";
 import { parseAllowedToolkits } from "./composio-filter.ts";
@@ -212,6 +212,8 @@ let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
 const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
+store.onRoutine = (routine) => broadcast({ kind: "routine", routine });
+store.onRoutineDeleted = (routineId) => broadcast({ kind: "routine.deleted", routineId });
 const routineByThread = new Map<string, string>();
 const pendingAskByRequest = new Map<string, { botId: string; tool: string; summary: string; requestType: string }>();
 
@@ -900,6 +902,18 @@ const server = createServer(async (req, res) => {
     if (routineMatch && method === "DELETE") return store.deleteRoutine(routineMatch[1]) ? json(res, 200, { ok: true }) : json(res, 404, { error: "no such routine" });
     routineMatch = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
     if (routineMatch && method === "POST") { await runRoutine(routineMatch[1]); return json(res, 202, { ok: true }); }
+
+    // ── per-bot approval rules (list + revoke; Always-allow writes them) ──
+    let approvalsMatch = path.match(/^\/api\/bots\/([\w-]+)\/approvals$/);
+    if (approvalsMatch && method === "GET") {
+      if (!store.bot(approvalsMatch[1])) return json(res, 404, { error: "no such bot" });
+      return json(res, 200, { rules: listRules(approvalsMatch[1]) });
+    }
+    approvalsMatch = path.match(/^\/api\/bots\/([\w-]+)\/approvals\/([\w-]+)$/);
+    if (approvalsMatch && method === "DELETE") {
+      if (!store.bot(approvalsMatch[1])) return json(res, 404, { error: "no such bot" });
+      return deleteRule(approvalsMatch[1], approvalsMatch[2]) ? json(res, 200, { ok: true }) : json(res, 404, { error: "no such rule" });
+    }
 
     // ── taught skills ──
     if (method === "GET" && path === "/api/skills") return json(res, 200, { skills: loadSkills() });

@@ -101,6 +101,24 @@ describe("Store", () => {
     expect(store.deleteRoutine(routine.id)).toBe(true);
   });
 
+  it("broadcasts routine and routine.deleted frames from markRoutine and delete", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const frames: unknown[] = [];
+    store.onRoutine = (routine) => frames.push({ kind: "routine", routine });
+    store.onRoutineDeleted = (routineId) => frames.push({ kind: "routine.deleted", routineId });
+    const routine = store.createRoutine({ botId: bot.id, name: "Ping", prompt: "Ping", schedule: { kind: "interval", everyMinutes: 15 } });
+    expect(frames).toEqual([]);
+    store.markRoutine(routine.id, { lastResult: "running", running: true });
+    expect(frames).toEqual([
+      { kind: "routine", routine: expect.objectContaining({ id: routine.id, lastResult: "running", running: true }) },
+    ]);
+    expect(store.deleteRoutine(routine.id)).toBe(true);
+    expect(frames[1]).toEqual({ kind: "routine.deleted", routineId: routine.id });
+    expect(store.markRoutine(routine.id, { lastResult: "gone" })).toBeNull();
+    expect(frames).toHaveLength(2);
+  });
+
   it("round-trips a daily HH:MM create payload", () => {
     const store = new Store(selection);
     const bot = store.createBot();

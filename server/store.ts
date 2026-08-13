@@ -120,6 +120,9 @@ const onboardingCard=():OptionCardData=>({title:"What do you mostly want help wi
 export class Store {
   bots: BotRecord[];
   routines: RoutineRecord[];
+  /** Wired by the harness to SSE `{kind:"routine"}` / `routine.deleted`. */
+  onRoutine?: (routine: RoutineRecord) => void;
+  onRoutineDeleted?: (routineId: string) => void;
   private messages = new Map<string, Message[]>();
   private defaultSelection: () => ModelSelection;
 
@@ -165,6 +168,6 @@ export class Store {
     }
     this.saveRoutines();return r;
   }
-  markRoutine(id:string,patch:Pick<Partial<RoutineRecord>,"running"|"nextRunAt"|"lastRunAt"|"lastResult">){const r=this.routine(id);if(!r)return null;Object.assign(r,patch);this.saveRoutines();return r;}
-  deleteRoutine(id:string){if(!this.routine(id))return false;this.routines=this.routines.filter(r=>r.id!==id);this.saveRoutines();return true;}
+  markRoutine(id:string,patch:Pick<Partial<RoutineRecord>,"running"|"nextRunAt"|"lastRunAt"|"lastResult">){const r=this.routine(id);if(!r)return null;Object.assign(r,patch);this.saveRoutines();this.onRoutine?.(r);return r;}
+  deleteRoutine(id:string){if(!this.routine(id))return false;this.routines=this.routines.filter(r=>r.id!==id);this.saveRoutines();this.onRoutineDeleted?.(id);return true;}
 }

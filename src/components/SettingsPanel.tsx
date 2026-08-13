@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronLeft, X } from "lucide-react";
+import { ChevronLeft, Trash2, X } from "lucide-react";
 import { api, useStore, type Bot } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import {
@@ -39,6 +39,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const activeState = stateForBot(bot);
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const [apps, setApps] = useState<Array<{ slug: string; label: string }>>([]);
+  const [rules, setRules] = useState<Array<{ id: string; tool: string; pattern: string; action: "allow" | "deny" }>>([]);
 
   useEffect(() => {
     let alive = true;
@@ -52,6 +53,19 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    api(`/api/bots/${bot.id}/approvals`)
+      .then((r) => {
+        if (!alive) return;
+        setRules(r.rules ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [bot.id]);
 
   const toggleApp = (slug: string) => {
     const current = bot.enabledApps ?? [];
@@ -252,6 +266,48 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 )}
               />
             </button>
+          </div>
+
+          <div className="rounded-xl bg-card p-4">
+            <div className="text-[15px] font-medium text-ink">Approval rules</div>
+            <div className="mt-0.5 text-[13px] text-ink-secondary">
+              Always-allow and deny patterns for this bot. Revoke a rule to ask again. Patterns never store raw secrets.
+            </div>
+            {rules.length === 0 ? (
+              <div className="mt-3 text-[12px] text-ink-secondary">
+                No rules yet — choose Always allow on a permission card to add one.
+              </div>
+            ) : (
+              <div className="mt-3 max-h-56 overflow-y-auto rounded-lg border border-hairline/40">
+                {rules.map((rule, i) => (
+                  <div
+                    key={rule.id}
+                    className={cn("flex items-start justify-between gap-3 px-3 py-2", i > 0 && "border-t border-hairline/40")}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-[13px] text-ink">
+                        {rule.tool}
+                        <span className="ml-2 text-[11px] uppercase tracking-wide text-ink-secondary">{rule.action}</span>
+                      </div>
+                      <div className="truncate font-mono text-[11px] text-ink-secondary">{rule.pattern || "*"}</div>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label={`Revoke ${rule.tool} ${rule.action} rule`}
+                      title="Revoke"
+                      onClick={() => {
+                        api(`/api/bots/${bot.id}/approvals/${rule.id}`, { method: "DELETE" })
+                          .then(() => setRules((list) => list.filter((r) => r.id !== rule.id)))
+                          .catch(() => {});
+                      }}
+                      className="rounded-md p-1.5 text-ink-secondary hover:bg-danger/10 hover:text-danger"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="rounded-xl bg-card p-4">
