@@ -21,7 +21,8 @@ import {
   parseVisited,
   uniqueIds,
 } from "./comms.ts";
-import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
+import { ensureBotWorkspace, ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
+import { turnGrounding } from "./grounding.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -771,9 +772,11 @@ async function startTurn(
         resumeCursor: bot.resumeCursors[bot.modelSelection.instanceId],
         transcript,
         attachments: opts?.attachments,
+        cwd: ensureBotWorkspace(bot.id),
         system:
           persona +
           memoryPrompt(bot.id) +
+          turnGrounding(instance.driverKind) +
           (shouldAttachResponseOptions(instance.driverKind) ? responseOptionsPrompt : "") +
           (integrations.computer && instance.driverKind !== "boxAgent"
             ? " You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps."

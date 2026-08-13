@@ -18,7 +18,7 @@
     "test:watch": "vitest",
     "eval": "node eval/run.mjs",
     "preview": "vite preview",
-    "build:server": "tsc -p tsconfig.server.build.json",
+    "build:server": "node scripts/build-server.mjs",
     "build:speech": "node scripts/build-speech-helper.mjs",
     "fetch:cua": "node scripts/fetch-cua-driver.mjs",
     "stage:cua-sdk": "node scripts/stage-cua-sdk.mjs",

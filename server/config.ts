@@ -30,6 +30,17 @@ const LEGACY_DATA_DIRS = [join(homedir(), ".openmausbot"), join(homedir(), ".ope
 export const EVENTS_DIR = join(DATA_DIR, "events");
 export const NATIVE_DIR = join(DATA_DIR, "native");
 
+/** Per-bot working directory. Codex sandbox `workspace-write` is this tree, not $HOME. */
+export function botWorkspaceDir(botId: string): string {
+  return join(DATA_DIR, "workspaces", botId);
+}
+
+export function ensureBotWorkspace(botId: string): string {
+  const dir = botWorkspaceDir(botId);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 export function ensureDirs() {
   // one-time migration from the pre-rename data dir — bots, transcripts,
   // config and keys all carry over

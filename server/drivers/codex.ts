@@ -12,7 +12,6 @@
 // thread/start|resume.developerInstructions (not prepended onto user text).
 // A child that exits 0 before turn/completed is a finished turn, not a kill.
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,6 +25,7 @@ import type {
   SendTurnInput,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
+import { ensureBotWorkspace } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
 import { codexImageInput } from "../attachments.ts";
 import { HANDOFF_CONTINUE, classifyOpenedRequest, isCredentialAsk } from "../handoff.ts";
@@ -165,13 +165,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const mcpServersConfig = mcpServersFromIntegrations(turn.integrations);
       const mcpOverlay = Object.keys(mcpServersConfig).length ? { mcp_servers: mcpServersConfig } : null;
 
+      const workspace = turn.cwd ?? ensureBotWorkspace("codex");
       const env: Record<string, string | undefined> = { ...process.env, PATH: augmentedPath(), NPM_CONFIG_LOGLEVEL: "error" };
       // the CLI owns its own ChatGPT login; a leaked API key silently flips
       // billing to pay-as-you-go (agentcal)
       delete env.OPENAI_API_KEY;
 
       const child = spawnCliHidden(config.cli, ["app-server"], {
-        cwd: turn.cwd ?? homedir(),
+        cwd: workspace,
         env,
         stdio: ["pipe", "pipe", "pipe"],
         detached: true,
@@ -476,7 +477,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
           if (!codexThreadId) {
             const threadStartParams: Record<string, unknown> = {
-              cwd: turn.cwd ?? homedir(),
+              cwd: workspace,
               model: turn.model || null,
               sandbox: config.fullAuto ? "danger-full-access" : "workspace-write",
               approvalPolicy: config.fullAuto ? "never" : "on-request",
