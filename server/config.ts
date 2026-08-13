@@ -111,6 +111,12 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
           gemini: { driver: "geminiAgent" },
           claude: { driver: "claudeAgent" },
           codex: { driver: "codex" },
+          // Hermes rides the CLI's own ChatGPT login (like claude/codex):
+          // shows up unavailable until `hermes` is installed + signed in.
+          // Default fleet only — a user-authored non-empty instances map
+          // replaces this literal, and hermes is intentionally NOT on the
+          // force-re-add list below (that stays openrouter/omnirouter only).
+          hermes: { driver: "hermesAgent" },
           computer: { driver: "boxAgent" },
           openrouter: { driver: "openrouter" },
           omnirouter: { driver: "omnirouter" },

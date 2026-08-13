@@ -637,6 +637,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // and thread/resume (each turn is a fresh app-server)
           agentsMcp: true,
           localComputerMcp: true,
+          cloudComputer: true,
         },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),

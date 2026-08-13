@@ -13,6 +13,18 @@ describe("instanceConfigs", () => {
     expect(map.openrouter.environment?.OPENROUTER_API_KEY).toBeUndefined();
   });
 
+  it("puts Hermes on the default fleet but never force-adds it to a user map", () => {
+    const map = instanceConfigs({});
+    expect(map.hermes).toMatchObject({ driver: "hermesAgent" });
+    // a user-authored non-empty instances map replaces the default fleet;
+    // only openrouter/omnirouter are force-re-added
+    const custom = instanceConfigs({ instances: { onlyMine: { driver: "codex" } } });
+    expect(custom.hermes).toBeUndefined();
+    expect(custom.onlyMine).toMatchObject({ driver: "codex" });
+    expect(custom.openrouter).toMatchObject({ driver: "openrouter" });
+    expect(custom.omnirouter).toMatchObject({ driver: "omnirouter" });
+  });
+
   it("injects write-only keys into instance env and keeps a custom URL", () => {
     const map = instanceConfigs({
       openrouter: { key: "sk-or-v1-secret", url: "http://127.0.0.1:9/v1" },

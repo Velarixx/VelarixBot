@@ -50,6 +50,15 @@ const GROK_BOT = {
   optional: true,
 };
 
+const HERMES_BOT = {
+  name: "Hermes",
+  title: "Optional Hermes check",
+  description: "Skipped unless HERMES_AUTH_JSON is already present. Never required for this eval.",
+  prompt: "Reply in one sentence that you are the optional Hermes eval bot.",
+  prefer: "hermes",
+  hermesOptional: true,
+};
+
 // Codex on-request MCP: Require approval is already ON in createBot. The
 // prompt forces list_bots exactly once so Allow must approve the MCP tool
 // (mcpServer/elicitation/request / tool_call_mcp_elicitation). Missing that
@@ -222,7 +231,7 @@ async function assignInstance(baseUrl, botName, prefer, instances) {
   });
 }
 
-export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, includeCodexMcp = false, maxTurns = 40 }) {
+export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, includeHermes = false, includeCodexMcp = false, maxTurns = 40 }) {
   const shots = [];
   shots.dir = join(artifactsDir, "screenshots");
   mkdirSync(shots.dir, { recursive: true });
@@ -235,6 +244,7 @@ export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, incl
     onboardingCompleted: false,
     botsCreated: [],
     grokSkipped: !includeGrok,
+    hermesSkipped: !includeHermes,
     mcpSkipped: !includeCodexMcp,
     allowClicked: false,
     allowShown: false,
@@ -257,6 +267,8 @@ export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, incl
     else console.log(`Skipping Codex MCP on-request scenario (no ${SECRET_NAMES.codex}).`);
     if (includeGrok) roster.push(GROK_BOT);
     else console.log("Skipping optional Grok scenario (no xAI secret).");
+    if (includeHermes) roster.push(HERMES_BOT);
+    else console.log(`Skipping optional Hermes scenario (no ${SECRET_NAMES.hermes}).`);
 
     const capped = roster.slice(0, maxTurns);
     if (capped.length < roster.length) {
@@ -264,6 +276,7 @@ export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, incl
     }
     mechanical.mcpSkipped = !capped.some((s) => s.mcpOnce);
     mechanical.grokSkipped = !capped.some((s) => s.optional);
+    mechanical.hermesSkipped = !capped.some((s) => s.hermesOptional);
 
     for (const spec of capped) {
       await createBot(page, baseUrl, spec, shots);

@@ -1,5 +1,7 @@
 // Two cloud bots can run at once once each has its own Box workspace.
-// Uses the fake ACP CLI in hang mode so a turn stays busy without a live box.
+// Uses the fake Claude CLI in hang mode so a turn stays busy without a live
+// box — claudeAgent because PATCH computer:"cloud" is 409'd for drivers
+// without the cloudComputer capability (the ACP fakes ride grokAgent).
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { bestEffortRm, stopChild } from "./testing/harness.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
-const FAKE_CLI = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
+const FAKE_CLI = join(SERVER_DIR, "testing", "fake-claude-cli.ts");
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
 const BASE = `http://127.0.0.1:${PORT}`;
 describe("per-bot box workspaces (no shared 409)", () => {
@@ -35,10 +37,10 @@ describe("per-bot box workspaces (no shared 409)", () => {
       join(home, ".openmausbot", "config.json"),
       JSON.stringify({
         instances: {
-          grok: {
-            driver: "grokAgent",
-            environment: { FAKE_ACP_MODE: "hang" },
-            config: { cli: FAKE_CLI, fullAuto: true },
+          claude: {
+            driver: "claudeAgent",
+            environment: { FAKE_CLAUDE_MODE: "hang" },
+            config: { cli: FAKE_CLI, permissionMode: "bypassPermissions" },
           },
         },
       }),
@@ -76,11 +78,13 @@ describe("per-bot box workspaces (no shared 409)", () => {
   it("bot A busy on cloud does not 409 bot B", async () => {
     const seeded = (await api("GET", "/api/bots")).body.bots[0];
     await api("PATCH", `/api/bots/${seeded.id}`, { hidden: true });
-    const selection = { instanceId: "grok", model: "fake-model" };
+    const selection = { instanceId: "claude", model: "claude-fake" };
     const a = (await api("POST", "/api/bots")).body.bot;
     const b = (await api("POST", "/api/bots")).body.bot;
-    await api("PATCH", `/api/bots/${a.id}`, { name: "Alpha", computer: "cloud", modelSelection: selection });
-    await api("PATCH", `/api/bots/${b.id}`, { name: "Bravo", computer: "cloud", modelSelection: selection });
+    const pa = await api("PATCH", `/api/bots/${a.id}`, { name: "Alpha", computer: "cloud", modelSelection: selection });
+    const pb = await api("PATCH", `/api/bots/${b.id}`, { name: "Bravo", computer: "cloud", modelSelection: selection });
+    expect(pa.status).toBe(200);
+    expect(pb.status).toBe(200);
 
     const first = await api("POST", `/api/bots/${a.id}/messages`, { text: "occupy the box" });
     expect(first.status).toBe(202);

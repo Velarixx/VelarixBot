@@ -1,6 +1,6 @@
 // Presence-only secret detection for the Playwright eval.
-// Required: Claude + Codex. Grok/xAI is optional and never gates the run.
-// Never log, return, or write secret values — only booleans and names.
+// Required: Claude + Codex. Grok/xAI and Hermes are optional and never gate
+// the run. Never log, return, or write secret values — only booleans and names.
 
 // Names already used on Velarixx/VelarixBot (issue #39 + OpenAI Codex CI docs).
 // Values stay in Actions secrets — this file only knows the names.
@@ -8,6 +8,8 @@ export const SECRET_NAMES = Object.freeze({
   claude: "CLAUDE_CODE_OAUTH_TOKEN",
   codex: "CODEX_AUTH_JSON",
   grok: "XAI_API_KEY",
+  // full ~/.hermes/auth.json contents (`hermes login` output) — optional
+  hermes: "HERMES_AUTH_JSON",
 });
 
 function present(value) {
@@ -21,12 +23,13 @@ export function codexSecretPresent(env = process.env) {
 }
 
 /** Which provider secrets are set. Values are never included.
- * `ready` is Claude or Codex — Grok alone does not open the gate. */
+ * `ready` is Claude or Codex — Grok or Hermes alone never open the gate. */
 export function detectSecrets(env = process.env) {
   const claude = present(env[SECRET_NAMES.claude]);
   const codex = codexSecretPresent(env);
   const grok = present(env[SECRET_NAMES.grok]);
-  return { claude, codex, grok, ready: claude || codex };
+  const hermes = present(env[SECRET_NAMES.hermes]);
+  return { claude, codex, grok, hermes, ready: claude || codex };
 }
 
 /** Secret strings for redaction only — do not log or persist this list. */
@@ -41,6 +44,7 @@ export function formatPresence(found) {
     `claude (${SECRET_NAMES.claude}): ${found.claude ? "configured" : "absent"}`,
     `codex (${SECRET_NAMES.codex}): ${found.codex ? "configured" : "absent"}`,
     `grok (${SECRET_NAMES.grok}): ${found.grok ? "configured (optional)" : "absent (optional — never required)"}`,
+    `hermes (${SECRET_NAMES.hermes}): ${found.hermes ? "configured (optional)" : "absent (optional — never required)"}`,
   ].join("\n");
 }
 
@@ -51,6 +55,7 @@ export function skipMessage() {
     `  ${SECRET_NAMES.claude}  — Claude CLI OAuth (claude setup-token)`,
     `  ${SECRET_NAMES.codex}         — full ~/.codex/auth.json contents`,
     "Grok / xAI is not required and is skipped unless that secret is already present.",
+    `Hermes is not required and is skipped unless ${SECRET_NAMES.hermes} is already present.`,
     "Exit 0 so CI stays green without secrets.",
   ].join("\n");
 }

@@ -977,7 +977,11 @@ async function startTurn(
         integrations.composio = composioIntegration(bot.enabledApps);
       }
       const wants = bot.computer;
-      if (wants === "cloud" && box.boxConfigured(cfg)) {
+      // Only drivers that can actually act on the box (mount the computer
+      // MCP tools, or run on the box itself) get integrations.computer —
+      // otherwise the "you have a cloud computer" prompt below would be a
+      // lie the model repeats to the user.
+      if (wants === "cloud" && box.boxConfigured(cfg) && instance.adapter.capabilities.cloudComputer === true) {
         let b = await box.findBox(cfg, bot.id).catch(() => null);
         // the Computer driver runs ON the box — provision it on first use
         if (!b && instance.driverKind === "boxAgent") {
@@ -1432,6 +1436,19 @@ const server = createServer(async (req, res) => {
         if (configured?.config && typeof configured.config === "object" && (configured.config as { fullAuto?: unknown }).fullAuto === true) return json(res, 409, { error: "unsafe configuration: local computer cannot be combined with provider full-auto" });
         const selectedInstance = selected?.instanceId ? registry.get(selected.instanceId) : undefined;
         if (selectedInstance && selectedInstance.adapter.capabilities.localComputerMcp !== true) return json(res, 409, { error: "selected provider does not support guarded local computer control" });
+      }
+      // Cloud mirror of the local 409: a bot whose EFFECTIVE mode would be
+      // cloud must sit on a driver that can actually mount/act on the box.
+      {
+        const current = store.bot(m[1]);
+        const effectiveComputer = (patch.computer ?? current?.computer) as string | undefined;
+        if (effectiveComputer === "cloud" && (patch.computer === "cloud" || patch.modelSelection)) {
+          const selected = (patch.modelSelection ?? current?.modelSelection) as { instanceId?: string } | undefined;
+          const selectedInstance = selected?.instanceId ? registry.get(selected.instanceId) : undefined;
+          if (selectedInstance && selectedInstance.adapter.capabilities.cloudComputer !== true) {
+            return json(res, 409, { error: "selected provider has no cloud computer tools — pick Claude, Codex, or the Computer engine, or set computer to off" });
+          }
+        }
       }
       const bot = store.patchBot(m[1], patch);
       if (!bot) return json(res, 404, { error: "no such bot" });

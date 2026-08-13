@@ -57,6 +57,7 @@ export function summaryMarkdown(found, mechanical, judge, missing) {
     `- onboarding: ${mechanical.onboardingCompleted ? "yes" : "no"}`,
     `- bots created: ${(mechanical.botsCreated ?? []).join(", ") || "none"}`,
     `- Grok scenario: ${mechanical.grokSkipped ? "skipped (xAI not required)" : "ran (optional secret present)"}`,
+    `- Hermes scenario: ${mechanical.hermesSkipped ? "skipped (Hermes not required)" : "ran (optional secret present)"}`,
     `- Codex MCP on-request: ${mcpScenarioLine(found, mechanical)}`,
     `- Allow clicked: ${mechanical.allowClicked ? "yes" : mechanical.allowShown ? "shown, click failed" : "not shown (not a fail)"}`,
     `- hard-fail: ${missing.length ? missing.join("; ") : "none"}`,

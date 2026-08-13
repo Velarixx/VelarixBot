@@ -139,6 +139,12 @@ export interface ProviderAdapter {
     agentsMcp?: boolean;
     /** True only when the driver can mount the Electron-owned local CUA MCP. */
     localComputerMcp?: boolean;
+    /** True only when the driver can actually act on the bot's cloud
+     * computer — mounting the Box computer MCP tools (claudeAgent, codex)
+     * or running on the box itself (boxAgent). The harness must not attach
+     * integrations.computer (or the "you have a cloud computer" prompt) to
+     * a driver without this — that prompt would be a lie. */
+    cloudComputer?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;

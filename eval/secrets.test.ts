@@ -45,7 +45,7 @@ describe("eval secret gate", () => {
       [SECRET_NAMES.grok]: "   ",
     };
     const found = detectSecrets(env);
-    expect(found).toEqual({ claude: true, codex: false, grok: false, ready: true });
+    expect(found).toEqual({ claude: true, codex: false, grok: false, hermes: false, ready: true });
     expect(JSON.stringify(found)).not.toContain("token-must-not-leak");
     expect(formatPresence(found)).toContain("configured");
     expect(formatPresence(found)).not.toContain("token-must-not-leak");
@@ -53,7 +53,7 @@ describe("eval secret gate", () => {
   });
 
   it("treats an empty env as skip-clean", () => {
-    expect(detectSecrets({})).toEqual({ claude: false, codex: false, grok: false, ready: false });
+    expect(detectSecrets({})).toEqual({ claude: false, codex: false, grok: false, hermes: false, ready: false });
     expect(skipMessage()).toContain("Skipping Playwright eval");
     expect(skipMessage()).toContain(SECRET_NAMES.claude);
     expect(skipMessage()).toContain(SECRET_NAMES.codex);
@@ -64,7 +64,7 @@ describe("eval secret gate", () => {
     const found = detectSecrets({ [SECRET_NAMES.codex]: "auth-json-must-not-leak" });
     expect(SECRET_NAMES.codex).toBe("CODEX_AUTH_JSON");
     expect(SECRET_NAMES.claude).toBe("CLAUDE_CODE_OAUTH_TOKEN");
-    expect(found).toEqual({ claude: false, codex: true, grok: false, ready: true });
+    expect(found).toEqual({ claude: false, codex: true, grok: false, hermes: false, ready: true });
     expect(codexSecretPresent({ [SECRET_NAMES.codex]: "auth-json-must-not-leak" })).toBe(true);
     expect(codexSecretPresent({ CODEX_HOME: "/tmp/not-a-secret" })).toBe(false);
     expect(codexSecretPresent({ CODEX_AUTH: "wrong-name" })).toBe(false);
@@ -73,8 +73,19 @@ describe("eval secret gate", () => {
 
   it("does not open the gate for a Grok-only env", () => {
     const found = detectSecrets({ [SECRET_NAMES.grok]: "xai-must-not-open-the-gate" });
-    expect(found).toEqual({ claude: false, codex: false, grok: true, ready: false });
+    expect(found).toEqual({ claude: false, codex: false, grok: true, hermes: false, ready: false });
     expect(formatPresence(found)).toContain("optional");
+  });
+
+  it("does not open the gate for a Hermes-only env (Hermes never required)", () => {
+    const found = detectSecrets({ [SECRET_NAMES.hermes]: "hermes-auth-must-not-open-the-gate" });
+    expect(SECRET_NAMES.hermes).toBe("HERMES_AUTH_JSON");
+    expect(found).toEqual({ claude: false, codex: false, grok: false, hermes: true, ready: false });
+    expect(formatPresence(found)).toContain("hermes (HERMES_AUTH_JSON): configured (optional)");
+    expect(formatPresence(found)).not.toContain("hermes-auth-must-not-open-the-gate");
+    expect(secretValues({ [SECRET_NAMES.hermes]: "hermes-auth-must-not-open-the-gate" })).toEqual([
+      "hermes-auth-must-not-open-the-gate",
+    ]);
   });
 
   it("exits 0 without secrets (full run and --gate)", async () => {

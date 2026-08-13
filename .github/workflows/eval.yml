@@ -4,6 +4,10 @@
 #   CLAUDE_CODE_OAUTH_TOKEN  — Claude CLI OAuth (claude setup-token)
 #   CODEX_AUTH_JSON          — full ~/.codex/auth.json contents
 #   XAI_API_KEY              — optional; never required. Judge is report-only.
+#   HERMES_AUTH_JSON         — optional; full ~/.hermes/auth.json contents
+#                              (hermes login). Never required; the Hermes leg
+#                              is skipped when absent or when the hermes CLI
+#                              is not on PATH.
 # Gate is claude || codex. Skips cleanly (exit 0) when those secrets are absent.
 # Spend cap: repo var TIER_B_MAX_TURNS (default 40 in eval/turns.mjs).
 name: Playwright eval
@@ -36,6 +40,7 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      HERMES_AUTH_JSON: ${{ secrets.HERMES_AUTH_JSON }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
