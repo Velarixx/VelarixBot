@@ -278,6 +278,29 @@ posixOnly("ACP turns (fake CLI)", () => {
     expect(newNames).toContain("memory");
     expect(JSON.stringify(started.argv)).not.toContain(token);
   });
+
+  it("dumps workspace on session/new when enabled", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    const token = "ws_acp_secret";
+    await instance.adapter.sendTurn({
+      threadId: "t-workspace-new",
+      text: "go",
+      integrations: {
+        workspace: {
+          command: process.execPath,
+          args: ["/fake/workspace-proxy.js"],
+          env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: token },
+        },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.threadId === "t-workspace-new");
+    const started = JSON.parse(readFileSync(dump, "utf8"));
+    const newNames = (started.sessionNew?.mcpServers ?? []).map((s: { name: string }) => s.name);
+    expect(newNames).toContain("workspace");
+    expect(JSON.stringify(started.argv)).not.toContain(token);
+  });
 });
 
 describe.skipIf(process.platform === "win32")("ACP snapshot", () => {

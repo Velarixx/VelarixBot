@@ -306,6 +306,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.memory = { ...turn.integrations.memory };
         allowed.push("mcp__memory");
       }
+      if (turn.integrations?.workspace) {
+        mcpServers.workspace = { ...turn.integrations.workspace };
+        allowed.push("mcp__workspace");
+      }
       // permission broker: anything acceptEdits would silently deny becomes
       // an Allow/Deny card in chat, and the agent gets ask_user. Skipped in
       // bypassPermissions (fullAuto) — nothing would ever ask — unless the

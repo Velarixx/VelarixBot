@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "./config.ts";
 import type { ModelSelection } from "./contracts.ts";
-import { Store, type BotRecord } from "./store.ts";
+import { LAST_BOT_ERROR, Store, wouldEmptyWorkspace, nextRunAt, type BotRecord } from "./store.ts";
 
 const selection = (): ModelSelection => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
@@ -103,6 +103,13 @@ describe("Store", () => {
     expect(existsSync(file)).toBe(false);
     expect(existsSync(bak)).toBe(false);
     expect(existsSync(ws)).toBe(false);
+  });
+
+  it("wouldEmptyWorkspace is the last-bot product rule", () => {
+    expect(wouldEmptyWorkspace(0)).toBe(true);
+    expect(wouldEmptyWorkspace(1)).toBe(true);
+    expect(wouldEmptyWorkspace(2)).toBe(false);
+    expect(LAST_BOT_ERROR).toMatch(/last bot/i);
   });
 
   it("persists routine CRUD and schedule metadata", () => {
@@ -213,5 +220,31 @@ describe("Store", () => {
     const routine = store.createRoutine({ botId: bot.id, name: "Safe", prompt: "Do it", schedule: { kind: "interval", everyMinutes: 15 } });
     store.patchRoutine(routine.id, { name: "Renamed", id: "forged", running: true } as never);
     expect(store.routine(routine.id)).toMatchObject({ id: routine.id, botId: bot.id, name: "Renamed", running: false });
+  });
+
+  it("round-trips weekdays and listener schedules", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const weekdays = store.createRoutine({
+      botId: bot.id,
+      name: "Standup",
+      prompt: "Brief me",
+      schedule: { kind: "weekdays", time: "09:00" },
+    });
+    expect(weekdays.schedule).toEqual({ kind: "weekdays", time: "09:00" });
+    expect(new Store(selection).routine(weekdays.id)?.schedule).toEqual({ kind: "weekdays", time: "09:00" });
+    const saturday = new Date(2026, 7, 15, 10, 0, 0).getTime();
+    const next = nextRunAt({ kind: "weekdays", time: "09:00" }, saturday);
+    expect(new Date(next).getDay()).toBe(1);
+
+    const listener = store.createRoutine({
+      botId: bot.id,
+      name: "PRs",
+      prompt: "Check PRs",
+      schedule: { kind: "listener", source: "github" },
+    });
+    expect(listener.schedule).toEqual({ kind: "listener", source: "github", everyMinutes: 15 });
+    expect(nextRunAt(listener.schedule, 1_000)).toBe(1_000 + 15 * 60_000);
+    expect(() => store.createRoutine({ botId: bot.id, name: "x", prompt: "x", schedule: { kind: "listener", source: "discord" as never } })).toThrow(/github or slack/);
   });
 });

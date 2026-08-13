@@ -235,6 +235,8 @@ exit $LASTEXITCODE
 // embedded quotes — fatal for --mcp-config JSON. PowerShell 7 (pwsh)
 // passes argv correctly, so prefer it and fall back to a plain
 // windowsHide spawn (direct child hidden; grandchildren may flash).
+// Unwrapped Codex JS entries still take the CLI-tree path when a wrapper
+// exists — roar.exe must inherit a hidden console, not CREATE_NO_WINDOW.
 let pwshCache: { path: string | null; at: number } | null = null;
 function resolvePwsh(): string | null {
   if (pwshCache && (pwshCache.path !== null || Date.now() - pwshCache.at < WHERE_TTL)) {
@@ -302,10 +304,12 @@ function execViaPwsh(
  * Callers pass stdio pipes (["pipe","pipe","pipe"]) and get a child with
  * live stdout/stderr streams.
  *
- * When resolveCliCommand already returns process.execPath (`.ts` fakes,
- * unwrapped `.cmd` JS entries), spawn that node directly with windowsHide.
- * Do not wrap those in the pwsh CLI tree — wrap.ps1 exits 0 without
- * running the script.
+ * Test fakes (`.ts` / `.js` path as `cli`) spawn node directly with
+ * windowsHide. Wrapping those in wrap.ps1 exits 0 without running the
+ * script. Packaged Codex is an unwrapped `.cmd` → node + `codex.js`; that
+ * node process then launches roar.exe. CREATE_NO_WINDOW on node gives roar
+ * no console to inherit, so it flashes a visible CMD under AppData/roar.
+ * Those JS entries go through the hidden pwsh CLI tree like native .exe.
  *
  * Throws (never EINVAL-ambushes) when the target is a .cmd shim that could
  * not be unwrapped and pwsh is unavailable — spawning a .cmd without a
@@ -329,40 +333,38 @@ export function spawnCliHidden(
   // Windows reaps the tree with taskkill /T /F, so drop the flag.
   const helperOpts = windowsSpawnOptions(opts);
   const env = { ...(opts.env ?? process.env), ...runEnv };
-  // Test fakes and unwrapped JS shims already resolve to this process's
-  // node. The pwsh CLI-tree wrapper exists so native .exe children inherit
-  // one hidden console — wrapping node + a .ts fake makes wrap.ps1 exit 0
-  // without running the script (`grokAgent exited 0 before the prompt
-  // result`). Spawn node directly with CREATE_NO_WINDOW instead.
-  if (spawnDirectNode(command)) {
-    return spawn(command, [...prefix, ...args], { ...helperOpts, env }) as ChildProcessWithoutNullStreams;
+  const argv = [...prefix, ...args];
+  // Test fakes: this process's node + a .ts/.js path. No roar grandchild.
+  // CREATE_NO_WINDOW hides the helper itself. Do not wrap in wrap.ps1.
+  if (isTestScriptCli(cli) && spawnDirectNode(command)) {
+    return spawn(command, argv, { ...helperOpts, env }) as ChildProcessWithoutNullStreams;
   }
-  const pwsh = resolvePwsh();
-  if (!pwsh) {
+  const wrapper = resolveCliTreeWrapper(argv);
+  if (!wrapper) {
     if (SHIM_RE.test(command)) {
       throw new Error(
         `cannot run ${command}: it is a batch shim and PowerShell 7 is not installed. ` +
           `Install pwsh (winget install Microsoft.PowerShell) or reinstall the CLI natively.`,
       );
     }
-    // no pwsh: hide the direct child (CREATE_NO_WINDOW). Grandchildren may
-    // flash their own consoles — acceptable degradation without a wrapper.
-    return spawn(command, [...prefix, ...args], { ...helperOpts, env }) as ChildProcessWithoutNullStreams;
+    // no wrapper: hide the direct child (CREATE_NO_WINDOW). Grandchildren may
+    // flash their own consoles — last resort without a hidden console tree.
+    return spawn(command, argv, { ...helperOpts, env }) as ChildProcessWithoutNullStreams;
   }
   // pwsh passes argv to native .exe/.js targets verbatim, but a .cmd target
   // re-enters cmd.exe where %VAR% expands even inside quotes — refuse to
   // send metacharacters down that path rather than risk injection
-  if (SHIM_RE.test(command) && [...prefix, ...args].some((a) => CMD_META.test(a))) {
+  if (SHIM_RE.test(command) && argv.some((a) => CMD_META.test(a))) {
     throw new Error(
       `refusing to pass cmd.exe metacharacters to the ${command} shim — reinstall the CLI natively or via an installer that ships an .exe`,
     );
   }
   // Do not set windowsHide/CREATE_NO_WINDOW on this spawn. The wrapper is
-  // hidden via -WindowStyle Hidden so Codex, its rust app-server, MCP
-  // proxies, and command-safety pwsh inherit one hidden console instead of
-  // each opening a visible cmd window for the turn.
-  const { args: psArgs, cleanup } = pwshWrapperArgs(command, [...prefix, ...args]);
-  const child = spawn(pwsh, psArgs, { ...windowsCliTreeSpawnOptions(opts), env }) as ChildProcessWithoutNullStreams;
+  // hidden via -WindowStyle Hidden so Codex, roar, MCP proxies, and
+  // command-safety pwsh inherit one hidden console instead of each opening
+  // a visible cmd window for the turn. Never attach to the user's terminal.
+  const { args: psArgs, cleanup } = pwshWrapperArgs(command, argv);
+  const child = spawn(wrapper, psArgs, { ...windowsCliTreeSpawnOptions(opts), env }) as ChildProcessWithoutNullStreams;
   child.once("close", cleanup);
   return child;
 }
@@ -370,6 +372,38 @@ export function spawnCliHidden(
 /** True when resolveCliCommand already handed us node (fakes / JS shims). */
 function spawnDirectNode(command: string): boolean {
   return command === process.execPath;
+}
+
+/** Test fakes pass a `.ts`/`.js` path as `cli`. Packaged Codex is a bare name. */
+function isTestScriptCli(cli: string): boolean {
+  return SCRIPT_RE.test(cli);
+}
+
+/**
+ * Packaged Windows answer path: wrap native .exe AND unwrapped node+js
+ * (codex.js → roar.exe) so grandchildren inherit a hidden console.
+ * Test script CLIs stay on CREATE_NO_WINDOW.
+ */
+function shouldWrapCliTree(cli: string): boolean {
+  return !isTestScriptCli(cli);
+}
+
+/** PowerShell 5.1 mangles embedded quotes — only a fallback for simple argv. */
+function argsSafeForWindowsPowerShell(args: string[]): boolean {
+  return !args.some((a) => /["']/.test(a) || CMD_META.test(a));
+}
+
+function windowsPowerShellPath(): string {
+  return join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+/** pwsh 7 preferred; Windows PowerShell 5.1 only when argv has no quotes. */
+function resolveCliTreeWrapper(args: string[]): string | null {
+  const pwsh = resolvePwsh();
+  if (pwsh) return pwsh;
+  if (!argsSafeForWindowsPowerShell(args)) return null;
+  const ps = windowsPowerShellPath();
+  return existsSync(ps) ? ps : null;
 }
 
 // exposed for tests only
@@ -380,4 +414,9 @@ export const _internal = {
   windowsCliTreeSpawnOptions,
   pwshWrapperArgs,
   spawnDirectNode,
+  isTestScriptCli,
+  shouldWrapCliTree,
+  argsSafeForWindowsPowerShell,
+  windowsPowerShellPath,
+  resolveCliTreeWrapper,
 };

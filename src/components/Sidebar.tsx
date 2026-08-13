@@ -125,6 +125,8 @@ function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => voi
         ),
         item(<Trash2 size={16} />, "Delete", () => dispatch({ type: "deleteBot", botId: bot.id }), {
           danger: true,
+          disabled: state.bots.length <= 1,
+          hint: state.bots.length <= 1 ? "Keep at least one bot in the workspace" : undefined,
         }),
       ]}
     </div>

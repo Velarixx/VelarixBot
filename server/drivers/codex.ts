@@ -93,6 +93,9 @@ function mcpServersFromIntegrations(integrations: SendTurnInput["integrations"])
   if (integrations?.memory) {
     mcpServers.memory = { ...integrations.memory };
   }
+  if (integrations?.workspace) {
+    mcpServers.workspace = { ...integrations.workspace };
+  }
   return mcpServers;
 }
 

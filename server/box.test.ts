@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { AppConfig } from "./config.ts";
-import { boxNameForBot, findBox, WORKSPACE_BOX_NAME } from "./box.ts";
+import { boxNameForBot, findBox, readBoxPath, WORKSPACE_BOX_NAME } from "./box.ts";
 
 function startFakeBoxes(boxes: Array<{ id: string; name: string; state?: string }>): Promise<{ server: Server; cfg: AppConfig }> {
   const server = createServer((req, res) => {
@@ -50,5 +50,11 @@ describe("per-bot Box workspaces", () => {
     expect(b).toMatchObject({ id: "box-b", name: boxNameForBot("bot-b") });
     expect(a?.id).not.toBe(b?.id);
     expect(await findBox(fake.cfg, "bot-missing")).toBeNull();
+  });
+
+  it("readBoxPath refuses relative paths and .. before contacting the box", async () => {
+    const cfg = { box: { token: "tok_test", url: "http://127.0.0.1:9" } };
+    await expect(readBoxPath(cfg, "bot-a", "relative.txt")).rejects.toThrow(/absolute/);
+    await expect(readBoxPath(cfg, "bot-a", "/tmp/../etc/passwd")).rejects.toThrow(/absolute/);
   });
 });

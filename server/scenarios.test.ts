@@ -206,6 +206,7 @@ describe("harness HTTP/SSE scenarios (fake CLIs)", () => {
 
   it("drains the peer queue once a busy helper finishes", async () => {
     const helper = await addBot("Queue Helper", grokPerm);
+    await h.api("PATCH", `/api/bots/${helper.id}`, { requireApproval: true });
     const asker = await addBot("Queue Asker", grokHappy);
     const auth = { authorization: `Bearer ${COMMS_TOKEN}` };
     const ask = (message: string) =>

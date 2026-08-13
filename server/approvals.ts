@@ -1,6 +1,8 @@
-// Per-bot approval rules. Always-allow writes a (tool, argument pattern)
-// rule; later permission asks that match auto-resolve with source "rule".
-// Secrets are stripped before a pattern is stored. No cloud policy.
+// Workspace-global approval rules. First Allow for a tool writes a
+// (tool, "*") rule shared by every bot in this install; later permission
+// asks that match auto-resolve with source "rule". Per-bot files from
+// older builds still match as a fallback. Secrets are stripped before a
+// pattern is stored. No cloud policy.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -18,15 +20,17 @@ export interface ApprovalRule {
 }
 
 const RULES_DIR = join(DATA_DIR, "approvals");
+/** Disk key for install-wide rules. Not a bot id (those are UUIDs). */
+export const WORKSPACE_SCOPE = "_workspace";
 
-function rulesPath(botId: string): string {
+function rulesPath(scope: string): string {
   mkdirSync(RULES_DIR, { recursive: true });
-  return join(RULES_DIR, `${botId}.json`);
+  return join(RULES_DIR, `${scope}.json`);
 }
 
-export function loadRules(botId: string): ApprovalRule[] {
+export function loadRules(scope: string): ApprovalRule[] {
   try {
-    const raw: unknown = JSON.parse(readFileSync(rulesPath(botId), "utf8"));
+    const raw: unknown = JSON.parse(readFileSync(rulesPath(scope), "utf8"));
     if (!Array.isArray(raw)) return [];
     return raw.filter(isRule);
   } catch {
@@ -46,8 +50,8 @@ function isRule(v: unknown): v is ApprovalRule {
   );
 }
 
-function saveRules(botId: string, rules: ApprovalRule[]): void {
-  writeFileSync(rulesPath(botId), JSON.stringify(rules, null, 2));
+function saveRules(scope: string, rules: ApprovalRule[]): void {
+  writeFileSync(rulesPath(scope), JSON.stringify(rules, null, 2));
 }
 
 /** Strip values that look like keys/tokens before they hit disk or logs. */
@@ -69,17 +73,21 @@ export function globMatch(value: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`, "s").test(value);
 }
 
-export function matchRule(botId: string, tool: string, summary: string): ApprovalRule | null {
+function matchingRule(rules: ApprovalRule[], tool: string, summary: string): ApprovalRule | null {
   const haystack = redactSecrets(summary);
-  for (const rule of loadRules(botId)) {
+  for (const rule of rules) {
     if (rule.tool !== tool) continue;
     if (globMatch(haystack, rule.pattern)) return rule;
   }
   return null;
 }
 
+export function matchRule(botId: string, tool: string, summary: string): ApprovalRule | null {
+  return matchingRule(loadRules(WORKSPACE_SCOPE), tool, summary) ?? matchingRule(loadRules(botId), tool, summary);
+}
+
 export function addRule(
-  botId: string,
+  scope: string,
   input: { tool: string; pattern: string; action: RuleAction },
 ): ApprovalRule {
   const rule: ApprovalRule = {
@@ -89,29 +97,40 @@ export function addRule(
     action: input.action,
     createdAt: Date.now(),
   };
-  const rules = loadRules(botId);
+  const rules = loadRules(scope);
   const dup = rules.find((r) => r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action);
   if (dup) return dup;
   rules.push(rule);
-  saveRules(botId, rules);
+  saveRules(scope, rules);
   return rule;
 }
 
-export function alwaysAllow(botId: string, tool: string, summary: string): ApprovalRule {
-  return addRule(botId, { tool, pattern: argumentPattern(summary) || "*", action: "allow" });
+/** First Allow for a tool: workspace-global, any args, every bot. */
+export function alwaysAllow(_botId: string, tool: string, _summary: string): ApprovalRule {
+  return addRule(WORKSPACE_SCOPE, { tool, pattern: "*", action: "allow" });
 }
 
 export function deleteRule(botId: string, ruleId: string): boolean {
-  const rules = loadRules(botId);
-  const next = rules.filter((r) => r.id !== ruleId);
-  if (next.length === rules.length) return false;
-  saveRules(botId, next);
-  return true;
+  for (const scope of [WORKSPACE_SCOPE, botId]) {
+    const rules = loadRules(scope);
+    const next = rules.filter((r) => r.id !== ruleId);
+    if (next.length === rules.length) continue;
+    saveRules(scope, next);
+    return true;
+  }
+  return false;
 }
 
-/** List for the settings UI — patterns are re-redacted so secrets never leave disk. */
+/** List for the settings UI — workspace + legacy per-bot; secrets re-redacted. */
 export function listRules(botId: string): ApprovalRule[] {
-  return loadRules(botId).map((r) => ({ ...r, pattern: redactSecrets(r.pattern) }));
+  const seen = new Set<string>();
+  const out: ApprovalRule[] = [];
+  for (const rule of [...loadRules(WORKSPACE_SCOPE), ...loadRules(botId)]) {
+    if (seen.has(rule.id)) continue;
+    seen.add(rule.id);
+    out.push({ ...rule, pattern: redactSecrets(rule.pattern) });
+  }
+  return out;
 }
 
 /** Harness decision for a permission ask (not questions). */
@@ -123,4 +142,14 @@ export function resolveOpenedRequest(
   const rule = matchRule(botId, tool, summary);
   if (!rule) return null;
   return { behavior: rule.action, source: "rule" };
+}
+
+/** Skip stored Allow when the bot's Require-approval toggle is on. */
+export function autoResolvePermission(
+  bot: { id: string; requireApproval?: boolean },
+  tool: string,
+  summary: string,
+): { behavior: RuleAction; source: "rule" } | null {
+  if (bot.requireApproval === true) return null;
+  return resolveOpenedRequest(bot.id, tool, summary);
 }

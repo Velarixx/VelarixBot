@@ -20,8 +20,10 @@ export function OptionCard({
   const card = message.card;
   const permission = card?.requestType === "permission" || (!card?.requestType && !!card?.requestId && card.title === "Approval needed");
   const credential = card?.requestType === "credential";
+  const secret = card?.requestType === "secret";
   const bot = state.bots.find((b) => b.id === botId);
   const offerDesktop = credential && shouldOfferDesktop(bot?.computer, state.config?.box.configured === true);
+  const connectUrl = card?.connectUrl;
 
   const openDesktop = () => {
     setJoining(true);
@@ -44,6 +46,18 @@ export function OptionCard({
   const answer = (text: string) => {
     if (!text.trim()) return;
     dispatch({ type: "answerCard", botId, messageId: message.id, answer: text.trim() });
+  };
+
+  const answerSecret = () => {
+    if (!custom.trim()) return;
+    dispatch({
+      type: "answerCard",
+      botId,
+      messageId: message.id,
+      answer: "••••",
+      secret: custom,
+    });
+    setCustom("");
   };
 
   return (
@@ -76,6 +90,17 @@ export function OptionCard({
         </button>
       )}
 
+      {connectUrl && !card.answered && (
+        <button
+          onClick={() => window.open(connectUrl)}
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-raised py-2.5 text-[14px] text-ink hover:bg-raised-hover"
+        >
+          <ExternalLink size={14} />
+          Open connect page
+        </button>
+      )}
+
+      {!secret && card.options.length > 0 && (
       <div className="mt-3 overflow-hidden rounded-lg border border-hairline/40">
         {card.options.map((opt, i) => (
           <button
@@ -97,8 +122,34 @@ export function OptionCard({
           </button>
         ))}
       </div>
+      )}
 
-      {!card.answered && !credential && (
+      {secret && !card.answered && (
+        <form
+          className="mt-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            answerSecret();
+          }}
+        >
+          <input
+            type="password"
+            autoComplete="off"
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+            placeholder="Value stays off the transcript"
+            className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-secondary focus:outline-none focus:border-hairline"
+          />
+          <button
+            type="submit"
+            className="mt-2 w-full rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white"
+          >
+            Submit
+          </button>
+        </form>
+      )}
+
+      {!card.answered && !credential && !secret && (
         <input
           value={custom}
           onChange={(e) => setCustom(e.target.value)}
@@ -115,7 +166,7 @@ export function OptionCard({
           }
           className="mt-3 text-[13px] text-ink-secondary hover:text-ink"
         >
-          Always allow for this bot
+          Always allow for all bots
         </button>
       )}
     </div>

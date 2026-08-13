@@ -125,6 +125,24 @@ describe("Windows hidden process contract", () => {
       cleanup();
     }
   });
+
+  it("wraps packaged Codex/node JS entries in the hidden CLI tree, not CREATE_NO_WINDOW", () => {
+    expect(_internal.shouldWrapCliTree("codex")).toBe(true);
+    expect(_internal.shouldWrapCliTree("claude")).toBe(true);
+    expect(_internal.shouldWrapCliTree("C:\\\\Program Files\\\\codex.exe")).toBe(true);
+    expect(_internal.isTestScriptCli(join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-acp-cli.ts"))).toBe(
+      true,
+    );
+    expect(_internal.shouldWrapCliTree(join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-acp-cli.ts"))).toBe(
+      false,
+    );
+    expect(_internal.windowsCliTreeSpawnOptions({ windowsHide: true }).windowsHide).toBe(false);
+    expect(_internal.windowsSpawnOptions({}).windowsHide).toBe(true);
+    expect(_internal.argsSafeForWindowsPowerShell(["app-server"])).toBe(true);
+    expect(_internal.argsSafeForWindowsPowerShell(['--mcp-config', '{"mcpServers":{}}'])).toBe(false);
+    expect(_internal.windowsPowerShellPath()).toMatch(/WindowsPowerShell/i);
+    expect(_internal.windowsPowerShellPath()).not.toMatch(/cmd\.exe/i);
+  });
 });
 
 describe("script CLI resolution (Windows-safe fakes)", () => {

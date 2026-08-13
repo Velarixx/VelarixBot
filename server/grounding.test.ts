@@ -11,7 +11,10 @@ describe("turnGrounding", () => {
   it("always grounds Codex, including when agents MCP is not mounted", () => {
     expect(turnGrounding("codex")).toBe(CODEX_GROUNDING);
     expect(CODEX_GROUNDING).toMatch(/in-app browser/i);
+    expect(CODEX_GROUNDING).toMatch(/web_search/);
+    expect(CODEX_GROUNDING).toMatch(/fetch_page/);
     expect(CODEX_GROUNDING).toMatch(/create_bot/);
+    expect(CODEX_GROUNDING).toMatch(/update_bot/);
     expect(CODEX_GROUNDING).toMatch(/shell|PowerShell/i);
   });
 

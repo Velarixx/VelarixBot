@@ -7,6 +7,8 @@
 //   list_bots()            → the other bots in this workspace + their status
 //   ask_bot(bot_id, msg)   → send msg to that bot, wait, return its reply
 //   create_bot(...)        → create a real sidebar bot (name/title/description)
+//   delete_bot(bot_id)     → remove a sidebar bot (refuses the last bot)
+//   update_bot(bot_id, …)  → rename or change title/description (persona)
 //
 // Speaks raw JSON-RPC 2.0 over stdio (no MCP SDK — house style, matches
 // computer-proxy / permission-proxy). All state comes from env, injected by
@@ -58,6 +60,33 @@ const TOOLS = [
         model: { type: "string", description: "Optional model id (e.g. gpt-5.6-terra). Omit to use the workspace default." },
       },
       required: ["name", "title", "description"],
+    },
+  },
+  {
+    name: "delete_bot",
+    description:
+      "Remove a VelarixBot sidebar bot by id (from list_bots). Use this when asked to delete or remove a bot. Refuses to delete the last bot in the workspace. After deleting, list_bots will no longer include it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        bot_id: { type: "string", description: "The target bot's id (from list_bots)." },
+      },
+      required: ["bot_id"],
+    },
+  },
+  {
+    name: "update_bot",
+    description:
+      "Rename a sidebar bot or change its title/description (persona). bot_id comes from list_bots. Omit fields you are not changing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        bot_id: { type: "string", description: "The target bot's id (from list_bots)." },
+        name: { type: "string" },
+        title: { type: "string" },
+        description: { type: "string", description: "Persona / about text." },
+      },
+      required: ["bot_id"],
     },
   },
 ];
@@ -129,6 +158,47 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     const created = (r.bot as Json) ?? {};
     return {
       text: `Created sidebar bot ${created.name ?? botName} (id: ${created.id}, model: ${created.model ?? "default"}). It is now in the VelarixBot sidebar. Message it with ask_bot using that id.`,
+    };
+  }
+  if (name === "delete_bot") {
+    const targetId = String(args.bot_id ?? "").trim();
+    if (!targetId) return { text: "delete_bot needs bot_id.", isError: true };
+    const r = await api(`/api/internal/delete-bot`, {
+      method: "POST",
+      body: JSON.stringify({
+        fromBotId: BOT_ID,
+        bot_id: targetId,
+        depth: DEPTH,
+      }),
+    });
+    if (r.error) return { text: `Couldn't delete that bot: ${r.error}`, isError: true };
+    return {
+      text: `Removed sidebar bot ${r.name ?? targetId} (id: ${r.id ?? targetId}). It is no longer in the VelarixBot sidebar.`,
+    };
+  }
+  if (name === "update_bot") {
+    const targetId = String(args.bot_id ?? "").trim();
+    if (!targetId) return { text: "update_bot needs bot_id.", isError: true };
+    const namePatch = String(args.name ?? "").trim();
+    const titlePatch = typeof args.title === "string" ? args.title : undefined;
+    const descriptionPatch = typeof args.description === "string" ? args.description : undefined;
+    if (!namePatch && titlePatch === undefined && descriptionPatch === undefined) {
+      return { text: "update_bot needs name, title, or description.", isError: true };
+    }
+    const r = await api(`/api/internal/update-bot`, {
+      method: "POST",
+      body: JSON.stringify({
+        fromBotId: BOT_ID,
+        bot_id: targetId,
+        ...(namePatch ? { name: namePatch } : {}),
+        ...(titlePatch !== undefined ? { title: titlePatch } : {}),
+        ...(descriptionPatch !== undefined ? { description: descriptionPatch } : {}),
+        depth: DEPTH,
+      }),
+    });
+    if (r.error) return { text: `Couldn't update that bot: ${r.error}`, isError: true };
+    return {
+      text: `Updated sidebar bot ${r.name ?? targetId} (id: ${r.id ?? targetId}).`,
     };
   }
   return { text: `Unknown tool: ${name}`, isError: true };

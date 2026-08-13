@@ -185,6 +185,7 @@ describe("harness HTTP API", () => {
     const created = await api("POST", "/api/bots");
     expect(created.status).toBe(201);
     const bot = created.body.bot;
+    expect(bot.computer).toBe("off");
 
     const patched = await api("PATCH", `/api/bots/${bot.id}`, { name: "Renamed", pinned: true });
     expect(patched.status).toBe(200);
@@ -310,6 +311,7 @@ describe("harness HTTP API", () => {
       title: "Ops specialist",
       description: "Handles ops",
       model: "ghost-model",
+      computer: "cloud",
     });
     expect(created.body.bot.id).toBeTruthy();
     expect(JSON.stringify(created.body)).not.toContain(COMMS_TOKEN);
@@ -535,5 +537,197 @@ describe("harness HTTP API", () => {
     const res = await api("GET", "/api/definitely-not-a-route");
     expect(res.status).toBe(404);
     expect(res.body.error).toContain("/api/definitely-not-a-route");
+  });
+
+  it("update-bot is token-gated and patches name/title/description", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const denied = await api("POST", "/api/internal/update-bot", { bot_id: bot.id, name: "Nope" });
+    expect(denied.status).toBe(401);
+
+    const hop = await api(
+      "POST",
+      "/api/internal/update-bot",
+      { bot_id: bot.id, name: "Nope", depth: 2 },
+      { authorization: `Bearer ${COMMS_TOKEN}` },
+    );
+    expect(hop.status).toBe(200);
+    expect(hop.body.error).toContain("two hops");
+
+    const updated = await api(
+      "POST",
+      "/api/internal/update-bot",
+      { bot_id: bot.id, name: "Chief", title: "Chief of Staff", description: "Runs the office" },
+      { authorization: `Bearer ${COMMS_TOKEN}` },
+    );
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject({
+      id: bot.id,
+      name: "Chief",
+      title: "Chief of Staff",
+      description: "Runs the office",
+    });
+    expect(JSON.stringify(updated.body)).not.toContain(COMMS_TOKEN);
+    const roster = await api("GET", "/api/bots");
+    expect(roster.body.bots.find((b: { id: string }) => b.id === bot.id)).toMatchObject({
+      name: "Chief",
+      title: "Chief of Staff",
+    });
+  });
+
+  it("workspace tools: fetch_page refuses private URLs, connect_app needs a key, routines default to weekdays", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const auth = { authorization: `Bearer ${COMMS_TOKEN}` };
+    const denied = await api("POST", "/api/internal/workspace", { fromBotId: bot.id, tool: "web_search", args: { query: "x" } });
+    expect(denied.status).toBe(401);
+
+    const privatePage = await api(
+      "POST",
+      "/api/internal/workspace",
+      { fromBotId: bot.id, tool: "fetch_page", args: { url: "http://127.0.0.1/secret" } },
+      auth,
+    );
+    expect(privatePage.status).toBe(200);
+    expect(privatePage.body.error).toMatch(/public http/i);
+
+    const connect = await api(
+      "POST",
+      "/api/internal/workspace",
+      { fromBotId: bot.id, tool: "connect_app", args: { slug: "github" } },
+      auth,
+    );
+    expect(connect.status).toBe(200);
+    expect(connect.body.error).toMatch(/Composio|App Settings/i);
+    expect(connect.body.error).toMatch(/paste a token/i);
+
+    const listener = await api(
+      "POST",
+      "/api/internal/workspace",
+      { fromBotId: bot.id, tool: "create_routine", args: { name: "PRs", prompt: "Check PRs", listener: "github" } },
+      auth,
+    );
+    expect(listener.body.error).toMatch(/connect_app/);
+    expect(listener.body.error).not.toMatch(/ghp_|xoxb-|sk-/);
+
+    const routine = await api(
+      "POST",
+      "/api/internal/workspace",
+      { fromBotId: bot.id, tool: "create_routine", args: { name: "Standup", prompt: "Brief me", time: "09:00" } },
+      auth,
+    );
+    expect(routine.status).toBe(200);
+    expect(routine.body.text).toMatch(/weekdays/i);
+    const listed = await api("GET", "/api/routines");
+    const standup = listed.body.routines.find((r: { name: string }) => r.name === "Standup");
+    expect(standup.schedule).toEqual({ kind: "weekdays", time: "09:00" });
+
+    const saved = await api(
+      "POST",
+      "/api/internal/workspace",
+      { fromBotId: bot.id, tool: "save_skill", args: { name: "File a bug", steps: "1. Reproduce\n2. File" } },
+      auth,
+    );
+    expect(saved.body.text).toMatch(/Saved skill/);
+    const skillId = /id: ([a-z0-9-]+)/i.exec(saved.body.text)?.[1];
+    expect(skillId).toBeTruthy();
+    const ran = await api(
+      "POST",
+      "/api/internal/workspace",
+      { fromBotId: bot.id, tool: "run_skill", args: { skill_id: skillId } },
+      auth,
+    );
+    expect(ran.body.text).toContain("1. Reproduce");
+
+    const shot = await api(
+      "POST",
+      "/api/internal/workspace",
+      { fromBotId: bot.id, tool: "attach_to_chat", args: { kind: "screenshot" } },
+      auth,
+    );
+    expect(shot.body.error).toMatch(/computer/i);
+  });
+
+  it("ask_choice waits on a card; ask_secret never lands in the transcript, SSE, or stderr", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const auth = { authorization: `Bearer ${COMMS_TOKEN}` };
+    const secret = "wifi-password-xyz-never-log";
+
+    const sse = await openSse();
+    try {
+      const choicePending = api(
+        "POST",
+        "/api/internal/workspace",
+        { fromBotId: bot.id, tool: "ask_choice", args: { question: "Ship it?", choices: ["Yes", "No"] } },
+        auth,
+      );
+      await sse.until((frames) =>
+        frames.some((f) => f.kind === "message" && f.message?.card?.requestType === "question" && f.message?.card?.options?.includes("Yes")),
+      );
+      const choiceFrame = sse.frames.find(
+        (f) => f.kind === "message" && f.message?.card?.requestType === "question" && f.message?.card?.options?.includes("Yes"),
+      );
+      const choiceRespond = await api("POST", `/api/bots/${bot.id}/respond`, {
+        requestId: choiceFrame.message.card.requestId,
+        behavior: "answer",
+        message: "Yes",
+      });
+      expect(choiceRespond.status).toBe(200);
+      const choice = await choicePending;
+      expect(choice.body.text).toBe("Yes");
+
+      const secretPending = api(
+        "POST",
+        "/api/internal/workspace",
+        { fromBotId: bot.id, tool: "ask_secret", args: { prompt: "Need the wifi password" } },
+        auth,
+      );
+      await sse.until((frames) => frames.some((f) => f.kind === "message" && f.message?.card?.requestType === "secret"));
+      const secretFrame = sse.frames.find((f) => f.kind === "message" && f.message?.card?.requestType === "secret");
+      expect(JSON.stringify(sse.frames)).not.toContain(secret);
+      const secretRespond = await api("POST", `/api/bots/${bot.id}/respond`, {
+        requestId: secretFrame.message.card.requestId,
+        behavior: "answer",
+        message: secret,
+      });
+      expect(secretRespond.status).toBe(200);
+      expect(JSON.stringify(secretRespond.body)).not.toContain(secret);
+      const secretResult = await secretPending;
+      expect(secretResult.body.text).toBe(secret);
+
+      const roster = await api("GET", "/api/bots");
+      const messages = roster.body.bots.find((b: { id: string }) => b.id === bot.id).messages;
+      expect(JSON.stringify(messages)).not.toContain(secret);
+      expect(JSON.stringify(messages)).toContain("••••");
+      expect(JSON.stringify(sse.frames)).not.toContain(secret);
+      expect(stderr).not.toContain(secret);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it("refuses to delete the last bot over HTTP (409) and MCP (error payload)", async () => {
+    const roster = await api("GET", "/api/bots");
+    for (const extra of roster.body.bots.slice(1)) {
+      const del = await api("DELETE", `/api/bots/${extra.id}`);
+      expect(del.status).toBe(200);
+    }
+    const last = (await api("GET", "/api/bots")).body.bots[0];
+    expect(last).toBeTruthy();
+    const http = await api("DELETE", `/api/bots/${last.id}`);
+    expect(http.status).toBe(409);
+    expect(http.body.error).toMatch(/last bot/i);
+    const internal = await api(
+      "POST",
+      "/api/internal/delete-bot",
+      { bot_id: last.id },
+      { authorization: `Bearer ${COMMS_TOKEN}` },
+    );
+    expect(internal.status).toBe(200);
+    expect(internal.body.error).toMatch(/last bot/i);
+    const after = await api("GET", "/api/bots");
+    expect(after.body.bots).toHaveLength(1);
+    expect(after.body.bots[0].id).toBe(last.id);
   });
 });
