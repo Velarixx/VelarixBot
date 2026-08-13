@@ -27,6 +27,14 @@ const CMD_META = /[&|<>^%!]/;
 // don't pay a fresh `where` process each time.
 const whereCache = new Map();
 const WHERE_TTL = 60_000;
+/** Windows child-process options shared by every long-running CLI launch.
+ * `windowsHide` must be set on the launcher itself: PowerShell's
+ * `-WindowStyle Hidden` is processed only after the process starts, which
+ * otherwise allows a console window to flash first. */
+function windowsSpawnOptions(opts) {
+    const { detached: _detached, ...rest } = opts;
+    return { ...rest, windowsHide: true };
+}
 function whereAll(name) {
     try {
         const out = spawnSync("where", [name], { encoding: "utf8", timeout: 2000, windowsHide: true });
@@ -264,7 +272,7 @@ export function spawnCliHidden(cli, args, opts) {
     // console, and pwsh then exits 0 immediately without running the script
     // or writing a byte, which surfaces as "cli exited 0 before result".
     // Windows reaps the tree with taskkill /T /F, so drop the flag.
-    const { detached: _detached, ...winOpts } = opts;
+    const winOpts = windowsSpawnOptions(opts);
     const env = { ...(opts.env ?? process.env), ...runEnv };
     const pwsh = resolvePwsh();
     if (!pwsh) {
@@ -274,11 +282,7 @@ export function spawnCliHidden(cli, args, opts) {
         }
         // no pwsh: plain spawn with the direct child hidden (grandchildren may
         // flash their own consoles — acceptable degradation)
-        return spawn(command, [...prefix, ...args], {
-            ...winOpts,
-            env,
-            windowsHide: true,
-        });
+        return spawn(command, [...prefix, ...args], { ...winOpts, env });
     }
     // pwsh passes argv to native .exe/.js targets verbatim, but a .cmd target
     // re-enters cmd.exe where %VAR% expands even inside quotes — refuse to
@@ -286,12 +290,13 @@ export function spawnCliHidden(cli, args, opts) {
     if (SHIM_RE.test(command) && [...prefix, ...args].some((a) => CMD_META.test(a))) {
         throw new Error(`refusing to pass cmd.exe metacharacters to the ${command} shim — reinstall the CLI natively or via an installer that ships an .exe`);
     }
-    // NOTE: no windowsHide here — PowerShell must keep a (hidden) console so
-    // the CLI and its console descendants attach to it instead of flashing.
+    // Hide the PowerShell process at creation time as well as requesting its
+    // own hidden window style. This prevents the startup flash reported by
+    // installed Windows users while retaining one wrapper for the CLI tree.
     const { args: psArgs, cleanup } = pwshWrapperArgs(command, [...prefix, ...args]);
     const child = spawn(pwsh, psArgs, { ...winOpts, env });
     child.once("close", cleanup);
     return child;
 }
 // exposed for tests only
-export const _internal = { shimScriptTarget, whereCache };
+export const _internal = { shimScriptTarget, whereCache, windowsSpawnOptions };

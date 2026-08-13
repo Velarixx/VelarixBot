@@ -13,6 +13,7 @@ import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.js";
 import { EventBus } from "./harness/bus.js";
 import { ProviderRegistry } from "./harness/registry.js";
+import { parseResponseOptions, responseOptionsPrompt } from "./response-options.js";
 import { mentionedBots, nextRunAt, Store } from "./store.js";
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const STATIC_DIR = process.env.OMB_STATIC_DIR || null;
@@ -83,7 +84,9 @@ function askBotAndWait(targetBotId, message, depth) {
             if (e.threadId !== threadId)
                 return;
             if (e.type === "item.completed" && e.itemType === "assistant_text") {
-                text += (text ? "\n" : "") + e.text;
+                const reply = parseResponseOptions(e.text);
+                if (reply.text)
+                    text += (text ? "\n" : "") + reply.text;
             }
             else if (e.type === "turn.completed") {
                 finish(text || "(the bot finished without a text reply)");
@@ -156,6 +159,7 @@ function broadcast(payload) {
 const toolMessageByItem = new Map(); // itemId -> messageId
 const askMessageByRequest = new Map(); // requestId -> messageId
 const turnUsage = new Map();
+const responseOptionsByTurn = new Map();
 bus.subscribe((event) => {
     broadcast({ kind: "runtime", event });
     const bot = store.botByThread(event.threadId);
@@ -184,7 +188,11 @@ bus.subscribe((event) => {
             break;
         case "item.completed":
             if (event.itemType === "assistant_text") {
-                pushMessage({ role: "bot", kind: "text", text: event.text });
+                const reply = parseResponseOptions(event.text);
+                if (reply.text)
+                    pushMessage({ role: "bot", kind: "text", text: reply.text });
+                if (event.turnId)
+                    responseOptionsByTurn.set(event.turnId, reply.options);
             }
             else if (event.itemType === "tool" && event.itemId) {
                 const messageId = toolMessageByItem.get(event.itemId);
@@ -244,6 +252,8 @@ bus.subscribe((event) => {
             break;
         }
         case "runtime.error":
+            if (event.turnId)
+                responseOptionsByTurn.delete(event.turnId);
             pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
             store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
             broadcast({ kind: "bot", bot: store.bot(bot.id) });
@@ -258,6 +268,20 @@ bus.subscribe((event) => {
             store.recordTurnUsage(bot.id, { ...tokens, cost: event.cost ?? null });
             if (event.turnId)
                 turnUsage.delete(event.turnId);
+            const options = event.turnId ? responseOptionsByTurn.get(event.turnId) : undefined;
+            if (event.turnId)
+                responseOptionsByTurn.delete(event.turnId);
+            if (event.ok && options?.length) {
+                pushMessage({
+                    role: "bot",
+                    kind: "options",
+                    card: {
+                        title: "What would you like to do?",
+                        subtitle: "Choose a next step, or type your own response.",
+                        options,
+                    },
+                });
+            }
             store.patchBot(bot.id, { busy: false, unread: true, state: event.ok ? "DONE" : "BLOCKED", stateDetail: event.stopReason ?? undefined });
             const routineId = routineByThread.get(event.threadId);
             if (routineId) {
@@ -434,6 +458,7 @@ async function startTurn(botId, text, opts) {
                 resumeCursor: bot.resumeCursors[bot.modelSelection.instanceId],
                 transcript,
                 system: persona +
+                    responseOptionsPrompt +
                     (integrations.computer && instance.driverKind !== "boxAgent"
                         ? " You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps."
                         : integrations.localComputer

@@ -89,6 +89,15 @@ describe("Windows shim parsing", () => {
   });
 });
 
+describe("Windows hidden process contract", () => {
+  it("always hides the PowerShell launcher window", () => {
+    expect(_internal.windowsSpawnOptions({ stdio: ["pipe", "pipe", "pipe"], detached: true })).toMatchObject({
+      windowsHide: true,
+    });
+    expect(_internal.windowsSpawnOptions({ detached: true })).not.toHaveProperty("detached");
+  });
+});
+
 describe("killProcessTree", () => {
   it("does not throw for absent processes", () => {
     expect(() => killProcessTree(undefined)).not.toThrow();

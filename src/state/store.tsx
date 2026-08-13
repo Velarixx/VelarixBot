@@ -13,6 +13,7 @@ import {
 } from "react";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotState, Usage } from "@/lib/product";
+import { appendStreamingResponseText } from "../../server/response-options";
 
 export type { MausColor } from "@/lib/mascot";
 
@@ -109,6 +110,9 @@ interface AppState {
   routines: Routine[];
   /** in-flight assistant text per threadId (content.delta fold) */
   streaming: Record<string, string>;
+  /** Unfiltered in-flight text retained while the visible projection hides
+   * the machine-readable response-option trailer. */
+  streamingRaw: Record<string, string>;
   /** latest live frame of a bot's computer, per botId */
   screens: Record<string, { png: string; mime: string }>;
   /** bots whose cloud computer is being provisioned */
@@ -299,17 +303,24 @@ function reducer(state: AppState, action: Action): AppState {
         messages: b.messages.map((m) => (m.id === action.message.id ? action.message : m)),
       }));
     }
-    case "streamDelta":
+    case "streamDelta": {
+      const stream = appendStreamingResponseText(state.streamingRaw[action.threadId] ?? "", action.delta);
+      // The provider appends a machine-readable option trailer. Remove it
+      // as soon as its opening marker is complete; the settled message is
+      // parsed server-side into a native option card.
       return {
         ...state,
         streaming: {
           ...state.streaming,
-          [action.threadId]: (state.streaming[action.threadId] ?? "") + action.delta,
+          [action.threadId]: stream.visible,
         },
+        streamingRaw: { ...state.streamingRaw, [action.threadId]: stream.raw },
       };
+    }
     case "streamClear": {
       const { [action.threadId]: _, ...rest } = state.streaming;
-      return { ...state, streaming: rest };
+      const { [action.threadId]: __, ...rawRest } = state.streamingRaw;
+      return { ...state, streaming: rest, streamingRaw: rawRest };
     }
     case "screenFrame":
       return {
@@ -402,6 +413,7 @@ const initialState: AppState = {
   routinesOpen: false,
   routines: [],
   streaming: {},
+  streamingRaw: {},
   screens: {},
   provisioning: {},
   connected: false,

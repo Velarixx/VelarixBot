@@ -16,6 +16,7 @@ import type { RuntimeEvent } from "./contracts.ts";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
+import { parseResponseOptions, responseOptionsPrompt } from "./response-options.ts";
 import { mentionedBots, nextRunAt, Store, type Message, type Usage } from "./store.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
@@ -89,7 +90,8 @@ function askBotAndWait(targetBotId: string, message: string, depth: number): Pro
     const unsub = bus.subscribe((e: RuntimeEvent) => {
       if (e.threadId !== threadId) return;
       if (e.type === "item.completed" && e.itemType === "assistant_text") {
-        text += (text ? "\n" : "") + e.text;
+        const reply = parseResponseOptions(e.text);
+        if (reply.text) text += (text ? "\n" : "") + reply.text;
       } else if (e.type === "turn.completed") {
         finish(text || "(the bot finished without a text reply)");
       }
@@ -163,6 +165,7 @@ function broadcast(payload: unknown) {
 const toolMessageByItem = new Map<string, string>(); // itemId -> messageId
 const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
 const turnUsage = new Map<string, Usage>();
+const responseOptionsByTurn = new Map<string, string[]>();
 
 bus.subscribe((event: RuntimeEvent) => {
   broadcast({ kind: "runtime", event });
@@ -191,7 +194,9 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     case "item.completed":
       if (event.itemType === "assistant_text") {
-        pushMessage({ role: "bot", kind: "text", text: event.text });
+        const reply = parseResponseOptions(event.text);
+        if (reply.text) pushMessage({ role: "bot", kind: "text", text: reply.text });
+        if (event.turnId) responseOptionsByTurn.set(event.turnId, reply.options);
       } else if (event.itemType === "tool" && event.itemId) {
         const messageId = toolMessageByItem.get(event.itemId);
         if (messageId) {
@@ -245,6 +250,7 @@ bus.subscribe((event: RuntimeEvent) => {
       break;
     }
     case "runtime.error":
+      if (event.turnId) responseOptionsByTurn.delete(event.turnId);
       pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
       store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
@@ -257,6 +263,19 @@ bus.subscribe((event: RuntimeEvent) => {
       const tokens = (event.turnId ? turnUsage.get(event.turnId) : undefined) ?? { input: 0, output: 0, cost: null };
       store.recordTurnUsage(bot.id, { ...tokens, cost: event.cost ?? null });
       if (event.turnId) turnUsage.delete(event.turnId);
+      const options = event.turnId ? responseOptionsByTurn.get(event.turnId) : undefined;
+      if (event.turnId) responseOptionsByTurn.delete(event.turnId);
+      if (event.ok && options?.length) {
+        pushMessage({
+          role: "bot",
+          kind: "options",
+          card: {
+            title: "What would you like to do?",
+            subtitle: "Choose a next step, or type your own response.",
+            options,
+          },
+        });
+      }
       store.patchBot(bot.id, { busy: false, unread: true, state: event.ok ? "DONE" : "BLOCKED", stateDetail: event.stopReason ?? undefined });
       const routineId = routineByThread.get(event.threadId);
       if (routineId) {
@@ -452,6 +471,7 @@ async function startTurn(botId: string, text: string, opts?: { commsDepth?: numb
         transcript,
         system:
           persona +
+          responseOptionsPrompt +
           (integrations.computer && instance.driverKind !== "boxAgent"
             ? " You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps."
             : integrations.localComputer
