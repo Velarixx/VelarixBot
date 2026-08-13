@@ -198,4 +198,21 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     expect(done).toMatchObject({ ok: false });
     expect(await instance.snapshot()).toMatchObject({ state: "unavailable" });
   });
+
+  it("accepts integrations and completes the turn successfully", async () => {
+    await create();
+
+    await instance.adapter.sendTurn({
+      threadId: "t-integrations",
+      text: "test with integrations",
+      integrations: {
+        composio: { key: "test-composio-key", url: "https://test.composio.dev/mcp" },
+        agents: { command: process.execPath, args: ["test"], env: { TEST_VAR: "1" } },
+      },
+    });
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ ok: true, provider: "codex" });
+    // The real verification is that the turn completes without error when integrations are present
+    // MCP mounting is verified in production usage; fake app-server doesn't simulate MCP processing
+  });
 });

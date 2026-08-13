@@ -13,6 +13,7 @@ import { writeFileSync } from "node:fs";
 const mode = process.env.FAKE_CODEX_MODE ?? "happy";
 const calls: Array<{ method: string; params: unknown }> = [];
 let decision: unknown = null;
+let threadStartConfig: unknown = null;
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
 const notify = (method: string, params: unknown) => out({ jsonrpc: "2.0", method, params });
@@ -21,7 +22,7 @@ const dump = () => {
   if (process.env.FAKE_CODEX_DUMP) {
     writeFileSync(
       process.env.FAKE_CODEX_DUMP,
-      JSON.stringify({ argv: process.argv.slice(2), env: process.env, calls, decision }, null, 2),
+      JSON.stringify({ argv: process.argv.slice(2), env: process.env, calls, decision, threadStartConfig }, null, 2),
     );
   }
 };
@@ -75,6 +76,7 @@ process.stdin.on("data", (chunk) => {
         }
         break;
       case "thread/start":
+        threadStartConfig = msg.params?.config ?? null;
         out({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: "codex-thread-1" }, model: "fake-codex-model" } });
         break;
       case "turn/start":

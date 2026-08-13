@@ -9,7 +9,10 @@
 //
 // resumeCursor is the codex thread id; a later turn tries thread/resume
 // and falls back to a fresh thread/start.
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   DriverCreateInput,
@@ -87,10 +90,48 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
 
+      // Build MCP servers config for integrations (spike: pass via thread/start config)
+      const mcpServersConfig: Record<string, unknown> = {};
+      if (turn.integrations?.composio?.key) {
+        mcpServersConfig.composio = {
+          url: turn.integrations.composio.url || "https://connect.composio.dev/mcp",
+          bearer_token_env_var: "CODEX_MCP_COMPOSIO_KEY",
+        };
+      }
+      if (turn.integrations?.computer) {
+        const proxyPath = join(dirname(fileURLToPath(import.meta.url)), "..", "computer-proxy.ts");
+        const actualProxy = existsSync(proxyPath) ? proxyPath : proxyPath.replace(/\.ts$/, ".js");
+        mcpServersConfig.computer = {
+          command: process.execPath,
+          args: [actualProxy],
+          env: {
+            OGB_BOX_ID: turn.integrations.computer.boxId,
+            OGB_BOX_TOKEN: turn.integrations.computer.token,
+          },
+        };
+      } else if (turn.integrations?.localComputer) {
+        mcpServersConfig.computer = {
+          command: turn.integrations.localComputer.command,
+          args: turn.integrations.localComputer.args,
+          env: turn.integrations.localComputer.env,
+        };
+      }
+      if (turn.integrations?.agents) {
+        mcpServersConfig.agents = {
+          command: turn.integrations.agents.command,
+          args: turn.integrations.agents.args,
+          env: turn.integrations.agents.env,
+        };
+      }
+
       const env: Record<string, string | undefined> = { ...process.env, PATH: augmentedPath(), NPM_CONFIG_LOGLEVEL: "error" };
       // the CLI owns its own ChatGPT login; a leaked API key silently flips
       // billing to pay-as-you-go (agentcal)
       delete env.OPENAI_API_KEY;
+      // inject Composio key as env var that mcp_servers config references
+      if (turn.integrations?.composio?.key) {
+        env.CODEX_MCP_COMPOSIO_KEY = turn.integrations.composio.key;
+      }
 
       const child = spawnCliHidden(config.cli, ["app-server"], {
         cwd: turn.cwd ?? homedir(),
@@ -342,13 +383,18 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             }
           }
           if (!codexThreadId) {
-            const started = await request("thread/start", {
+            const threadStartParams: Record<string, unknown> = {
               cwd: turn.cwd ?? homedir(),
               model: turn.model || null,
               sandbox: config.fullAuto ? "danger-full-access" : "workspace-write",
               approvalPolicy: config.fullAuto ? "never" : "on-request",
               ephemeral: false,
-            });
+            };
+            // Spike: pass mcp_servers via config overlay
+            if (Object.keys(mcpServersConfig).length) {
+              threadStartParams.config = { mcp_servers: mcpServersConfig };
+            }
+            const started = await request("thread/start", threadStartParams);
             codexThreadId = started?.thread?.id ?? null;
             startedModel = started?.model ?? null;
           }
@@ -383,7 +429,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "unsupported" },
+        capabilities: { sessionModelSwitch: "unsupported", agentsMcp: true, localComputerMcp: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),
         respondToRequest: async (threadId, requestId, decision) => {
