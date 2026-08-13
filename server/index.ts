@@ -103,11 +103,11 @@ function askBotAndWait(targetBotId: string, message: string, depth: number): Pro
   });
 }
 
-// default selection for new bots: first available instance, claude preferred
+// default selection for new bots: first available instance, codex preferred over claude
 async function defaultSelection() {
   const described = await registry.describe();
   const available = described.filter((d) => d.snapshot.state === "available");
-  const pick = available.find((d) => d.driverKind === "claudeAgent") ?? available[0] ?? described[0];
+  const pick = available.find((d) => d.driverKind === "codex") ?? available.find((d) => d.driverKind === "claudeAgent") ?? available[0] ?? described[0];
   return { instanceId: pick?.instanceId ?? "claude", model: pick?.models.default || "claude-sonnet-5" };
 }
 let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };

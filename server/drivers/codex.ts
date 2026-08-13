@@ -9,7 +9,10 @@
 //
 // resumeCursor is the codex thread id; a later turn tries thread/resume
 // and falls back to a fresh thread/start.
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   DriverCreateInput,
@@ -36,6 +39,49 @@ const MODELS = {
     { id: "gpt-5.4", label: "GPT-5.4" },
   ],
 };
+
+// proxy entry files live next to this one as .ts in dev (node type
+// stripping) and .js in the compiled dist-server the packaged app ships
+const proxyPath = (basename: string) => {
+  const ts = join(dirname(fileURLToPath(import.meta.url)), "..", `${basename}.ts`);
+  return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
+};
+const PROXY_PATH = proxyPath("computer-proxy");
+// in the packaged app process.execPath is the Electron binary — this env
+// makes it behave as plain node for the spawned MCP proxies (harmless in dev)
+const NODE_ENV_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
+// Composio's HTTP MCP takes a bearer token from this env var name — the
+// raw key stays in the child env, never argv, never the overlay JSON.
+const COMPOSIO_TOKEN_ENV = "CODEX_MCP_COMPOSIO_KEY";
+
+/** Per-turn MCP overlay for thread/start and thread/resume `config`. Empty
+ * when the turn has no integrations — callers must not send a config key. */
+function mcpServersFromIntegrations(integrations: SendTurnInput["integrations"]): Record<string, unknown> {
+  const mcpServers: Record<string, unknown> = {};
+  if (integrations?.composio?.key) {
+    mcpServers.composio = {
+      url: integrations.composio.url || "https://connect.composio.dev/mcp",
+      bearer_token_env_var: COMPOSIO_TOKEN_ENV,
+    };
+  }
+  if (integrations?.computer) {
+    mcpServers.computer = {
+      command: process.execPath,
+      args: [PROXY_PATH],
+      env: {
+        ...NODE_ENV_FLAG,
+        OGB_BOX_ID: integrations.computer.boxId,
+        OGB_BOX_TOKEN: integrations.computer.token,
+      },
+    };
+  } else if (integrations?.localComputer) {
+    mcpServers.computer = { ...integrations.localComputer };
+  }
+  if (integrations?.agents) {
+    mcpServers.agents = { ...integrations.agents };
+  }
+  return mcpServers;
+}
 
 export interface CodexConfig {
   cli: string;
@@ -87,10 +133,17 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
 
+      const mcpServersConfig = mcpServersFromIntegrations(turn.integrations);
+      const mcpOverlay = Object.keys(mcpServersConfig).length ? { mcp_servers: mcpServersConfig } : null;
+
       const env: Record<string, string | undefined> = { ...process.env, PATH: augmentedPath(), NPM_CONFIG_LOGLEVEL: "error" };
       // the CLI owns its own ChatGPT login; a leaked API key silently flips
       // billing to pay-as-you-go (agentcal)
       delete env.OPENAI_API_KEY;
+      // inject Composio key as env var that mcp_servers config references
+      if (turn.integrations?.composio?.key) {
+        env[COMPOSIO_TOKEN_ENV] = turn.integrations.composio.key;
+      }
 
       const child = spawnCliHidden(config.cli, ["app-server"], {
         cwd: turn.cwd ?? homedir(),
@@ -333,22 +386,29 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
           let codexThreadId: string | null = null;
           let startedModel: string | null = null;
+          // each sendTurn spawns a fresh app-server, so resume must carry the
+          // same mcp_servers overlay as start — otherwise extras vanish after
+          // turn 1. thread/resume.config is a SessionFlags layer, same as start.
           if (cursor) {
             try {
-              const resumed = await request("thread/resume", { threadId: cursor });
+              const resumeParams: Record<string, unknown> = { threadId: cursor };
+              if (mcpOverlay) resumeParams.config = mcpOverlay;
+              const resumed = await request("thread/resume", resumeParams);
               codexThreadId = resumed?.thread?.id ?? cursor;
             } catch {
               /* resume unsupported or thread gone — start fresh below */
             }
           }
           if (!codexThreadId) {
-            const started = await request("thread/start", {
+            const threadStartParams: Record<string, unknown> = {
               cwd: turn.cwd ?? homedir(),
               model: turn.model || null,
               sandbox: config.fullAuto ? "danger-full-access" : "workspace-write",
               approvalPolicy: config.fullAuto ? "never" : "on-request",
               ephemeral: false,
-            });
+            };
+            if (mcpOverlay) threadStartParams.config = mcpOverlay;
+            const started = await request("thread/start", threadStartParams);
             codexThreadId = started?.thread?.id ?? null;
             startedModel = started?.model ?? null;
           }
@@ -383,7 +443,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "unsupported" },
+        capabilities: {
+          sessionModelSwitch: "unsupported",
+          // true because sendTurn mounts agents/computer on both thread/start
+          // and thread/resume (each turn is a fresh app-server)
+          agentsMcp: true,
+          localComputerMcp: true,
+        },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),
         respondToRequest: async (threadId, requestId, decision) => {
