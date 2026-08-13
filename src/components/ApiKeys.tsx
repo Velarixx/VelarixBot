@@ -6,7 +6,7 @@ import { Check, Loader2 } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 
-export type ConfigSection = "composio" | "composioApi" | "box";
+export type ConfigSection = "composio" | "composioApi" | "box" | "github";
 
 const SECTIONS: Record<
   ConfigSection,
@@ -18,6 +18,7 @@ const SECTIONS: Record<
     flag: (c) => c.composio.apiKeyConfigured ?? false,
   },
   box: { body: (v) => ({ box: { token: v } }), flag: (c) => c.box.configured },
+  github: { body: (v) => ({ github: { token: v } }), flag: (c) => c.github?.configured ?? false },
 };
 
 export function ApiKeyRow({

@@ -1,0 +1,84 @@
+// Pure GitHub-Releases feed helpers for the packaged updater.
+// Token never appears in return values — callers pass it as a header only.
+export const GITHUB_OWNER = "Velarixx";
+export const GITHUB_REPO = "VelarixBot";
+export const NO_TOKEN_MESSAGE = "Set a GitHub token in App Settings to check private GitHub Releases.";
+export const DEV_NOOP_MESSAGE = "Updates are only available in the packaged app.";
+
+export function parseVersion(input) {
+  const s = String(input ?? "")
+    .trim()
+    .replace(/^v/i, "");
+  const m = s.match(/^(\d+)\.(\d+)\.(\d+)(?:[-.](.+))?$/);
+  if (!m) return [0, 0, 0, s];
+  return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] ?? ""];
+}
+
+/** Negative if a < b, 0 if equal, positive if a > b. */
+export function compareVersions(a, b) {
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pa[i] - pb[i];
+  }
+  const ar = pa[3];
+  const br = pb[3];
+  if (!ar && !br) return 0;
+  if (!ar) return 1;
+  if (!br) return -1;
+  return ar < br ? -1 : ar > br ? 1 : 0;
+}
+
+export function pickAsset(release, platform, arch) {
+  const assets = Array.isArray(release?.assets) ? release.assets : [];
+  if (platform === "darwin") {
+    const tag = arch === "arm64" ? "arm64" : "x64";
+    return assets.find((a) => /\.dmg$/i.test(a?.name ?? "") && String(a.name).includes(tag)) ?? null;
+  }
+  if (platform === "win32") {
+    return assets.find((a) => /\.exe$/i.test(a?.name ?? "")) ?? null;
+  }
+  return null;
+}
+
+export function newestNewerRelease(releases, currentVersion) {
+  const list = Array.isArray(releases) ? [...releases] : [];
+  list.sort((a, b) => compareVersions(b.tag_name || b.name || "", a.tag_name || a.name || ""));
+  const newest = list[0];
+  if (!newest) return null;
+  if (compareVersions(newest.tag_name || newest.name || "", currentVersion) > 0) return newest;
+  return null;
+}
+
+export function tokenConfigured(token) {
+  return Boolean(token && String(token).trim());
+}
+
+/** File token wins over env, matching server/config.ts merge order. */
+export function readGithubToken(env, fileText) {
+  let fromFile = "";
+  try {
+    const cfg = JSON.parse(fileText || "null");
+    if (cfg && typeof cfg === "object" && cfg.github && typeof cfg.github.token === "string") {
+      fromFile = cfg.github.token;
+    }
+  } catch {
+    /* missing or invalid config — env fallback below */
+  }
+  const fromEnv = env?.GITHUB_TOKEN || env?.GH_TOKEN || "";
+  return String(fromFile || fromEnv || "").trim();
+}
+
+export function releasesUrl() {
+  return `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
+}
+
+export function publicState(state) {
+  return {
+    status: state.status,
+    version: state.version,
+    percent: state.percent,
+    message: state.message,
+    tokenConfigured: Boolean(state.tokenConfigured),
+  };
+}

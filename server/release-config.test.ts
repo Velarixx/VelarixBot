@@ -32,7 +32,13 @@ describe("internal desktop releases", () => {
     expect(workflow).toContain("SHA256SUMS.txt");
   });
 
-  it("keeps the updater dormant for private manual releases", () => {
-    expect(read("electron/updater.mjs")).toContain("updates are installed manually from the private GitHub release");
+  it("checks GitHub Releases from the packaged updater without baking a token", () => {
+    const updater = read("electron/updater.mjs");
+    const feed = read("electron/update-feed.mjs");
+    expect(feed).toContain('GITHUB_OWNER = "Velarixx"');
+    expect(feed).toContain('GITHUB_REPO = "VelarixBot"');
+    expect(updater).toContain("releasesUrl");
+    expect(updater).not.toContain("ghp_");
+    expect(feed).toContain("Set a GitHub token");
   });
 });

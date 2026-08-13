@@ -20,6 +20,7 @@ import { MausAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
 import { formatCompactTokens, formatUsageCost, stateLabel, type BotState } from "@/lib/product";
+import { filterSidebarBots } from "@/lib/sidebar";
 
 const isElectron = navigator.userAgent.includes("Electron");
 
@@ -186,10 +187,9 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
 export function Sidebar() {
   const { state, dispatch } = useStore();
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [query, setQuery] = useState("");
 
-  const visibleBots = state.bots
-    .filter((b) => !b.hidden)
-    .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
+  const visibleBots = filterSidebarBots(state.bots, query);
 
   return (
     <aside className="flex h-full w-[320px] shrink-0 flex-col border-r border-hairline/40 bg-panel">
@@ -222,6 +222,8 @@ export function Sidebar() {
         <div className="flex items-center gap-2 rounded-lg bg-raised/70 px-3 py-2">
           <Search size={16} className="text-ink-secondary" />
           <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
             placeholder="Search"
             className="w-full bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />

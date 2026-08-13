@@ -27,10 +27,18 @@ contextBridge.exposeInMainWorld("ogb", {
   /** Opens System Settings on the given privacy pane: mic|screen|speech. */
   permOpenSettings: (pane) => ipcRenderer.invoke("perm:open-settings", pane),
 
+  notify: (payload) => ipcRenderer.invoke("notify:show", payload),
+  onNotifyClick: (cb) => {
+    const handler = (_event, botId) => cb(botId);
+    ipcRenderer.on("notify:click", handler);
+    return () => ipcRenderer.removeListener("notify:click", handler);
+  },
+  openFiles: () => ipcRenderer.invoke("fs:open-files"),
+
   /** In-app auto-update. State object:
    *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"error",
-   *    version?, percent?, message? }. onState fires immediately with the
-   *    current state, then on every transition. Dormant in dev (no bridge). */
+   *    version?, percent?, message?, tokenConfigured? }. onState fires immediately
+   *    with the current state, then on every transition. Packaged app only. */
   updater: {
     check: () => ipcRenderer.invoke("update:check"),
     download: () => ipcRenderer.invoke("update:download"),

@@ -6,7 +6,7 @@
 // Spawn-based tests are POSIX-only until Windows CLI spawning lands: the
 // fake CLI is a shebang script, which Windows cannot exec directly (the
 // same reason claude.cmd needs special handling — see the Windows PRs).
-import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -124,13 +124,48 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
-    expect(JSON.stringify(seen.argv)).not.toContain("the secret prompt");
+    expect(JSON.stringify(seen.argv).includes("the secret prompt")).toBe(false);
     expect(seen.prompt).toMatchObject({ type: "user", message: { role: "user", content: "the secret prompt" } });
     expect(seen.argv).toContain("--append-system-prompt");
     expect(seen.argv).toContain("--session-id");
     expect(seen.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(seen.env.CLAUDECODE).toBeUndefined();
     expect(seen.env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+  });
+
+  it("puts image attachments on stdin JSON content blocks, not argv", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    const img = join(scratch, "shot.png");
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    writeFileSync(img, png);
+    writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify({ github: { token: "ghp_secret_token" } }));
+    process.env.FAKE_CLAUDE_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-image",
+      text: "look",
+      attachments: [
+        { path: img, mime: "image/png" },
+        { path: join(DATA_DIR, "config.json") },
+      ],
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const content = seen.prompt.message.content;
+    expect(Array.isArray(content)).toBe(true);
+    expect(content[0]).toMatchObject({ type: "text", text: "look" });
+    expect(content[1]).toMatchObject({
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
+    });
+    expect(JSON.stringify(seen.argv)).not.toContain(png.toString("base64"));
+    expect(JSON.stringify(seen)).not.toContain("ghp_secret_token");
+    expect(content).toHaveLength(2);
   });
 
   it("mounts the agents comms proxy as an MCP server and pre-allows its tools", async () => {

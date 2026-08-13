@@ -20,7 +20,12 @@ declare global {
       permRequestMic(): Promise<boolean>;
       /** Opens System Settings on a privacy pane: mic|screen|speech. */
       permOpenSettings(pane: "mic" | "screen" | "speech"): Promise<void>;
-      /** In-app auto-update (packaged app only; dormant in dev). onState
+      /** Native OS toast. Missing permission is a silent skip. */
+      notify?(payload: { title: string; body: string; botId?: string }): Promise<boolean>;
+      onNotifyClick?(cb: (botId: string) => void): () => void;
+      /** Desktop file picker for composer attachments (local paths). */
+      openFiles?(): Promise<Array<{ path: string; name: string }>>;
+      /** In-app auto-update (packaged app only; honest no-op in dev). onState
        * fires immediately with the current state, then on transitions. */
       updater?: {
         check(): Promise<void>;
@@ -38,4 +43,5 @@ export interface UpdaterState {
   version?: string;
   percent?: number;
   message?: string;
+  tokenConfigured?: boolean;
 }

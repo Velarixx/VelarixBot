@@ -325,9 +325,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
             Routines are recurring tasks this agent runs on a schedule.
           </div>
           <button
-            disabled
-            className="mt-3 w-full cursor-not-allowed rounded-lg bg-raised py-2 text-[13px] text-ink-secondary opacity-60"
-            title="Coming soon"
+            onClick={() => dispatch({ type: "toggleRoutines", open: true, creating: true, botId: bot.id })}
+            className="mt-3 w-full rounded-lg bg-raised py-2 text-[13px] text-ink hover:bg-raised-hover"
           >
             Create Routine
           </button>

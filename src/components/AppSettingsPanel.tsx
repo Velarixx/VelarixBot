@@ -93,6 +93,11 @@ export function AppSettingsPanel() {
               placeholder="ak_…  unlocks the full app catalog"
             />
             <ApiKeyRow section="box" label="Box token" placeholder="Token from box.ascii.dev" />
+            <ApiKeyRow
+              section="github"
+              label="GitHub token (private releases)"
+              placeholder="ghp_…  write-only, used only to check VelarixBot releases"
+            />
           </div>
         </div>
 
