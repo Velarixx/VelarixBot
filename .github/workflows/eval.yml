@@ -1,0 +1,71 @@
+# Playwright + LLM-judge eval. Nightly and every rc tag/release.
+# Does not publish, tag, or edit release artifacts.
+# Skips cleanly (exit 0) when Claude/Codex secrets are absent (forks / PRs
+# without secrets stay green). On Velarixx/VelarixBot those secrets exist,
+# so schedule / rc / dispatch actually run.
+name: Playwright eval
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*-rc.*"
+  release:
+    types: [published, prereleased]
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    name: playwright + judge
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      EVAL_ARTIFACTS: ${{ github.workspace }}/eval-artifacts
+      # Existing repo secrets (names only). Never echo these values.
+      # Claude: issue #39 / `claude setup-token`
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Codex: OpenAI CI auth.json seed — https://developers.openai.com/codex/auth/ci-cd-auth
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Gate (skip without Claude/Codex secrets)
+        id: gate
+        run: node eval/run.mjs --gate
+      - name: Install Chromium
+        if: steps.gate.outputs.ran == 'true'
+        run: pnpm exec playwright install chromium --with-deps
+      - name: Install agent CLIs
+        if: steps.gate.outputs.ran == 'true'
+        shell: bash
+        run: |
+          set +x
+          if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then npm i -g @anthropic-ai/claude-code; fi
+          if [ -n "${CODEX_AUTH_JSON:-}" ]; then npm i -g @openai/codex; fi
+      - name: Run Playwright eval
+        if: steps.gate.outputs.ran == 'true'
+        shell: bash
+        run: |
+          set +x
+          node eval/run.mjs
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.ran == 'true' && (success() || failure())
+        with:
+          name: playwright-eval
+          path: eval-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
