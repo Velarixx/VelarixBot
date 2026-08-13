@@ -5,7 +5,8 @@
 // real app-server, it never exits on its own — the driver kills it.
 //
 //   FAKE_CODEX_MODE   happy (default) | approval | resume | stream
-//   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision} as JSON
+//   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision,
+//                     threadStartConfig, threadResumeConfig} as JSON
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { writeFileSync } from "node:fs";
@@ -14,6 +15,7 @@ const mode = process.env.FAKE_CODEX_MODE ?? "happy";
 const calls: Array<{ method: string; params: unknown }> = [];
 let decision: unknown = null;
 let threadStartConfig: unknown = null;
+let threadResumeConfig: unknown = null;
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
 const notify = (method: string, params: unknown) => out({ jsonrpc: "2.0", method, params });
@@ -22,7 +24,11 @@ const dump = () => {
   if (process.env.FAKE_CODEX_DUMP) {
     writeFileSync(
       process.env.FAKE_CODEX_DUMP,
-      JSON.stringify({ argv: process.argv.slice(2), env: process.env, calls, decision, threadStartConfig }, null, 2),
+      JSON.stringify(
+        { argv: process.argv.slice(2), env: process.env, calls, decision, threadStartConfig, threadResumeConfig },
+        null,
+        2,
+      ),
     );
   }
 };
@@ -69,6 +75,7 @@ process.stdin.on("data", (chunk) => {
         out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
         break;
       case "thread/resume":
+        threadResumeConfig = msg.params?.config ?? null;
         if (mode === "resume") {
           out({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId } } });
         } else {

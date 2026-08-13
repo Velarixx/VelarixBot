@@ -101,6 +101,9 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     // persona rides in front of the prompt text — codex has no system slot
     const turnStart = seen.calls.at(-1);
     expect(turnStart.params.input[0].text).toBe("You are Testy.\n\nlist files");
+    // no integrations → no mcp overlay on thread/start
+    expect(seen.threadStartConfig).toBeNull();
+    expect(seen.threadResumeConfig).toBeNull();
   });
 
   it("streams agentMessage deltas without re-emitting the settled text", async () => {
@@ -134,6 +137,8 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     const methods = JSON.parse(readFileSync(dump, "utf8")).calls.map((c: { method: string }) => c.method);
     expect(methods).toContain("thread/resume");
     expect(methods).not.toContain("thread/start");
+    // no integrations → resume must not invent an mcp overlay
+    expect(JSON.parse(readFileSync(dump, "utf8")).threadResumeConfig).toBeNull();
   });
 
   it("falls back to a fresh thread when resume fails", async () => {
@@ -199,20 +204,115 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     expect(await instance.snapshot()).toMatchObject({ state: "unavailable" });
   });
 
-  it("accepts integrations and completes the turn successfully", async () => {
+  it("mounts agents, composio, and cloud computer as mcp_servers on thread/start", async () => {
     await create();
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+    const composioKey = "sk-composio-secret";
 
     await instance.adapter.sendTurn({
-      threadId: "t-integrations",
-      text: "test with integrations",
+      threadId: "t-mcp-start",
+      text: "use tools",
       integrations: {
-        composio: { key: "test-composio-key", url: "https://test.composio.dev/mcp" },
-        agents: { command: process.execPath, args: ["test"], env: { TEST_VAR: "1" } },
+        composio: { key: composioKey, url: "https://test.composio.dev/mcp" },
+        computer: { boxId: "box-1", token: "box-token" },
+        agents: {
+          command: process.execPath,
+          args: ["/fake/agents-proxy.js"],
+          env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "tok" },
+        },
       },
     });
-    const completed = await recorder.until((e) => e.type === "turn.completed");
-    expect(completed).toMatchObject({ ok: true, provider: "codex" });
-    // The real verification is that the turn completes without error when integrations are present
-    // MCP mounting is verified in production usage; fake app-server doesn't simulate MCP processing
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const mcp = seen.threadStartConfig?.mcp_servers;
+    expect(mcp).toBeDefined();
+    expect(mcp.agents).toMatchObject({
+      args: ["/fake/agents-proxy.js"],
+      env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "tok" },
+    });
+    expect(mcp.composio).toEqual({
+      url: "https://test.composio.dev/mcp",
+      bearer_token_env_var: "CODEX_MCP_COMPOSIO_KEY",
+    });
+    expect(mcp.computer).toMatchObject({
+      command: process.execPath,
+      env: {
+        ELECTRON_RUN_AS_NODE: "1",
+        OGB_BOX_ID: "box-1",
+        OGB_BOX_TOKEN: "box-token",
+      },
+    });
+    expect(mcp.computer.args.at(-1)).toMatch(/computer-proxy\.(ts|js)$/);
+    // composio secret lives in the child env the overlay names, not argv or config JSON
+    expect(seen.env.CODEX_MCP_COMPOSIO_KEY).toBe(composioKey);
+    expect(JSON.stringify(seen.argv)).not.toContain(composioKey);
+    expect(JSON.stringify(seen.threadStartConfig)).not.toContain(composioKey);
+  });
+
+  it("mounts localComputer as the computer mcp server", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-mcp-local",
+      text: "use this mac",
+      integrations: {
+        localComputer: {
+          command: "/fake/cua-driver",
+          args: ["mcp", "--embedded", "--socket", "/tmp/cua.sock"],
+          env: { CUA: "1" },
+        },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.threadStartConfig.mcp_servers.computer).toEqual({
+      command: "/fake/cua-driver",
+      args: ["mcp", "--embedded", "--socket", "/tmp/cua.sock"],
+      env: { CUA: "1" },
+    });
+    expect(seen.threadStartConfig.mcp_servers.agents).toBeUndefined();
+    expect(seen.threadStartConfig.mcp_servers.composio).toBeUndefined();
+  });
+
+  it("attaches the same mcp_servers overlay on thread/resume", async () => {
+    await create({ mode: "resume" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+    const composioKey = "sk-resume-composio";
+
+    await instance.adapter.sendTurn({
+      threadId: "t-resume-mcp",
+      text: "again",
+      resumeCursor: "codex-thread-9",
+      integrations: {
+        composio: { key: composioKey, url: "https://test.composio.dev/mcp" },
+        agents: {
+          command: process.execPath,
+          args: ["/fake/agents-proxy.js"],
+          env: { OMB_BOT_ID: "b1" },
+        },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const methods = seen.calls.map((c: { method: string }) => c.method);
+    expect(methods).toContain("thread/resume");
+    expect(methods).not.toContain("thread/start");
+    expect(seen.threadStartConfig).toBeNull();
+    const mcp = seen.threadResumeConfig?.mcp_servers;
+    expect(mcp.agents).toMatchObject({ args: ["/fake/agents-proxy.js"] });
+    expect(mcp.composio).toEqual({
+      url: "https://test.composio.dev/mcp",
+      bearer_token_env_var: "CODEX_MCP_COMPOSIO_KEY",
+    });
+    expect(seen.env.CODEX_MCP_COMPOSIO_KEY).toBe(composioKey);
+    expect(JSON.stringify(seen.argv)).not.toContain(composioKey);
+    expect(JSON.stringify(seen.threadResumeConfig)).not.toContain(composioKey);
   });
 });
