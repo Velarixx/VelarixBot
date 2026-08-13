@@ -1,20 +1,27 @@
 name: CI
 
-# Ubuntu only on every PR and main. macOS is 10× and Windows is 2×
-# GitHub-hosted minutes. Run those via the Portable workflow (manual).
+# One Ubuntu job. typecheck, test, and the production UI build run together
+# on the same runner. macOS/Windows stay on the manual Portable workflow.
+#
+# PRs only. A merge to main already passed these checks on the PR, so a
+# second run on push would just burn fair-use minutes.
 on:
-  push:
-    branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    name: typecheck + test
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    name: typecheck + test + build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -27,7 +34,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm test
-      - name: production UI build
-        run: pnpm exec vite build
+      - name: typecheck, test, production UI build
+        run: |
+          pnpm typecheck
+          pnpm test
+          pnpm exec vite build
