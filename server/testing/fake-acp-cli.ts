@@ -7,6 +7,10 @@
 //
 //   FAKE_ACP_MODE   happy (default) | exit-early | hang | no-auth | permission
 //                   | credential (permission ask that is a sign-in handoff)
+//                   | auth-error (authenticate RPC errors — a dead login)
+//                   | expired-token (authenticate succeeds, then
+//                     session/prompt fails with ACP auth_required -32000 —
+//                     the token-expired-mid-session shape)
 //                   | ask-peer (spawn the injected "agents" MCP server from
 //                     session/new's mcpServers, call list_bots + ask_bot on a
 //                     peer, and reply with what the peer said — the comms e2e)
@@ -14,12 +18,19 @@
 //                     reply with the sidebar id the harness returned)
 //   FAKE_ACP_DUMP   path to write {argv, env} as JSON, so a test can assert
 //                   argv shape (agent/stdio flags) and env hygiene
+//   FAKE_ACP_AUTH_IDS  comma-separated authMethods ids that initialize
+//                   advertises (default "cached_token") — lets harnesses
+//                   that pick a different method (hermes → chatgpt-oauth)
+//                   run both the happy and the fail-closed path against the
+//                   same fake
+//   FAKE_ACP_CREATE_NAME  bot name for create-bot mode (default "Ops")
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_ACP_MODE ?? "happy";
+const AUTH_REQUIRED_CODE = -32000; // ACP's designated auth_required error code
 const argv = process.argv.slice(2);
 const dumpPath = process.env.FAKE_ACP_DUMP;
 function writeDump(patch: Record<string, unknown>) {
@@ -138,7 +149,11 @@ function handle(msg: any) {
         process.stderr.write("fake-acp: simulated crash before result\n");
         process.exit(3);
       }
-      const authMethods = mode === "no-auth" ? [] : [{ id: "cached_token" }];
+      const authIds = (process.env.FAKE_ACP_AUTH_IDS ?? "cached_token")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const authMethods = mode === "no-auth" ? [] : authIds.map((id) => ({ id }));
       result(msg.id, {
         protocolVersion: 1,
         authMethods,
@@ -148,6 +163,10 @@ function handle(msg: any) {
       break;
     }
     case "authenticate":
+      if (mode === "auth-error") {
+        out({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "login expired — authenticate failed" } });
+        break;
+      }
       result(msg.id, {});
       break;
     case "session/new": {
@@ -166,6 +185,16 @@ function handle(msg: any) {
     }
     case "session/prompt": {
       writeDump({ sessionPrompt: msg.params });
+      if (mode === "expired-token") {
+        // authenticate said yes earlier; the token died between then and the
+        // prompt. Must settle the turn as auth_required — never hang.
+        out({
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: AUTH_REQUIRED_CODE, message: "authentication required — token expired" },
+        });
+        return;
+      }
       if (mode === "hang") {
         // never resolve the prompt — lets tests exercise interrupt
         setInterval(() => {}, 1_000);
@@ -200,10 +229,11 @@ function handle(msg: any) {
       if (mode === "create-bot" && agentsMcp) {
         const depth = Number(agentsMcp.env?.find((e) => e.name === "OMB_TURN_DEPTH")?.value ?? "0") || 0;
         if (depth === 0) {
+          const createName = process.env.FAKE_ACP_CREATE_NAME ?? "Ops";
           void driveMcp(agentsMcp, [
             {
               name: "create_bot",
-              args: () => ({ name: "Ops", title: "Ops specialist", description: "Handles ops" }),
+              args: () => ({ name: createName, title: `${createName} specialist`, description: "Handles ops" }),
             },
           ])
             .then((reply) => {

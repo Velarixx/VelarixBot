@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { CHAT_ONLY_GROUNDING, CODEX_GROUNDING, turnGrounding } from "./grounding.ts";
+import { CHAT_ONLY_GROUNDING, CODEX_GROUNDING, HERMES_GROUNDING, turnGrounding } from "./grounding.ts";
 
 const indexSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "index.ts"), "utf8");
 
@@ -16,6 +16,19 @@ describe("turnGrounding", () => {
     expect(CODEX_GROUNDING).toMatch(/create_bot/);
     expect(CODEX_GROUNDING).toMatch(/update_bot/);
     expect(CODEX_GROUNDING).toMatch(/shell|PowerShell/i);
+  });
+
+  it("grounds Hermes on the same rails as Codex", () => {
+    expect(turnGrounding("hermesAgent")).toBe(HERMES_GROUNDING);
+    expect(HERMES_GROUNDING).toMatch(/in-app browser/i);
+    expect(HERMES_GROUNDING).toMatch(/web_search/);
+    expect(HERMES_GROUNDING).toMatch(/fetch_page/);
+    expect(HERMES_GROUNDING).toMatch(/create_bot/);
+    expect(HERMES_GROUNDING).toMatch(/update_bot/);
+    expect(HERMES_GROUNDING).toMatch(/delete_bot/);
+    expect(HERMES_GROUNDING).toMatch(/shell|PowerShell/i);
+    expect(HERMES_GROUNDING).toMatch(/workspace/i);
+    expect(HERMES_GROUNDING).toMatch(/permission/i);
   });
 
   it("tells chat-only drivers they have no tools", () => {

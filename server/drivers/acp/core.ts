@@ -69,6 +69,12 @@ const INIT_TIMEOUT = 20_000;
 const NEW_SESSION_TIMEOUT = 30_000;
 const LOAD_SESSION_TIMEOUT = 120_000; // history replay on a long thread is slow
 
+// ACP's designated auth_required JSON-RPC error code. An expired/revoked
+// login can surface here on session/prompt — authenticate having succeeded
+// earlier — so the code, not only our own loginNote, must map to a clean
+// auth_required failure instead of a generic rpc_error.
+const ACP_AUTH_REQUIRED_CODE = -32000;
+
 function decodeAcpConfig(defaultCli: string) {
   return (raw: unknown): AcpConfig => {
     const o = (raw ?? {}) as Record<string, unknown>;
@@ -351,7 +357,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               if (pend) {
                 rpcPending.delete(msg.id);
                 if (pend.timer) clearTimeout(pend.timer);
-                msg.error ? pend.reject(new Error(msg.error.message ?? JSON.stringify(msg.error))) : pend.resolve(msg.result);
+                msg.error
+                  ? pend.reject(
+                      Object.assign(new Error(msg.error.message ?? JSON.stringify(msg.error)), { code: msg.error.code }),
+                    )
+                  : pend.resolve(msg.result);
               }
             } else if (msg.id !== undefined && msg.method) {
               handleServerRequest(msg);
@@ -460,9 +470,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             else settle(false, reason ?? "failed");
           } catch (e) {
             if (!state.settled) {
-              const message = (e as Error).message;
+              const authError =
+                (e as { code?: unknown }).code === ACP_AUTH_REQUIRED_CODE ||
+                (e as Error).message === support.loginNote;
+              const message = authError ? support.loginNote : (e as Error).message;
               emit({ ...base(threadId, turnId), type: "runtime.error", message });
-              settle(false, message === support.loginNote ? "auth_required" : "rpc_error");
+              settle(false, authError ? "auth_required" : "rpc_error");
             }
           }
         })();
