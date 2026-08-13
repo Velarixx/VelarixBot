@@ -8,8 +8,10 @@ export interface QueuedPrompt {
   attachments: Array<{ path: string; mime?: string }>;
 }
 
-export function sendDecision(busy: boolean): "send" | "queue" {
-  return busy ? "queue" : "send";
+/** Wrapper: a send while the bot is busy (or a POST is already in flight)
+ * becomes enqueue, not startTurn. */
+export function shouldEnqueueSend(busy: boolean, posting = false): boolean {
+  return busy || posting;
 }
 
 export function enqueuePrompt(queue: QueuedPrompt[], item: QueuedPrompt): QueuedPrompt[] {
@@ -26,7 +28,15 @@ export function takeNext(queue: QueuedPrompt[]): { next: QueuedPrompt | null; re
   return { next, rest };
 }
 
-/** Interrupt/stop ends the current turn; queued follow-ups stay in order. */
-export function queueAfterInterrupt(queue: QueuedPrompt[]): QueuedPrompt[] {
-  return queue;
+/** Same walk as the store useEffect: idle bots with a queued head. */
+export function nextFlushBotIds(
+  bots: Array<{ id: string; busy?: boolean }>,
+  queued: Record<string, QueuedPrompt[] | undefined>,
+): string[] {
+  const ids: string[] = [];
+  for (const bot of bots) {
+    if (bot.busy) continue;
+    if (queued[bot.id]?.[0]) ids.push(bot.id);
+  }
+  return ids;
 }

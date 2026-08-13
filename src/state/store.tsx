@@ -18,6 +18,8 @@ import { notifyCopy, unreadBotCount, type NotifyEventType } from "@/lib/notify";
 import {
   cancelPrompt,
   enqueuePrompt,
+  nextFlushBotIds,
+  shouldEnqueueSend,
   takeNext,
   type QueuedPrompt,
 } from "@/lib/prompt-queue";
@@ -253,7 +255,7 @@ function patchCard(state: AppState, botId: string, messageId: string, patch: Par
   }));
 }
 
-function reducer(state: AppState, action: Action): AppState {
+export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "hydrate": {
       const selectedId =
@@ -519,7 +521,7 @@ function reducer(state: AppState, action: Action): AppState {
   }
 }
 
-const initialState: AppState = {
+export const initialState: AppState = {
   bots: [],
   instances: [],
   config: null,
@@ -598,7 +600,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const wrapped: React.Dispatch<Action> = (action) => {
       if (action.type === "send") {
         const bot = stateRef.current.bots.find((b) => b.id === action.botId);
-        if (bot?.busy || posting.has(action.botId)) {
+        if (shouldEnqueueSend(bot?.busy === true, posting.has(action.botId))) {
           rawDispatch({
             type: "enqueue",
             botId: action.botId,
@@ -745,10 +747,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Drain one queued follow-up when a bot becomes idle. Interrupt leaves
   // the queue in place; cancelQueued removes an item before this runs.
   useEffect(() => {
-    for (const bot of state.bots) {
-      if (bot.busy) continue;
-      const next = state.queued[bot.id]?.[0];
-      if (next) dispatch({ type: "flushQueue", botId: bot.id });
+    for (const botId of nextFlushBotIds(state.bots, state.queued)) {
+      dispatch({ type: "flushQueue", botId });
     }
   }, [state.bots, state.queued, dispatch]);
 
