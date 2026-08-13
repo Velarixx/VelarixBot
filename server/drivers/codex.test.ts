@@ -425,7 +425,33 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     });
   });
 
+  it("uses the elicitation {action} shape when a stored rule auto-resolves", async () => {
+    // Harness Always-allow writes a local rule, then later asks call
+    // respondToRequest({ behavior, source: "rule" }) — same finish() as a
+    // carded click. Rules are not a workaround; they must not send {decision}.
+    await create({ mode: "elicitation" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-elicit-rule", text: "call list_bots" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "permission", tool: "list_bots" });
+    await instance.adapter.respondToRequest("t-elicit-rule", opened.requestId!, {
+      behavior: "allow",
+      source: "rule",
+    });
+    const resolved = await recorder.until((e) => e.type === "request.resolved");
+    expect(resolved).toMatchObject({ behavior: "allow", source: "rule" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.decision).toEqual({ action: "accept" });
+    expect(seen.decision).not.toHaveProperty("decision");
+  });
+
   it("auto-accepts MCP elicitation in fullAuto with {action: accept}", async () => {
+    // fullAuto sets approvalPolicy "never", which usually stops Codex from
+    // eliciting. If a request still arrives, the reply must still be {action}.
     await create({ mode: "elicitation", fullAuto: true });
     const dump = join(scratch, "dump.json");
     process.env.FAKE_CODEX_DUMP = dump;
@@ -433,6 +459,25 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     await instance.adapter.sendTurn({ threadId: "t-elicit-auto", text: "call list_bots" });
     await recorder.until((e) => e.type === "turn.completed");
     expect(recorder.events.some((e) => e.type === "request.opened")).toBe(false);
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.decision).toEqual({ action: "accept" });
+    expect(seen.decision).not.toHaveProperty("decision");
+  });
+
+  it("requireApproval under fullAuto still replies {action: accept} for elicitation", async () => {
+    await create({ mode: "elicitation", fullAuto: true });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-elicit-require",
+      text: "call list_bots",
+      requireApproval: true,
+    });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "permission", tool: "list_bots" });
+    await instance.adapter.respondToRequest("t-elicit-require", opened.requestId!, { behavior: "allow" });
+    await recorder.until((e) => e.type === "turn.completed");
     expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ action: "accept" });
   });
 

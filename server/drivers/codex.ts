@@ -19,6 +19,11 @@
 // schema. A wrong schema on elicitation is coerced by the CLI into Decline
 // ("user rejected MCP tool call") even when the user clicked Allow.
 //
+// All three allow-paths share one elicitation reply helper: carded Allow,
+// stored Always-allow rules (respondToRequest source "rule"), and fullAuto.
+// fullAuto's approvalPolicy "never" usually stops Codex from eliciting, but
+// if a request still arrives the reply must still be {action}, not {decision}.
+//
 // resumeCursor is the codex thread id; a later turn tries thread/resume
 // and falls back to a fresh thread/start. Persona is
 // thread/start|resume.developerInstructions (not prepended onto user text).
@@ -327,6 +332,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           send({ jsonrpc: "2.0", id: msg.id, result: { answers } });
         };
         const reply = (allow: boolean, always?: boolean) => {
+          // Shared by carded Allow/Decline, Always-allow rule auto-resolve
+          // (respondToRequest source "rule"), and fullAuto. Do not special-case
+          // those callers onto the command-approval {decision} schema.
           const result = isElicitation
             ? elicitationReply(allow, always)
             : isPermissions
