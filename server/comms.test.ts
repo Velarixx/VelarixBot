@@ -157,7 +157,11 @@ posixOnly("comms e2e (fake ACP fleet)", () => {
       expect(reply.text).toContain("Helper replied:");
       expect(reply.text).toContain("hello from fake acp"); // B's happy-path turn text
       const choices = askerBot.messages.findLast((m: any) => m.kind === "options" && !m.card?.requestId);
-      expect(choices?.card?.options).toEqual(["Tell me more", "Show another approach", "What should I do next?"]);
+      expect(choices?.card?.options).toEqual([
+        "Explain: “peer says: Helper replied: hello from fake acp”",
+        "Verify: “peer says: Helper replied: hello from fake acp”",
+        "Next step for: “peer says: Helper replied: hello from fake acp”",
+      ]);
 
       // visibility: A's thread shows the outbound ask as an activity note
       const note = askerBot.messages.find((m: any) => m.kind === "activity" && m.tool?.name?.startsWith("asked @Helper"));

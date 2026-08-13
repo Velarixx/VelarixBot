@@ -26,18 +26,42 @@ describe("response options", () => {
     ).toEqual(["Continue", "Compare alternatives", "Show details", "Extra"]);
   });
 
-  it("returns useful fallback choices when a provider omits the marker", () => {
-    expect(parseResponseOptions("Done.")).toEqual({
-      text: "Done.",
-      options: ["Tell me more", "Show another approach", "What should I do next?"],
+  it("derives contextual fallback choices when a provider omits the marker", () => {
+    expect(parseResponseOptions("The migration reduced startup time by 40%.")).toEqual({
+      text: "The migration reduced startup time by 40%.",
+      options: [
+        "Explain: “The migration reduced startup time by 40%”",
+        "Verify: “The migration reduced startup time by 40%”",
+        "Next step for: “The migration reduced startup time by 40%”",
+      ],
     });
   });
 
   it("does not expose a malformed transport trailer", () => {
-    expect(parseResponseOptions("Done.\n<velarix_options>not-json</velarix_options>")).toEqual({
-      text: "Done.",
-      options: ["Tell me more", "Show another approach", "What should I do next?"],
+    expect(parseResponseOptions("The migration is ready.\n<velarix_options>not-json</velarix_options>")).toEqual({
+      text: "The migration is ready.",
+      options: [
+        "Explain: “The migration is ready”",
+        "Verify: “The migration is ready”",
+        "Next step for: “The migration is ready”",
+      ],
     });
+  });
+
+  it("keeps even minimal completion fallbacks tied to the completed result", () => {
+    expect(parseResponseOptions("Done.").options).toEqual([
+      "Review the completed result",
+      "Verify the completed result",
+      "Choose the next step",
+    ]);
+  });
+
+  it("keeps long fallback labels bounded without losing response context", () => {
+    const text = "The deployment completed with database migrations, cache warming, health checks, and traffic validation all successful.";
+    const options = parseResponseOptions(text).options;
+    expect(options[0]).toContain("The deployment completed with database migrations");
+    expect(options.every((option) => option.length <= 92)).toBe(true);
+    expect(options.some((option) => option.includes("the response"))).toBe(false);
   });
 
   it("instructs providers to return a few user-selectable choices", () => {

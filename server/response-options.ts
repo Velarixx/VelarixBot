@@ -1,5 +1,20 @@
 const OPTIONS_RE = /\s*<velarix_options>([\s\S]*?)<\/velarix_options>\s*$/i;
-const FALLBACK_OPTIONS = ["Tell me more", "Show another approach", "What should I do next?"];
+const COMPLETION_ONLY = /^(done|completed|finished|ready|success(?:ful(?:ly)?)?)[.!\s]*$/i;
+
+function contextualFallbackOptions(text: string): string[] {
+  const plain = text
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/[`*_#>\[\]()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!plain || COMPLETION_ONLY.test(plain)) {
+    return ["Review the completed result", "Verify the completed result", "Choose the next step"];
+  }
+  const firstSentence = plain.split(/[.!?](?:\s|$)/, 1)[0]?.trim() || plain;
+  const sentence = firstSentence.length > 64 ? `${firstSentence.slice(0, 63).trimEnd()}…` : firstSentence;
+  const context = `“${sentence}”`;
+  return [`Explain: ${context}`, `Verify: ${context}`, `Next step for: ${context}`];
+}
 
 export const responseOptionsPrompt =
   " End every user-facing reply with 2 to 4 short, contextual next-step choices the user can select. " +
@@ -29,7 +44,7 @@ export function parseResponseOptions(value: string): { text: string; options: st
     }
   }
 
-  if (options.length < 2) options = [...FALLBACK_OPTIONS];
+  if (options.length < 2) options = contextualFallbackOptions(text);
   return { text, options };
 }
 
