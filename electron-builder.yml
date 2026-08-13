@@ -1,6 +1,6 @@
-appId: com.openmausbot.app
-productName: OpenMausBot
-artifactName: OpenMausBot-${version}-${arch}.${ext}
+appId: com.velarix.bot
+productName: VelarixBot
+artifactName: VelarixBot-${version}-${arch}.${ext}
 
 # In-app auto-update reads latest-mac.yml + the .zip from this PUBLIC releases
 # repo (separate from the source repo). Public → no token on users' machines.
@@ -8,8 +8,8 @@ artifactName: OpenMausBot-${version}-${arch}.${ext}
 # --publish never, and uploaded to the GitHub release alongside the artifacts.
 publish:
   - provider: github
-    owner: milind-soni
-    repo: openmausbot-releases
+    owner: Velarixx
+    repo: VelarixBot
 
 directories:
   buildResources: build
@@ -49,12 +49,12 @@ mac:
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
-    NSMicrophoneUsageDescription: OpenMausBot uses the microphone for voice dictation into the composer.
-    NSSpeechRecognitionUsageDescription: OpenMausBot transcribes your voice on-device to type messages for you.
+    NSMicrophoneUsageDescription: VelarixBot uses the microphone for voice dictation into the composer.
+    NSSpeechRecognitionUsageDescription: VelarixBot transcribes your voice on-device to type messages for you.
   # Notarization runs manually after the build (notarytool + staple),
   # mirroring the BlueyLite ship_release.sh flow.
   notarize: false
 
 dmg:
   sign: true
-  artifactName: OpenMausBot-${version}.dmg
+  artifactName: VelarixBot-${version}.dmg

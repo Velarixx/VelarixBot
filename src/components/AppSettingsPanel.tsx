@@ -76,7 +76,7 @@ export function AppSettingsPanel() {
       <div className="flex-1 overflow-y-auto px-5 pb-5">
         <div className="mt-2 rounded-xl bg-card p-4">
           <div className="text-[15px] font-medium text-ink">Privacy</div>
-          <div className="mt-0.5 text-[13px] leading-relaxed text-ink-secondary">No analytics, telemetry, account, name, or email collection. Bots, transcripts, routines, and credentials stay in the local OpenMausBot data directory. Anyone using this computer account can access them.</div>
+          <div className="mt-0.5 text-[13px] leading-relaxed text-ink-secondary">No analytics, telemetry, account, name, or email collection. Bots, transcripts, routines, and credentials stay in the local VelarixBot data directory. Anyone using this computer account can access them.</div>
         </div>
 
         <div className="mt-4 rounded-xl bg-card p-4">
