@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { detectSecrets, formatPresence, secretValues, skipMessage, SECRET_NAMES } from "./secrets.mjs";
+import { detectSecrets, formatPresence, secretValues, skipMessage, SECRET_NAMES, codexSecretPresent } from "./secrets.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const temps: string[] = [];
@@ -65,6 +65,9 @@ describe("eval secret gate", () => {
     expect(SECRET_NAMES.codex).toBe("CODEX_AUTH_JSON");
     expect(SECRET_NAMES.claude).toBe("CLAUDE_CODE_OAUTH_TOKEN");
     expect(found).toEqual({ claude: false, codex: true, grok: false, ready: true });
+    expect(codexSecretPresent({ [SECRET_NAMES.codex]: "auth-json-must-not-leak" })).toBe(true);
+    expect(codexSecretPresent({ CODEX_HOME: "/tmp/not-a-secret" })).toBe(false);
+    expect(codexSecretPresent({ CODEX_AUTH: "wrong-name" })).toBe(false);
     expect(formatPresence(found)).not.toContain("auth-json-must-not-leak");
   });
 

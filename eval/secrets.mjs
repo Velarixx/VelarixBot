@@ -14,11 +14,17 @@ function present(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+/** Same Codex check the eval/canary gates use. MCP on-request must call this
+ * — not a HOME-only seed, alias env, or a different secret name. */
+export function codexSecretPresent(env = process.env) {
+  return present(env[SECRET_NAMES.codex]);
+}
+
 /** Which provider secrets are set. Values are never included.
  * `ready` is Claude or Codex — Grok alone does not open the gate. */
 export function detectSecrets(env = process.env) {
   const claude = present(env[SECRET_NAMES.claude]);
-  const codex = present(env[SECRET_NAMES.codex]);
+  const codex = codexSecretPresent(env);
   const grok = present(env[SECRET_NAMES.grok]);
   return { claude, codex, grok, ready: claude || codex };
 }

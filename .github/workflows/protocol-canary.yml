@@ -1,8 +1,9 @@
 # Cheap Codex app-server protocol-drift canary. Not a Playwright run.
 # Weekday daytime Europe/Amsterdam + manual dispatch. Not on pull_request.
-# Installs the real Codex CLI, lists advertised app-server methods/features
-# (including mcpServer/elicitation/request and tool_call_mcp_elicitation),
-# and fails if server/drivers/codex.ts handleServerRequest does not implement them.
+# Installs the real Codex CLI, finds mcpServer/elicitation/request in the
+# binary or initialize handshake (not a feature-flag dump of tool_call_mcp_elicitation),
+# and fails only if server/drivers/codex.ts handleServerRequest does not
+# implement elicitation / -32601. An empty methods scrape is not a fail.
 # Secret (value never logged): CODEX_AUTH_JSON. Skips cleanly when it is absent.
 name: Codex protocol canary
 

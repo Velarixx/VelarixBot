@@ -5,6 +5,15 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright";
 
+import { SECRET_NAMES } from "./secrets.mjs";
+
+/** Accessible name of the settings switch. Must match SettingsPanel aria-label. */
+export const REQUIRE_APPROVAL_SWITCH = "Require approval";
+
+export function requireApprovalSwitch(page) {
+  return page.getByRole("switch", { name: REQUIRE_APPROVAL_SWITCH, exact: true });
+}
+
 const BOTS = [
   {
     name: "Support",
@@ -120,7 +129,7 @@ async function createBot(page, baseUrl, spec, shots) {
   await name.fill(spec.name);
   await page.getByLabel("Title").fill(spec.title);
   await page.getByLabel("Description").fill(spec.description);
-  const approval = page.locator("div.flex").filter({ hasText: "Require approval" }).getByRole("switch");
+  const approval = requireApprovalSwitch(page);
   if ((await approval.getAttribute("aria-checked")) !== "true") await approval.click();
   shots.push(await shot(page, shots.dir, `04-${spec.name.toLowerCase()}-persona`));
   await page.locator("aside").filter({ hasText: "Settings" }).getByRole("button").first().click();
@@ -226,12 +235,13 @@ export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, incl
     onboardingCompleted: false,
     botsCreated: [],
     grokSkipped: !includeGrok,
-    mcpSkipped: true,
+    mcpSkipped: !includeCodexMcp,
     allowClicked: false,
     allowShown: false,
     streamObserved: {},
   };
   const transcripts = [];
+  let error;
 
   try {
     const home = await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
@@ -244,7 +254,7 @@ export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, incl
     const instances = await fetch(`${baseUrl}/api/instances`).then((r) => r.json()).then((d) => d.instances ?? []);
     const roster = [...BOTS];
     if (includeCodexMcp) roster.push(MCP_BOT);
-    else console.log("Skipping Codex MCP on-request scenario (no Codex secret).");
+    else console.log(`Skipping Codex MCP on-request scenario (no ${SECRET_NAMES.codex}).`);
     if (includeGrok) roster.push(GROK_BOT);
     else console.log("Skipping optional Grok scenario (no xAI secret).");
 
@@ -267,8 +277,18 @@ export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, incl
         mechanical.allowShown = true;
       }
     }
+  } catch (err) {
+    error = err;
   } finally {
     await browser.close();
+  }
+
+  if (error) {
+    const wrapped = error instanceof Error ? error : new Error(String(error));
+    wrapped.mechanical = mechanical;
+    wrapped.transcripts = transcripts;
+    wrapped.screenshots = shots;
+    throw wrapped;
   }
 
   return { mechanical, transcripts, screenshots: shots };
