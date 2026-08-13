@@ -6,17 +6,17 @@
 
 **Your own team of AI bots, in a chat app.**
 
-<sub>An open-source version of **Grok Bot** — bring-your-own-agent, local-first, on the models you already have.</sub>
+<sub>A private, local-first take on **Grok Bot**, using the agent subscriptions you already have.</sub>
 
-Every bot in the sidebar is a real agent — Claude or Codex running locally under the hood — with its own
-personality, its own model, its own cloud computer, and its own connected apps.
+Every bot in the sidebar is a real agent. Claude, Codex, or Grok runs locally under the hood with its own
+personality, model, conversation, and connected apps. Bots can share one persistent Box cloud computer.
 Talk to them like contacts. Watch them work. Approve what matters.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
 ![Electron](https://img.shields.io/badge/Electron-macOS%20·%20Windows-2B2E3A?logo=electron&logoColor=9FEAF9)
-![Agents](https://img.shields.io/badge/agents-Claude%20·%20Codex-d97757)
-![PRs](https://img.shields.io/badge/PRs-welcome-38d591)
+![Agents](https://img.shields.io/badge/agents-Claude%20·%20Codex%20·%20Grok-d97757)
+![Distribution](https://img.shields.io/badge/distribution-private%20internal-38d591)
 
 <br>
 
@@ -24,7 +24,7 @@ Talk to them like contacts. Watch them work. Approve what matters.
   <img src="https://img.shields.io/github/v/release/Velarixx/VelarixBot?style=for-the-badge&label=%E2%AC%87%EF%B8%8F%20%20Internal%20downloads&labelColor=070707&color=1084fe" alt="Download VelarixBot for macOS or Windows" height="40">
 </a>
 
-<sub>Private internal releases · macOS DMG + Windows installer · [installation and trust instructions](INTERNAL_INSTALL.md)</sub>
+<sub>Private internal releases built by GitHub Actions · macOS DMG + Windows installer · [installation and trust instructions](INTERNAL_INSTALL.md)</sub>
 
 <br>
 <br>
@@ -37,19 +37,18 @@ Talk to them like contacts. Watch them work. Approve what matters.
 
 ## Why
 
-One assistant in one box is the wrong shape for agents. VelarixBot is an open-source take on **Grok Bot** —
-it keeps the idea (AI as a *messaging app*: a roster of bots you chat with, each with its own personality,
-memory of its thread, model, computer, and apps) and rebuilds it open, local-first, and on the agents you
-already have:
+One assistant in one box is the wrong shape for agents. VelarixBot applies the **Grok Bot** messaging model
+to a private team setup: a roster of bots with separate personalities, conversations, models, and apps,
+backed by local agent CLIs and an optional shared cloud computer.
 
-- **Bring your own agents.** Bots run directly on the `claude`, `codex`, and `grok` CLIs installed on your Mac — your
+- **Bring your own agents.** Bots run directly on the `claude`, `codex`, and `grok` CLIs installed on your computer. They use your
   existing CLI login or OAuth session and subscription, no VelarixBot account and no model proxy in the middle.
 - **Local first.** One small harness server on `127.0.0.1` owns every agent process. Transcripts, keys, and
   events live in `~/.velarixbot`, not a cloud.
 - **Explicit routing.** You choose the provider and model for each bot. If that engine is unavailable, the bot
   reports a blocked state; VelarixBot does not silently fail over to another provider or model.
-- **Agents with hands.** Each bot can get a real computer — a cloud Linux desktop it drives while you watch
-  live, or your own Mac — plus 500+ apps through Composio Connect.
+- **Agents with hands.** Bots can use one shared persistent Box cloud computer, visible while they work. On
+  macOS, a bot can instead use the local Mac after explicit approval. Composio Connect adds optional app integrations.
 
 ## Features
 
@@ -67,10 +66,10 @@ providers dimmed with the reason. Switch a bot's model mid-conversation.
 </td>
 <td width="50%" valign="top">
 
-### 🖥️ Every bot gets a computer
+### 🖥️ One shared cloud computer
 
-Open the Computer panel and the bot's cloud desktop spins up on its own — live screen preview while it
-works, "Open desktop" to take over in your browser, or point the bot at *this Mac* instead.
+Open the Computer panel to connect a bot to the team's persistent Box cloud desktop. You can watch it work
+or open the desktop in your browser. On macOS, you can explicitly switch a bot to *this Mac* instead.
 
 <img src="docs/screenshots/computer-panel.png" alt="Computer panel with live screen preview" width="100%">
 
@@ -151,14 +150,15 @@ flowchart LR
         REG[Driver registry] --> BUS[Event bus → SSE]
         BROKER[Permission broker]
     end
-    subgraph agents ["Agents on your Mac"]
+    subgraph agents ["Agents on this computer"]
         CL[claude CLI]
         CX[codex CLI]
+        GR[grok CLI]
     end
     UI -- "HTTP commands" --> server
     BUS -- "one SSE stream" --> UI
-    REG --> CL & CX
-    CL & CX -- "MCP" --> BROKER
+    REG --> CL & CX & GR
+    CL & CX & GR -- "MCP" --> BROKER
     server -- "Box API" --> BOX[("Cloud computer<br/>box.ascii.dev")]
     server -- "Composio Connect" --> APPS[("Gmail · Slack · GitHub · …")]
 ```
@@ -188,7 +188,7 @@ pnpm dev           # app → http://127.0.0.1:5199
 pnpm dev:desktop   # or the Electron shell
 ```
 
-Source-development requirements: **macOS or Windows**, **Node 24+**, **pnpm**, and at least one agent CLI — [`claude`](https://claude.com/claude-code),
+Source-development requirements: **macOS or Windows**, **Node 24+**, **pnpm**, and at least one agent CLI: [`claude`](https://claude.com/claude-code),
 [`codex`](https://github.com/openai/codex), or [`grok`](https://x.ai/cli) — installed and logged in. They appear
 in the model picker automatically.
 
@@ -198,18 +198,30 @@ Optional, pasted once in **App Settings** (gear in the sidebar footer):
 |---|---|
 | Composio Connect key (`ck_…`) | The connected-apps marketplace |
 | Composio API key (`ak_…`) | The full 500+ app catalog with official logos |
-| Box token ([box.ascii.dev](https://box.ascii.dev)) | Cloud computers for your bots |
+| Box token ([box.ascii.dev](https://box.ascii.dev)) | The shared cloud computer |
 
-## Privacy and shared computers
+## Privacy and data storage
 
 VelarixBot includes **no product analytics or telemetry** and does not ask for or collect your name or email.
 First-run completion is only a local browser-profile flag. Engine detection is local, and microphone permission is
 optional and requested only for on-device dictation.
 
-Bot definitions, transcripts, routines, configuration, and credentials are stored under `~/.velarixbot`. This is
-local-first, not per-user encryption: anyone who can use the same macOS account or read that directory can access the
-data. On a shared computer, use a separate OS account and do not configure credentials you are unwilling to share.
+Bot definitions, transcripts, routines, configuration, and credentials are stored under `~/.velarixbot`. Desktop-only
+runtime files use Electron's OS-specific VelarixBot user-data directory. This is local-first, not per-user encryption:
+anyone who can use the same OS account or read those directories can access the data. On a shared computer, use a
+separate OS account and do not configure credentials you are unwilling to share.
 Provider prompts still go directly to the explicitly selected CLI/provider under that provider's own privacy terms.
+
+## Internal desktop releases
+
+GitHub Actions builds the distributable installers on native runners: separate Intel and Apple Silicon macOS DMGs,
+plus a Windows x64 NSIS installer. These internal builds intentionally use the free manual-trust route. The macOS app
+is ad-hoc signed but not notarized, and the Windows installer is unsigned. Follow [`INTERNAL_INSTALL.md`](INTERNAL_INSTALL.md)
+to verify `SHA256SUMS.txt` and approve only the downloaded VelarixBot copy.
+
+Automatic updates are disabled because Releases are private and VelarixBot does not embed a reusable GitHub token.
+Download each update manually from [private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases), verify its
+checksum, and install it over the existing version.
 
 ```sh
 pnpm typecheck     # app + server
@@ -218,17 +230,18 @@ pnpm build         # typecheck + production build
 
 ## Status
 
-Early but real — the loop works end to end: message → explicitly selected agent/model → streamed reply → tools →
-approvals → computer use, with persistent scheduled routines and visible runtime/usage state. Internal macOS and
-Windows installers are built as release candidates; local computer control and dictation remain macOS-only on Windows RCs.
+The main loop works end to end: message → explicitly selected agent/model → streamed reply → tools → approvals →
+computer use, with persistent scheduled routines and visible runtime/usage state. GitHub Actions builds internal macOS
+and Windows release candidates. Native dictation and local-computer control are unavailable in the first Windows release;
+chat, routines, provider CLIs, and the shared Box cloud computer remain available.
 
-Contributions welcome — the driver SPI in [`server/contracts.ts`](server/contracts.ts) is deliberately
-small; adding a provider is one file in [`server/drivers/`](server/drivers/) plus a one-line registration.
+The driver SPI in [`server/contracts.ts`](server/contracts.ts) is small. Adding a provider requires one driver in
+[`server/drivers/`](server/drivers/) plus registration in the built-in provider list.
 
 ## License
 
 [MIT](LICENSE) © 2026 Milind Soni and contributors.
 
-VelarixBot is an independent, open-source project inspired by Grok Bot. It is
+VelarixBot is an independent, privately distributed project inspired by Grok Bot. Its source remains MIT licensed. It is
 not affiliated with, endorsed by, or associated with xAI; "Grok" is a trademark
 of its respective owner.
