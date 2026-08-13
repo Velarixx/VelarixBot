@@ -23,6 +23,7 @@ import {
 } from "./comms.ts";
 import { ensureBotWorkspace, ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
 import { fetchPage, webSearch } from "./web.ts";
+import { turnGrounding } from "./grounding.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import { newId } from "./contracts.ts";
 
