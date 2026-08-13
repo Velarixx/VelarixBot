@@ -412,6 +412,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
             <button
               role="switch"
+              aria-label="Require approval"
               aria-checked={bot.requireApproval === true}
               onClick={() => patch({ requireApproval: !bot.requireApproval })}
               className={cn(

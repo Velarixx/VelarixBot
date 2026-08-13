@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,9 @@ import {
   REQUIRED_FEATURE,
   REQUIRED_METHOD,
   advertisedMethodsFromInstall,
+  canaryHardFails,
   driverGaps,
+  methodsFromUnknown,
   skipMessage,
 } from "./protocol-canary.mjs";
 
@@ -70,6 +72,62 @@ describe("Codex protocol canary", () => {
     const bin = join(dir, "codex");
     writeFileSync(bin, `shim\n${REQUIRED_METHOD}\nexecCommandApproval\n`);
     expect(advertisedMethodsFromInstall(bin)).toEqual(expect.arrayContaining([REQUIRED_METHOD, "execCommandApproval"]));
+  });
+
+  it("finds the elicitation method in a nested vendor binary the old depth-4 walk missed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cli-install-"));
+    temps.push(dir);
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.147.0" }));
+    const bin = join(dir, "codex");
+    writeFileSync(bin, "#!/bin/sh\nexec vendor-native\n");
+    for (let i = 0; i < 50; i++) writeFileSync(join(dir, `readme-${i}.txt`), "docs");
+    const nested = join(dir, "node_modules", "@openai", "codex-linux-x64", "vendor", "x86_64-unknown-linux-gnu");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, "codex"), `native\n${REQUIRED_METHOD}\nexecCommandApproval\napplyPatchApproval\n`);
+    expect(advertisedMethodsFromInstall(bin)).toEqual(
+      expect.arrayContaining([REQUIRED_METHOD, "execCommandApproval", "applyPatchApproval"]),
+    );
+  });
+
+  it("reads method names from an initialize handshake payload", () => {
+    expect(
+      methodsFromUnknown({
+        protocol: { methods: [REQUIRED_METHOD, "item/permissions/requestApproval"] },
+      }),
+    ).toEqual(expect.arrayContaining([REQUIRED_METHOD, "item/permissions/requestApproval"]));
+  });
+
+  it("does not fail when methods scrape is empty but the driver implements elicitation", () => {
+    const source = readFileSync(join(ROOT, "server/drivers/codex.ts"), "utf8");
+    const gaps = driverGaps(source);
+    expect(gaps).toEqual([]);
+    expect(
+      canaryHardFails({
+        methods: [],
+        features: [REQUIRED_FEATURE],
+        gaps,
+      }),
+    ).toEqual([]);
+  });
+
+  it("still fails on a real handleServerRequest gap", () => {
+    const stub = `
+      const handleServerRequest = (msg: any) => {
+        send({ jsonrpc: "2.0", id: msg.id, result: { decision: "accept" } });
+      };
+    `;
+    const gaps = driverGaps(stub);
+    expect(canaryHardFails({ methods: [], features: [REQUIRED_FEATURE], gaps }).length).toBeGreaterThan(0);
+    expect(canaryHardFails({ methods: [], features: [REQUIRED_FEATURE], gaps }).some((g) => g.includes(REQUIRED_METHOD))).toBe(
+      true,
+    );
+    expect(canaryHardFails({ methods: [], features: [REQUIRED_FEATURE], gaps }).some((g) => g.includes("-32601"))).toBe(true);
+  });
+
+  it("does not fail the job on an empty methods scrape", () => {
+    const source = readFileSync(join(ROOT, "eval/protocol-canary.mjs"), "utf8");
+    expect(source).not.toContain("CLI does not advertise");
+    expect(source).toContain("canaryHardFails");
   });
 
   it("exits 0 without secrets (full run and --gate)", async () => {

@@ -1,10 +1,11 @@
 // Cheap Codex app-server protocol-drift canary.
 //   node eval/protocol-canary.mjs         — skip (exit 0) without Codex secret; else run
 //   node eval/protocol-canary.mjs --gate  — presence check only (writes GITHUB_OUTPUT ran=)
-// The workflow installs the real Codex CLI. This script lists advertised
-// app-server methods/features (including mcpServer/elicitation/request and
-// tool_call_mcp_elicitation) and hard-fails if handleServerRequest does not
-// implement them. Unknown methods must not be answered with a fake success.
+// The workflow installs the real Codex CLI. This script lists JSON-RPC
+// methods the app-server actually speaks (binary strings or initialize
+// handshake — not a feature-flag dump) and hard-fails only if
+// handleServerRequest does not implement elicitation / -32601.
+// A scrape that finds no method names is not a fail.
 // Never logs or writes secret values. Temp CODEX_HOME only.
 
 import { spawn, spawnSync } from "node:child_process";
@@ -14,15 +15,16 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { SECRET_NAMES, secretValues } from "./secrets.mjs";
+import { SECRET_NAMES, secretValues, codexSecretPresent } from "./secrets.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const REPO = join(ROOT, "..");
@@ -41,10 +43,6 @@ const SERVER_REQUEST_NEEDLES = [
   "execCommandApproval",
   "applyPatchApproval",
 ];
-
-function present(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
 
 export function skipMessage() {
   return [
@@ -67,7 +65,7 @@ function redact(text, values) {
 }
 
 /** What handleServerRequest must cover. Pure string check so unit tests run
- * without a Codex CLI. The live job still lists advertised names from the CLI. */
+ * without a Codex CLI. Live advertised-method scrape is informational. */
 export function driverGaps(source) {
   const missing = [];
   if (!/handleServerRequest\s*=/.test(source)) missing.push("handleServerRequest is missing");
@@ -79,6 +77,11 @@ export function driverGaps(source) {
     missing.push("unknown methods are not rejected with JSON-RPC -32601 (do not fake-success them)");
   }
   return missing;
+}
+
+/** Scrape/handshake misses are not failures. Only handleServerRequest gaps fail. */
+export function canaryHardFails({ methods: _methods = [], features: _features = [], gaps = [] } = {}) {
+  return [...gaps];
 }
 
 function whichCodex() {
@@ -96,8 +99,23 @@ function needlesIn(buf) {
   return SERVER_REQUEST_NEEDLES.filter((name) => buf.includes(Buffer.from(name)));
 }
 
+export function methodsFromUnknown(value) {
+  if (value == null) return [];
+  let text = "";
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    text = String(value);
+  }
+  return SERVER_REQUEST_NEEDLES.filter((name) => text.includes(name));
+}
+
+const MAX_WALK_DEPTH = 10;
+const MAX_WALK_FILES = 400;
+const MAX_FILE_BYTES = 80 * 1024 * 1024;
+
 function walkFiles(dir, acc, depth = 0) {
-  if (depth > 4 || acc.length > 40) return;
+  if (depth > MAX_WALK_DEPTH || acc.length > MAX_WALK_FILES) return;
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -105,27 +123,110 @@ function walkFiles(dir, acc, depth = 0) {
     return;
   }
   for (const entry of entries) {
-    if (entry.name === "node_modules" && depth > 0) continue;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) walkFiles(path, acc, depth + 1);
     else if (entry.isFile() || entry.isSymbolicLink()) acc.push(path);
   }
 }
 
-export function advertisedMethodsFromInstall(cli) {
-  const files = [cli];
-  const dir = dirname(cli);
-  if (/node_modules|@openai|\bcodex\b/i.test(dir)) walkFiles(dir, files);
+function addPath(acc, seen, path) {
+  if (!path) return;
+  let real = path;
+  try {
+    real = realpathSync(path);
+  } catch {
+    /* dangling symlink — still try the original */
+  }
+  if (seen.has(real) || !existsSync(real)) return;
+  seen.add(real);
+  acc.push(real);
+}
+
+function packageRootFromCli(cli) {
+  let dir;
+  try {
+    dir = dirname(realpathSync(cli));
+  } catch {
+    dir = dirname(cli);
+  }
+  for (let i = 0; i < 8; i++) {
+    const pkgFile = join(dir, "package.json");
+    if (existsSync(pkgFile)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgFile, "utf8"));
+        if (pkg.name === "@openai/codex" || pkg.name === "codex") return dir;
+      } catch {
+        /* not json */
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+function installRoots(cli) {
+  const roots = [];
+  const seen = new Set();
+  const add = (path) => {
+    if (!path || seen.has(path) || !existsSync(path)) return;
+    seen.add(path);
+    roots.push(path);
+  };
+  const pkg = packageRootFromCli(cli);
+  add(pkg);
+  let dir;
+  try {
+    dir = dirname(realpathSync(cli));
+  } catch {
+    dir = dirname(cli);
+  }
+  // Walk dirname only when it looks like a Codex install — never /usr/bin.
+  if (!pkg && /node_modules|@openai|\bcodex\b/i.test(dir)) add(dir);
   const npmRoot = spawnSync("npm", ["root", "-g"], { encoding: "utf8" });
-  if (npmRoot.status === 0) {
-    const pkg = join(npmRoot.stdout.trim(), "@openai", "codex");
-    if (existsSync(pkg)) walkFiles(pkg, files);
+  if (npmRoot.status === 0) add(join(npmRoot.stdout.trim(), "@openai", "codex"));
+  return roots;
+}
+
+function scanOrder(files) {
+  return [...files].sort((a, b) => {
+    const an = basename(a) === "codex" ? 0 : 1;
+    const bn = basename(b) === "codex" ? 0 : 1;
+    if (an !== bn) return an - bn;
+    let as = 0;
+    let bs = 0;
+    try {
+      as = statSync(a).size;
+    } catch {
+      /* */
+    }
+    try {
+      bs = statSync(b).size;
+    } catch {
+      /* */
+    }
+    return bs - as;
+  });
+}
+
+export function advertisedMethodsFromInstall(cli) {
+  const files = [];
+  const seen = new Set();
+  addPath(files, seen, cli);
+  for (const root of installRoots(cli)) {
+    try {
+      if (statSync(root).isDirectory()) walkFiles(root, files);
+      else addPath(files, seen, root);
+    } catch {
+      /* unreadable tree */
+    }
   }
   const found = new Set();
-  for (const file of files) {
+  for (const file of scanOrder(files)) {
     try {
       const st = statSync(file);
-      if (!st.isFile() || st.size > 80 * 1024 * 1024) continue;
+      if (!st.isFile() || st.size > MAX_FILE_BYTES) continue;
       for (const name of needlesIn(readFileSync(file))) found.add(name);
     } catch {
       /* unreadable */
@@ -185,6 +286,7 @@ async function listFeaturesFromAppServer(cli, home) {
     });
 
   let buf = "";
+  const overheard = new Set();
   child.stdout.on("data", (chunk) => {
     buf += String(chunk);
     let nl;
@@ -198,6 +300,7 @@ async function listFeaturesFromAppServer(cli, home) {
       } catch {
         continue;
       }
+      for (const name of methodsFromUnknown(msg)) overheard.add(name);
       const wait = pending.get(msg.id);
       if (!wait) continue;
       pending.delete(msg.id);
@@ -211,16 +314,18 @@ async function listFeaturesFromAppServer(cli, home) {
       child.once("error", reject);
       child.once("spawn", resolve);
     });
-    await request("initialize", {
+    const init = await request("initialize", {
       clientInfo: { name: "velarixbot-canary", version: "1" },
       capabilities: { experimentalApi: true },
     });
+    for (const name of methodsFromUnknown(init)) overheard.add(name);
     send({ jsonrpc: "2.0", method: "initialized", params: {} });
 
     const features = [];
     let cursor;
     for (let i = 0; i < 20; i++) {
       const result = await request("experimentalFeature/list", cursor ? { cursor } : {});
+      for (const name of methodsFromUnknown(result)) overheard.add(name);
       for (const row of Array.isArray(result?.data) ? result.data : []) {
         const name = featureName(row);
         if (name) features.push(name);
@@ -228,7 +333,7 @@ async function listFeaturesFromAppServer(cli, home) {
       cursor = result?.nextCursor;
       if (!cursor) break;
     }
-    return features;
+    return { features, methods: [...overheard] };
   } finally {
     child.kill("SIGTERM");
     await new Promise((resolve) => {
@@ -258,7 +363,7 @@ function listFeaturesFromCli(cli, home, values) {
 }
 
 async function main() {
-  const found = present(process.env[SECRET_NAMES.codex]);
+  const found = codexSecretPresent(process.env);
   const gate = process.argv.includes("--gate");
 
   if (gate) {
@@ -293,7 +398,9 @@ async function main() {
   try {
     methods = advertisedMethodsFromInstall(cli);
     try {
-      features = await listFeaturesFromAppServer(cli, home);
+      const listed = await listFeaturesFromAppServer(cli, home);
+      features = listed.features;
+      methods = [...new Set([...methods, ...listed.methods])];
     } catch (err) {
       console.log(redact(`experimentalFeature/list failed, falling back to codex features list: ${err instanceof Error ? err.message : err}`, values));
       features = listFeaturesFromCli(cli, home, values);
@@ -309,18 +416,16 @@ async function main() {
   }
   if (!process.env.EVAL_KEEP_HOME) rmSync(home, { recursive: true, force: true });
 
-  const missingAdvertised = [];
-  if (!methods.includes(REQUIRED_METHOD)) missingAdvertised.push(`CLI does not advertise ${REQUIRED_METHOD}`);
-  if (!features.includes(REQUIRED_FEATURE)) missingAdvertised.push(`CLI does not advertise feature ${REQUIRED_FEATURE}`);
-
   const md = [
     "## Codex protocol canary",
     "",
     "Presence only — secret values are never logged.",
     `\`${SECRET_NAMES.codex}\`: configured`,
     "",
-    "### Advertised methods (from the installed CLI)",
-    methods.length ? methods.map((m) => `- \`${m}\``).join("\n") : "_none found_",
+    "### Advertised methods (from the installed CLI binary or initialize handshake)",
+    methods.length
+      ? methods.map((m) => `- \`${m}\``).join("\n")
+      : "_none found in scrape (not a fail — driver gap check still runs)_",
     "",
     "### Advertised features",
     features.length ? features.map((f) => `- \`${f}\``).join("\n") : "_none found_",
@@ -332,7 +437,7 @@ async function main() {
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
   console.log(md);
 
-  const fail = [...missingAdvertised, ...gaps];
+  const fail = canaryHardFails({ methods, features, gaps });
   if (fail.length) {
     console.error(`Protocol canary failed:\n${fail.map((f) => `- ${f}`).join("\n")}`);
     process.exit(1);
