@@ -3,10 +3,11 @@
 // routing model-controlled arguments through cmd.exe.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { _internal, cliExec, cliVersion, killProcessTree } from "./cli.ts";
+import { _internal, cliExec, cliVersion, killProcessTree, resolveCliCommand } from "./cli.ts";
 
 const PRINT_MARKER = "process.stdout.write(String(process.env.VELARIX_TEST_MARKER))";
 
@@ -123,6 +124,37 @@ describe("Windows hidden process contract", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+describe("script CLI resolution (Windows-safe fakes)", () => {
+  const testing = join(dirname(fileURLToPath(import.meta.url)), "..", "testing");
+
+  it("runs a .ts fake under process.execPath so Windows can spawn it", async () => {
+    const fake = join(testing, "fake-acp-cli.ts");
+    const resolved = resolveCliCommand(fake);
+    expect(resolved.command).toBe(process.execPath);
+    expect(resolved.args).toEqual([fake]);
+    expect(resolved.env).toMatchObject({ ELECTRON_RUN_AS_NODE: "1" });
+    expect(await cliVersion(fake)).toMatch(/fake-acp/);
+  });
+
+  it("answers fake-claude --version and one-shot text generate", async () => {
+    const fake = join(testing, "fake-claude-cli.ts");
+    expect(await cliVersion(fake)).toMatch(/fake-claude/);
+    const result = await cliExec(fake, ["-p", "distill this", "--model", "claude-haiku-4-5", "--output-format", "text"]);
+    expect(result.ok).toBe(true);
+    expect(result.stdout).toMatch(/concise replies/i);
+  });
+
+  it("answers fake-codex --version", async () => {
+    expect(await cliVersion(join(testing, "fake-codex-app-server.ts"))).toMatch(/fake-codex/);
+  });
+
+  it("does not rewrite a bare CLI name into a node script spawn", () => {
+    const resolved = resolveCliCommand("claude");
+    expect(resolved.args).toEqual([]);
+    expect(resolved.command).not.toBe(process.execPath);
   });
 });
 

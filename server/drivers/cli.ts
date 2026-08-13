@@ -21,6 +21,9 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 
 const IS_WIN = process.platform === "win32";
 const SHIM_RE = /\.(cmd|bat)$/i;
+// Test fakes and JS CLIs. Shebang execution is POSIX-only — Windows cannot
+// spawn a .ts file — so these always run under process.execPath.
+const SCRIPT_RE = /\.[cm]?[jt]s$/i;
 // cmd.exe metacharacters that survive quoting (`%VAR%` expands even inside
 // double quotes). Only consulted on the last-resort .cmd path.
 const CMD_META = /[&|<>^%!]/;
@@ -99,7 +102,9 @@ function shimScriptTarget(shim: string): string | null {
 
 /**
  * How to spawn a CLI on this platform:
- * - POSIX: the raw name (resolved via PATH by the shell-less spawn).
+ * - `.ts` / `.js` scripts (test fakes): this process's node. Shebang
+ *   execution is POSIX-only; Windows cannot exec a `.ts` file.
+ * - POSIX binaries: the raw name (resolved via PATH by the shell-less spawn).
  * - Windows: the resolved .exe, or — for .cmd shims — node running the
  *   shim's real JS entry, which needs no cmd.exe at all.
  * Falls back to the raw name when nothing better can be resolved.
@@ -107,6 +112,13 @@ function shimScriptTarget(shim: string): string | null {
 export function resolveCliCommand(
   cli: string,
 ): { command: string; args: string[]; env?: Record<string, string> } {
+  if (SCRIPT_RE.test(cli)) {
+    return {
+      command: process.execPath,
+      args: [isAbsolute(cli) ? cli : resolve(cli)],
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    };
+  }
   if (!IS_WIN) return { command: cli, args: [] };
   const resolved = resolveCli(cli);
   if (SHIM_RE.test(resolved)) {

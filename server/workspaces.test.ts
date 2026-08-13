@@ -11,9 +11,7 @@ const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const FAKE_CLI = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
 const BASE = `http://127.0.0.1:${PORT}`;
-const posixOnly = describe.skipIf(process.platform === "win32");
-
-posixOnly("per-bot box workspaces (no shared 409)", () => {
+describe("per-bot box workspaces (no shared 409)", () => {
   let child: ChildProcess;
   let home: string;
   let stderr = "";
@@ -47,6 +45,7 @@ posixOnly("per-bot box workspaces (no shared 409)", () => {
       cwd: join(SERVER_DIR, ".."),
       env: {
         ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
         HOME: home,
         USERPROFILE: home,
         OMB_PORT: String(PORT),
