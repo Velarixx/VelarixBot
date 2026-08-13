@@ -68,14 +68,19 @@ jobs:
         run: |
           set -euo pipefail
           dmg="release/VelarixBot-${{ inputs.version }}-${{ matrix.arch }}.dmg"
+          if [[ "${{ matrix.arch }}" == "x64" ]]; then
+            app="release/mac/VelarixBot.app"
+          else
+            app="release/mac-${{ matrix.arch }}/VelarixBot.app"
+          fi
           test -f "$dmg"
           hdiutil verify "$dmg"
-          test -x "release/mac-${{ matrix.arch }}/VelarixBot.app/Contents/Resources/speech-helper"
-          test -x "release/mac-${{ matrix.arch }}/VelarixBot.app/Contents/Resources/cua-driver"
-          file "release/mac-${{ matrix.arch }}/VelarixBot.app/Contents/Resources/speech-helper" | grep -q "universal binary"
-          file "release/mac-${{ matrix.arch }}/VelarixBot.app/Contents/Resources/cua-driver" | grep -q "universal binary"
-          test -f "release/mac-${{ matrix.arch }}/VelarixBot.app/Contents/Resources/cua-sdk/node_modules/@trycua/cua-driver/dist/embedded.js"
-          codesign --verify --deep --strict --verbose=2 "release/mac-${{ matrix.arch }}/VelarixBot.app"
+          test -x "$app/Contents/Resources/speech-helper"
+          test -x "$app/Contents/Resources/cua-driver"
+          file "$app/Contents/Resources/speech-helper" | grep -q "universal binary"
+          file "$app/Contents/Resources/cua-driver" | grep -q "universal binary"
+          test -f "$app/Contents/Resources/cua-sdk/node_modules/@trycua/cua-driver/dist/embedded.js"
+          codesign --verify --deep --strict --verbose=2 "$app"
       - uses: actions/upload-artifact@v4
         with:
           name: velarixbot-mac-${{ matrix.arch }}-${{ inputs.version }}
