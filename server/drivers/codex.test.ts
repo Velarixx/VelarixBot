@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
+import { FALLBACK_CODEX_MODELS } from "./codex-models.ts";
 import { CodexDriver } from "./codex.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-codex-app-server.ts");
@@ -25,6 +26,59 @@ describe("CodexDriver.decodeConfig", () => {
     expect(CodexDriver.decodeConfig({ fullAuto: true }).fullAuto).toBe(true);
     // anything non-true is off — a truthy string must not enable full auto
     expect(CodexDriver.decodeConfig({ fullAuto: "yes" }).fullAuto).toBe(false);
+  });
+});
+
+posixOnly("CodexDriver model catalog (fake CLI dump)", () => {
+  let instance: ProviderInstance;
+  let scratch: string;
+
+  beforeEach(() => {
+    chmodSync(FAKE_CLI, 0o755);
+    scratch = mkdtempSync(join(tmpdir(), "omb-codex-catalog-"));
+  });
+
+  afterEach(async () => {
+    delete process.env.FAKE_CODEX_MODE;
+    delete process.env.FAKE_CODEX_DUMP;
+    await instance?.dispose();
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("flows the fake CLI debug-models dump into picker options", async () => {
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+    instance = await CodexDriver.create({
+      instanceId: "codex-catalog",
+      displayName: "Codex Catalog",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv.slice(0, 2)).toEqual(["debug", "models"]);
+    expect(seen.argv).toContain("--bundled");
+    const ids = instance.models.options.map((o) => o.id);
+    expect(ids).not.toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.4"]);
+    expect(ids).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
+    expect(instance.models.options.find((o) => o.id === "gpt-5.6-luna")?.label).toBe("GPT-5.6 Luna");
+    expect(ids).not.toContain("codex-auto-review");
+    expect(instance.models.default).toBe("gpt-5.6-sol");
+  });
+
+  it("falls back to the static catalog when debug models fails", async () => {
+    process.env.FAKE_CODEX_MODE = "no-models";
+    instance = await CodexDriver.create({
+      instanceId: "codex-catalog-fallback",
+      displayName: "Codex Catalog",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    expect(instance.models).toEqual(FALLBACK_CODEX_MODELS);
+    expect(instance.models.options.map((o) => o.id)).not.toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.4"]);
+    expect(instance.models.options.some((o) => o.id === "gpt-5.6-luna")).toBe(true);
   });
 });
 
