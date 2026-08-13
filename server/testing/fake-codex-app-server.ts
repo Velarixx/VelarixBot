@@ -12,6 +12,11 @@
 //                     | user-input (conversational A/B/C requestUserInput)
 //                     | user-input-approval (requestUserInput Accept/Decline)
 //                     | credential (requestUserInput sign-in handoff)
+//                     | elicitation (mcpServer/elicitation/request — current
+//                       CLI MCP-tool approval; reply is {action}, not {decision})
+//                     | permissions (item/permissions/requestApproval)
+//                     | command-approval (item/commandExecution/requestApproval)
+//                     | unknown-method (unsupported server→client method)
 //                     | exit-zero (assistant text, then process.exit(0)
 //                       without turn/completed)
 //                     | exit-early (crash with code 3 before a turn)
@@ -136,6 +141,45 @@ process.stdin.on("data", (chunk) => {
         if (mode === "approval") {
           out({ jsonrpc: "2.0", id: 100, method: "execCommandApproval", params: { command: "rm -rf scratch" } });
           // turn continues from the approval response handler above
+        } else if (mode === "command-approval") {
+          out({
+            jsonrpc: "2.0",
+            id: 100,
+            method: "item/commandExecution/requestApproval",
+            params: { command: "rm -rf scratch", itemId: "i1", threadId: "codex-thread-1", turnId: "turn-1", startedAtMs: 0 },
+          });
+        } else if (mode === "elicitation") {
+          out({
+            jsonrpc: "2.0",
+            id: 100,
+            method: "mcpServer/elicitation/request",
+            params: {
+              threadId: "codex-thread-1",
+              turnId: "turn-1",
+              serverName: "agents",
+              mode: "form",
+              message: 'Allow the agents MCP server to run tool "list_bots"?',
+              _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"] },
+              requestedSchema: { type: "object", properties: {} },
+            },
+          });
+        } else if (mode === "permissions") {
+          out({
+            jsonrpc: "2.0",
+            id: 100,
+            method: "item/permissions/requestApproval",
+            params: {
+              threadId: "codex-thread-1",
+              turnId: "turn-1",
+              itemId: "i1",
+              startedAtMs: 0,
+              cwd: process.cwd(),
+              reason: "Need network to fetch docs",
+              permissions: { network: { enabled: true } },
+            },
+          });
+        } else if (mode === "unknown-method") {
+          out({ jsonrpc: "2.0", id: 100, method: "item/tool/call", params: { name: "surprise" } });
         } else if (mode === "user-input") {
           out({
             jsonrpc: "2.0",

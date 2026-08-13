@@ -104,6 +104,10 @@ describe("memory-proxy MCP surface", () => {
     expect(init.result.serverInfo.name).toContain("memory");
     const list = await rpc("tools/list");
     expect(list.result.tools.map((t: { name: string }) => t.name)).toEqual(["remember", "recall"]);
+    expect(list.result.tools.find((t: { name: string }) => t.name === "recall").annotations).toEqual({
+      readOnlyHint: true,
+    });
+    expect(list.result.tools.find((t: { name: string }) => t.name === "remember").annotations).toBeUndefined();
   });
 
   it("remember forwards bot notes and authenticates with the shared token", async () => {

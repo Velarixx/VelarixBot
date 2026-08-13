@@ -117,6 +117,11 @@ describe("agents-proxy MCP surface", () => {
     expect(init.result.serverInfo.name).toContain("agents");
     const list = await rpc("tools/list");
     expect(list.result.tools.map((t: { name: string }) => t.name)).toEqual(["list_bots", "ask_bot", "create_bot"]);
+    expect(list.result.tools.find((t: { name: string }) => t.name === "list_bots").annotations).toEqual({
+      readOnlyHint: true,
+    });
+    expect(list.result.tools.find((t: { name: string }) => t.name === "ask_bot").annotations).toBeUndefined();
+    expect(list.result.tools.find((t: { name: string }) => t.name === "create_bot").annotations).toBeUndefined();
   });
 
   it("list_bots renders the roster and authenticates with the shared token", async () => {
