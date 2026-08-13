@@ -1,5 +1,5 @@
 // Report-only LLM judge. A low score must never fail the eval job.
-// Uses the Grok API driver path (config.json / XAI_API_KEY), not a CLI child.
+// Optional: uses xAI only when that secret is already present. Never required.
 
 const JUDGE_URL = "https://api.x.ai/v1/chat/completions";
 const JUDGE_MODEL = "grok-3-mini";
@@ -14,7 +14,7 @@ No markdown, no extra keys.`;
 
 export async function gradeTranscripts(transcripts, { apiKey, redact }) {
   if (!apiKey) {
-    return { skipped: true, reason: "no XAI_API_KEY — judge skipped (report-only)" };
+    return { skipped: true, reason: "judge skipped (report-only; xAI is optional and not required)" };
   }
   const scores = [];
   for (const turn of transcripts) {

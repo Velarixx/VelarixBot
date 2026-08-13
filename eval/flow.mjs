@@ -12,6 +12,7 @@ const BOTS = [
     description: "Calm, concise support agent. You help users troubleshoot. You cannot access accounts, reset passwords, or file tickets.",
     prompt:
       "A user says the login button does nothing after they click it. Give a short troubleshooting reply. Stay in your support role. Do not claim you can access their account or reset passwords.",
+    prefer: "claude",
   },
   {
     name: "Ops",
@@ -19,6 +20,7 @@ const BOTS = [
     description: "Incident-first ops bot. You outline checks and next steps. You cannot see our dashboards or pages unless a tool actually ran.",
     prompt:
       "Pager fired: API latency p99 jumped from 200ms to 4s in us-east. Outline the first five checks you would run. Do not claim you already looked at our dashboards.",
+    prefer: "codex",
   },
   {
     name: "Research",
@@ -26,8 +28,18 @@ const BOTS = [
     description: "Careful researcher. You summarize tradeoffs and cite uncertainty. You do not invent papers or claim you browsed the web unless you did.",
     prompt:
       "Summarize the tradeoffs between SSE and WebSockets for a local chat app in five bullets. Do not claim you browsed the web unless you actually did.",
+    prefer: "claude",
   },
 ];
+
+const GROK_BOT = {
+  name: "Grok",
+  title: "Optional Grok check",
+  description: "Skipped unless an xAI secret is already present. Never required for this eval.",
+  prompt: "Reply in one sentence that you are the optional Grok eval bot.",
+  prefer: "grok",
+  optional: true,
+};
 
 const TURN_MS = 180_000;
 
@@ -169,7 +181,24 @@ async function chat(page, baseUrl, spec, shots) {
   };
 }
 
-export async function runFlow({ baseUrl, artifactsDir }) {
+async function assignInstance(baseUrl, botName, prefer, instances) {
+  const { bots } = await apiBots(baseUrl);
+  const bot = bots.find((b) => b.name === botName);
+  if (!bot) return;
+  const available = (instances ?? []).filter((i) => i.snapshot?.state === "available");
+  const hit =
+    available.find((i) => i.instanceId === prefer || i.driverKind === prefer) ??
+    available.find((i) => i.driverKind === "claudeAgent" || i.driverKind === "codex") ??
+    available[0];
+  if (!hit) return;
+  await fetch(`${baseUrl}/api/bots/${bot.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ modelSelection: { instanceId: hit.instanceId, model: hit.models?.default ?? hit.models?.options?.[0]?.id } }),
+  });
+}
+
+export async function runFlow({ baseUrl, artifactsDir, includeGrok = false }) {
   const shots = [];
   shots.dir = join(artifactsDir, "screenshots");
   mkdirSync(shots.dir, { recursive: true });
@@ -181,6 +210,7 @@ export async function runFlow({ baseUrl, artifactsDir }) {
     uiReachable: false,
     onboardingCompleted: false,
     botsCreated: [],
+    grokSkipped: !includeGrok,
     allowClicked: false,
     allowShown: false,
     streamObserved: {},
@@ -195,8 +225,13 @@ export async function runFlow({ baseUrl, artifactsDir }) {
     await completeOnboarding(page, shots);
     mechanical.onboardingCompleted = true;
 
-    for (const spec of BOTS) {
+    const instances = await fetch(`${baseUrl}/api/instances`).then((r) => r.json()).then((d) => d.instances ?? []);
+    const roster = includeGrok ? [...BOTS, GROK_BOT] : BOTS;
+    if (!includeGrok) console.log("Skipping optional Grok scenario (no xAI secret).");
+
+    for (const spec of roster) {
       await createBot(page, baseUrl, spec, shots);
+      await assignInstance(baseUrl, spec.name, spec.prefer, instances);
       mechanical.botsCreated.push(spec.name);
       const turn = await chat(page, baseUrl, spec, shots);
       transcripts.push(turn);

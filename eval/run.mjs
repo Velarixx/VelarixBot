@@ -34,7 +34,10 @@ function failMechanical(mechanical) {
   if (!mechanical.serverUp) missing.push("server up");
   if (!mechanical.uiReachable) missing.push("UI reachable");
   if (!mechanical.onboardingCompleted) missing.push("onboarding completed");
-  if ((mechanical.botsCreated ?? []).length < 3) missing.push("bots created (Support / Ops / Research)");
+  const created = mechanical.botsCreated ?? [];
+  if (!["Support", "Ops", "Research"].every((name) => created.includes(name))) {
+    missing.push("bots created (Support / Ops / Research)");
+  }
   const streams = mechanical.streamObserved ?? {};
   if (!Object.values(streams).some(Boolean)) missing.push("stream observed");
   return missing;
@@ -68,6 +71,7 @@ function seedHome(home, found, env) {
     grok: { driver: found.grok ? "grok" : "grokAgent" },
   };
   const cfg = { instances };
+  // xAI is optional. Only write the key when it is already present — never required.
   if (found.grok) cfg.xai = { key: env[SECRET_NAMES.grok] };
   writeFileSync(join(home, ".velarixbot", "config.json"), JSON.stringify(cfg, null, 2));
 
@@ -97,6 +101,7 @@ function summaryMarkdown(found, mechanical, judge, missing) {
     `- UI reachable: ${mechanical.uiReachable ? "yes" : "no"}`,
     `- onboarding: ${mechanical.onboardingCompleted ? "yes" : "no"}`,
     `- bots created: ${(mechanical.botsCreated ?? []).join(", ") || "none"}`,
+    `- Grok scenario: ${mechanical.grokSkipped ? "skipped (xAI not required)" : "ran (optional secret present)"}`,
     `- Allow clicked: ${mechanical.allowClicked ? "yes" : mechanical.allowShown ? "shown, click failed" : "not shown (not a fail)"}`,
     `- hard-fail: ${missing.length ? missing.join("; ") : "none"}`,
     "",
@@ -115,12 +120,12 @@ async function main() {
   const gate = process.argv.includes("--gate");
 
   if (gate) {
-    writeGate(found.any ? "true" : "false");
-    console.log(found.any ? `Eval will run.\n${formatPresence(found)}` : skipMessage());
+    writeGate(found.ready ? "true" : "false");
+    console.log(found.ready ? `Eval will run.\n${formatPresence(found)}` : skipMessage());
     process.exit(0);
   }
 
-  if (!found.any) {
+  if (!found.ready) {
     writeGate("false");
     console.log(skipMessage());
     process.exit(0);
@@ -160,7 +165,7 @@ async function main() {
   };
   if (found.claude) serverEnv[SECRET_NAMES.claude] = process.env[SECRET_NAMES.claude];
   // ANTHROPIC_API_KEY / OPENAI_API_KEY / XAI_API_KEY stay out of the child env.
-  // Grok key lives in temp-HOME config.json; Codex login is ~/.codex/auth.json.
+  // Codex login is temp-HOME ~/.codex/auth.json. Grok/xAI is optional and unused unless already set.
 
   let stderr = "";
   const child = spawn(process.execPath, [join(REPO, "server", "index.ts")], {
@@ -180,6 +185,7 @@ async function main() {
     uiReachable: false,
     onboardingCompleted: false,
     botsCreated: [],
+    grokSkipped: true,
     allowClicked: false,
     allowShown: false,
     streamObserved: {},
@@ -193,7 +199,7 @@ async function main() {
     mechanical.serverUp = true;
 
     const { runFlow } = await import("./flow.mjs");
-    const result = await runFlow({ baseUrl: BASE, artifactsDir });
+    const result = await runFlow({ baseUrl: BASE, artifactsDir, includeGrok: found.grok });
     Object.assign(mechanical, result.mechanical, { serverUp: true });
     transcripts = result.transcripts;
     screenshots = result.screenshots;
@@ -230,7 +236,7 @@ async function main() {
   }));
   const missing = failMechanical(mechanical);
   const report = {
-    secrets: { claude: found.claude, codex: found.codex, grok: found.grok },
+    secrets: { claude: found.claude, codex: found.codex, grok: found.grok, grokOptional: true },
     mechanical,
     judge,
     fail: missing,

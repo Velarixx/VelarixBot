@@ -28,10 +28,9 @@ jobs:
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       EVAL_ARTIFACTS: ${{ github.workspace }}/eval-artifacts
-      # Names only — values come from repo secrets when a human has set them.
+      # Claude + Codex only. Grok/xAI is not required and is never requested.
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

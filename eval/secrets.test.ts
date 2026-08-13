@@ -45,7 +45,7 @@ describe("eval secret gate", () => {
       [SECRET_NAMES.grok]: "   ",
     };
     const found = detectSecrets(env);
-    expect(found).toEqual({ claude: true, codex: false, grok: false, any: true });
+    expect(found).toEqual({ claude: true, codex: false, grok: false, ready: true });
     expect(JSON.stringify(found)).not.toContain("token-must-not-leak");
     expect(formatPresence(found)).toContain("configured");
     expect(formatPresence(found)).not.toContain("token-must-not-leak");
@@ -53,9 +53,17 @@ describe("eval secret gate", () => {
   });
 
   it("treats an empty env as skip-clean", () => {
-    expect(detectSecrets({})).toEqual({ claude: false, codex: false, grok: false, any: false });
+    expect(detectSecrets({})).toEqual({ claude: false, codex: false, grok: false, ready: false });
     expect(skipMessage()).toContain("Skipping Playwright eval");
     expect(skipMessage()).toContain(SECRET_NAMES.claude);
+    expect(skipMessage()).toContain(SECRET_NAMES.codex);
+    expect(skipMessage()).toContain("Grok / xAI is not required");
+  });
+
+  it("does not open the gate for a Grok-only env", () => {
+    const found = detectSecrets({ [SECRET_NAMES.grok]: "xai-must-not-open-the-gate" });
+    expect(found).toEqual({ claude: false, codex: false, grok: true, ready: false });
+    expect(formatPresence(found)).toContain("optional");
   });
 
   it("exits 0 without secrets (full run and --gate)", async () => {
@@ -69,5 +77,12 @@ describe("eval secret gate", () => {
     const gate = await runEval(["--gate"], { GITHUB_OUTPUT: join(out, "out.txt") });
     expect(gate.code).toBe(0);
     expect(readFileSync(join(out, "out.txt"), "utf8")).toContain("ran=false");
+  });
+
+  it("exits 0 when only an xAI secret is set (Grok never required)", async () => {
+    const skip = await runEval([], { [SECRET_NAMES.grok]: "xai-must-not-open-the-gate" });
+    expect(skip.code).toBe(0);
+    expect(skip.stdout).toContain("Skipping Playwright eval");
+    expect(skip.stdout).not.toContain("xai-must-not-open-the-gate");
   });
 });
