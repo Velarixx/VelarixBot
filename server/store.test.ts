@@ -101,6 +101,19 @@ describe("Store", () => {
     expect(store.deleteRoutine(routine.id)).toBe(true);
   });
 
+  it("round-trips a daily HH:MM create payload", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const routine = store.createRoutine({
+      botId: bot.id,
+      name: "Morning",
+      prompt: "Brief me",
+      schedule: { kind: "daily", time: "09:30" },
+    });
+    expect(routine.schedule).toEqual({ kind: "daily", time: "09:30" });
+    expect(new Store(selection).routine(routine.id)?.schedule).toEqual({ kind: "daily", time: "09:30" });
+  });
+
   it("validates daily and interval routines", () => {
     const store = new Store(selection);
     const bot = store.createBot();

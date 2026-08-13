@@ -14,11 +14,19 @@ export function RoutinesPanel() {
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [botId, setBotId] = useState(state.selectedId || state.bots[0]?.id || "");
+  const [kind, setKind] = useState<"interval" | "daily">("interval");
   const [everyMinutes, setEveryMinutes] = useState(60);
+  const [time, setTime] = useState("09:00");
 
   useEffect(() => {
     api("/api/routines").then(({ routines }) => dispatch({ type: "routinesLoaded", routines })).catch((e) => setError(e.message));
   }, [dispatch]);
+
+  useEffect(() => {
+    if (!state.routinesCreating) return;
+    setCreating(true);
+    if (state.routineCreateBotId) setBotId(state.routineCreateBotId);
+  }, [state.routinesCreating, state.routineCreateBotId]);
 
   const mutate = async (routine: Routine, patch: Partial<Routine>) => {
     setError(null);
@@ -31,11 +39,14 @@ export function RoutinesPanel() {
   const create = async (event: FormEvent) => {
     event.preventDefault();
     if (!botId || !name.trim() || !prompt.trim()) return;
+    const schedule: RoutineSchedule =
+      kind === "daily" ? { kind: "daily", time: time.slice(0, 5) } : { kind: "interval", everyMinutes };
     setSaving(true); setError(null);
     try {
-      const { routine } = await api("/api/routines", { method: "POST", body: JSON.stringify({ botId, name: name.trim(), prompt: prompt.trim(), schedule: { kind: "interval", everyMinutes } }) });
+      const { routine } = await api("/api/routines", { method: "POST", body: JSON.stringify({ botId, name: name.trim(), prompt: prompt.trim(), schedule }) });
       dispatch({ type: "routineSaved", routine });
       setName(""); setPrompt(""); setCreating(false);
+      dispatch({ type: "toggleRoutines", open: true });
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setSaving(false); }
   };
@@ -55,8 +66,17 @@ export function RoutinesPanel() {
         <label className="block text-[12px] text-ink-secondary">Bot<select value={botId} onChange={(e) => setBotId(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink">{state.bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label>
         <label className="block text-[12px] text-ink-secondary">Name<input autoFocus required value={name} onChange={(e) => setName(e.target.value)} placeholder="Morning briefing" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
         <label className="block text-[12px] text-ink-secondary">Prompt<textarea required rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Summarize today's priorities…" className="mt-1 w-full resize-none rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
-        <label className="block text-[12px] text-ink-secondary">Run every (minutes)<input type="number" min={1} value={everyMinutes} onChange={(e) => setEveryMinutes(Math.max(1, Number(e.target.value)))} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
-        <div className="flex justify-end gap-2"><button type="button" onClick={() => setCreating(false)} className="rounded-lg px-3 py-2 text-[13px] text-ink-secondary">Cancel</button><button disabled={saving} className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white disabled:opacity-50">{saving && <Loader2 size={13} className="animate-spin" />}Create</button></div>
+        <div className="flex overflow-hidden rounded-lg border border-hairline/40">
+          {([["interval", "Interval"], ["daily", "Daily"]] as const).map(([value, label], i) => (
+            <button key={value} type="button" onClick={() => setKind(value)} className={`flex-1 py-1.5 text-[13px] ${i > 0 ? "border-l border-hairline/40" : ""} ${kind === value ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/60 hover:text-ink"}`}>{label}</button>
+          ))}
+        </div>
+        {kind === "daily" ? (
+          <label className="block text-[12px] text-ink-secondary">Time<input type="time" required value={time} onChange={(e) => setTime(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
+        ) : (
+          <label className="block text-[12px] text-ink-secondary">Run every (minutes)<input type="number" min={1} value={everyMinutes} onChange={(e) => setEveryMinutes(Math.max(1, Number(e.target.value)))} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
+        )}
+        <div className="flex justify-end gap-2"><button type="button" onClick={() => { setCreating(false); dispatch({ type: "toggleRoutines", open: true }); }} className="rounded-lg px-3 py-2 text-[13px] text-ink-secondary">Cancel</button><button disabled={saving} className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white disabled:opacity-50">{saving && <Loader2 size={13} className="animate-spin" />}Create</button></div>
       </form> : <button onClick={() => setCreating(true)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white"><Plus size={16} />New routine</button>}
       <div className="mt-4 space-y-2">{state.routines.length === 0 && !creating ? <div className="rounded-xl border border-dashed border-hairline/50 p-6 text-center text-[13px] text-ink-secondary">No routines yet.</div> : state.routines.map((routine) => {
         const bot = state.bots.find((item) => item.id === routine.botId);

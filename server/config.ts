@@ -14,6 +14,8 @@ export interface AppConfig {
    * catalog with official logos in the plugins marketplace. */
   composio?: { key?: string; apiKey?: string; url?: string };
   box?: { token?: string };
+  /** Personal GitHub token for private VelarixBot Releases (updater). Write-only. */
+  github?: { token?: string };
 
   instances?: InstanceConfigMap;
 }
@@ -49,6 +51,7 @@ export function loadConfig(): AppConfig {
   cfg.xai = { key: process.env.XAI_API_KEY, ...cfg.xai };
   cfg.composio = { key: process.env.COMPOSIO_KEY, ...cfg.composio };
   cfg.box = { token: process.env.BOX_TOKEN, ...cfg.box };
+  cfg.github = { token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN, ...cfg.github };
   return cfg;
 }
 
@@ -62,7 +65,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   } catch {
     /* first write */
   }
-  for (const key of ["xai", "composio", "box"] as const) {
+  for (const key of ["xai", "composio", "box", "github"] as const) {
     if (patch[key] && typeof patch[key] === "object") {
       disk[key] = { ...(disk[key] as object), ...patch[key] };
     }

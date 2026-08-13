@@ -161,6 +161,14 @@ describe("harness HTTP API", () => {
     expect(after.body.box).toEqual({ configured: true });
     expect(JSON.stringify(after.body)).not.toContain("tok_secret_value");
 
+    const github = await api("PUT", "/api/config", { github: { token: "ghp_test_secret_token" } });
+    expect(github.status).toBe(200);
+    expect(github.body.github).toEqual({ configured: true });
+    expect(JSON.stringify(github.body)).not.toContain("ghp_test_secret_token");
+    const githubGet = await api("GET", "/api/config");
+    expect(githubGet.body.github).toEqual({ configured: true });
+    expect(JSON.stringify(githubGet.body)).not.toContain("ghp_test_secret_token");
+
     const nothing = await api("PUT", "/api/config", {});
     expect(nothing.status).toBe(400);
   });
@@ -224,6 +232,22 @@ describe("harness HTTP API", () => {
     expect(ops).toBeTruthy();
     expect(ops.title).toBe("Ops specialist");
     expect(ops.modelSelection.model).toBe("ghost-model");
+  });
+
+  it("round-trips a daily routine create payload", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const created = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "Morning briefing",
+      prompt: "Summarize the day",
+      schedule: { kind: "daily", time: "07:15" },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.routine.schedule).toEqual({ kind: "daily", time: "07:15" });
+    const listed = await api("GET", "/api/routines");
+    const found = listed.body.routines.find((r: { id: string }) => r.id === created.body.routine.id);
+    expect(found.schedule).toEqual({ kind: "daily", time: "07:15" });
   });
 
   it("404s unknown routes with the route in the error", async () => {

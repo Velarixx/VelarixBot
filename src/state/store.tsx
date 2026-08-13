@@ -14,6 +14,7 @@ import {
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotState, Usage } from "@/lib/product";
 import { appendStreamingResponseText } from "../../server/response-options";
+import { notifyCopy } from "@/lib/notify";
 
 export type { MausColor } from "@/lib/mascot";
 
@@ -74,6 +75,7 @@ export interface ConfigStatus {
   xai?: { configured: boolean };
   composio: { configured: boolean; apiKeyConfigured?: boolean };
   box: { configured: boolean };
+  github?: { configured: boolean };
 }
 
 export type RoutineSchedule = { kind: "interval"; everyMinutes: number } | { kind: "daily"; time: string };
@@ -107,6 +109,8 @@ interface AppState {
   computerOpen: boolean;
   appSettingsOpen: boolean;
   routinesOpen: boolean;
+  routinesCreating: boolean;
+  routineCreateBotId: string | null;
   routines: Routine[];
   /** in-flight assistant text per threadId (content.delta fold) */
   streaming: Record<string, string>;
@@ -131,7 +135,7 @@ type Action =
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "select"; id: string }
-  | { type: "send"; botId: string; text: string }
+  | { type: "send"; botId: string; text: string; attachments?: Array<{ path: string; mime?: string }> }
   | { type: "answerCard"; botId: string; messageId: string; answer: string }
   | { type: "dismissCard"; botId: string; messageId: string }
   | { type: "newBot" }
@@ -154,7 +158,7 @@ type Action =
   | { type: "togglePlugins"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
   | { type: "toggleAppSettings"; open?: boolean }
-  | { type: "toggleRoutines"; open?: boolean }
+  | { type: "toggleRoutines"; open?: boolean; creating?: boolean; botId?: string }
   | { type: "routinesLoaded"; routines: Routine[] }
   | { type: "routineSaved"; routine: Routine }
   | { type: "routineDeleted"; routineId: string }
@@ -386,7 +390,16 @@ function reducer(state: AppState, action: Action): AppState {
     }
     case "toggleRoutines": {
       const open = action.open ?? !state.routinesOpen;
-      return { ...state, routinesOpen: open, settingsOpen: open ? false : state.settingsOpen, computerOpen: open ? false : state.computerOpen, appSettingsOpen: open ? false : state.appSettingsOpen, pluginsOpen: open ? false : state.pluginsOpen };
+      return {
+        ...state,
+        routinesOpen: open,
+        routinesCreating: open ? Boolean(action.creating) : false,
+        routineCreateBotId: open && action.creating ? (action.botId ?? state.selectedId) : null,
+        settingsOpen: open ? false : state.settingsOpen,
+        computerOpen: open ? false : state.computerOpen,
+        appSettingsOpen: open ? false : state.appSettingsOpen,
+        pluginsOpen: open ? false : state.pluginsOpen,
+      };
     }
     case "updateBot": {
       const mascotChanged =
@@ -417,6 +430,8 @@ const initialState: AppState = {
   computerOpen: false,
   appSettingsOpen: false,
   routinesOpen: false,
+  routinesCreating: false,
+  routineCreateBotId: null,
   routines: [],
   streaming: {},
   streamingRaw: {},
@@ -471,7 +486,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "send":
           api(`/api/bots/${action.botId}/messages`, {
             method: "POST",
-            body: JSON.stringify({ text: action.text }),
+            body: JSON.stringify({ text: action.text, attachments: action.attachments ?? [] }),
           }).catch(showError);
           break;
         case "answerCard": {
@@ -645,6 +660,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           } else if (event.type === "turn.completed") {
             rawDispatch({ type: "streamClear", threadId: event.threadId });
           }
+          const bot = stateRef.current.bots.find((b) => b.threadId === event.threadId);
+          const copy = bot ? notifyCopy(bot, event) : null;
+          if (copy && bot && window.ogb?.notify) {
+            void window.ogb.notify({ ...copy, botId: bot.id });
+          }
           break;
         }
         case "screen":
@@ -667,7 +687,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "config":
           rawDispatch({
             type: "configStatus",
-            config: { xai: frame.xai, composio: frame.composio, box: frame.box },
+            config: { xai: frame.xai, composio: frame.composio, box: frame.box, github: frame.github },
           });
           api("/api/instances")
             .then(({ instances }) => rawDispatch({ type: "instances", instances }))
@@ -680,6 +700,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       es.close();
     };
   }, []);
+
+  useEffect(() => window.ogb?.onNotifyClick?.((botId) => dispatch({ type: "select", id: botId })), [dispatch]);
 
   const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

@@ -213,8 +213,7 @@ plus a Windows x64 NSIS installer. These internal builds intentionally use the f
 is ad-hoc signed but not notarized, and the Windows installer is unsigned. Follow [`INTERNAL_INSTALL.md`](INTERNAL_INSTALL.md)
 to verify `SHA256SUMS.txt` and approve only the downloaded VelarixBot copy.
 
-Automatic updates are disabled because Releases are private and VelarixBot does not embed a reusable GitHub token.
-Download each update manually from [private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases), verify its
+Automatic updates check [private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases) from the packaged app. Set a GitHub token in App Settings (stored write-only in `~/.velarixbot/config.json`, or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The token is never baked into the app, argv, logs, or SSE. Dev and browser builds are an honest no-op. You can still download each update manually, verify its
 checksum, and install it over the existing version.
 
 ## Developer setup (maintainers only)

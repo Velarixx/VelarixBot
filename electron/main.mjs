@@ -1,9 +1,10 @@
-import { app, BrowserWindow, desktopCapturer, ipcMain, session, shell, systemPreferences, utilityProcess } from "electron";
-import path from "node:path";
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session, shell, systemPreferences, utilityProcess } from "electron";
+import path, { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
 import { startSpeech, stopSpeech } from "./speech.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
+import { registerNotifyIpc } from "./notify.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 127.0.0.1 explicitly — vite binds IPv4; a bare "localhost" here can
@@ -12,6 +13,7 @@ const DEV_URL = process.env.ELECTRON_START_URL ?? "http://127.0.0.1:5199";
 let SERVER_PORT = 8799;
 const APP_ICON = path.join(__dirname, "resources/app-icon.png");
 const IS_MAC = process.platform === "darwin";
+let mainWindow = null;
 
 // Packaged: the harness server ships in Resources (compiled JS, zero deps)
 // and runs on Electron's own Node via utilityProcess. It serves the built
@@ -171,6 +173,15 @@ ipcMain.handle("speech:stop", () => {
   if (IS_MAC) stopSpeech();
 });
 
+ipcMain.handle("fs:open-files", async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(win ?? undefined, {
+    properties: ["openFile", "multiSelections"],
+  });
+  if (result.canceled) return [];
+  return result.filePaths.map((p) => ({ path: p, name: basename(p) }));
+});
+
 app.whenReady().then(async () => {
   if (IS_MAC) app.dock.setIcon(APP_ICON);
   // getDisplayMedia in the renderer → this handler → ScreenCaptureKit, all
@@ -188,16 +199,19 @@ app.whenReady().then(async () => {
   );
   registerCuaIpc();
   registerUpdaterIpc();
+  registerNotifyIpc(() => mainWindow);
   // Start the CUA daemon before the window so the harness can pick up the
   // connection descriptor on first render. Never blocks window creation on
   // failure — computer use degrades to "unavailable", the rest still works.
   startCua().catch((e) => console.error("[cua] start failed:", e));
   if (app.isPackaged) serverReady = await startServerPackaged();
-  const win = createWindow();
-  // Internal releases update manually from the private GitHub repository.
-  startUpdater(win);
+  mainWindow = createWindow();
+  startUpdater(mainWindow);
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      mainWindow = createWindow();
+      startUpdater(mainWindow);
+    }
   });
 });
 

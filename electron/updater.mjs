@@ -1,17 +1,192 @@
-// VelarixBot uses manual updates from its private GitHub Releases page.
-// Embedding a GitHub token in the desktop app would expose repository access,
-// so the updater bridge intentionally remains dormant for internal builds.
-import { ipcMain } from "electron";
+// Packaged-app updater: GitHub Releases for Velarixx/VelarixBot.
+// The token is read from ~/.velarixbot/config.json or GH_TOKEN / GITHUB_TOKEN
+// and used only as an Authorization header — never argv, logs, asar, or IPC.
+import { createWriteStream, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
+import { app, ipcMain, shell } from "electron";
+import {
+  DEV_NOOP_MESSAGE,
+  NO_TOKEN_MESSAGE,
+  newestNewerRelease,
+  pickAsset,
+  publicState,
+  readGithubToken,
+  releasesUrl,
+  tokenConfigured,
+} from "./update-feed.mjs";
 
-const state = { status: "idle" };
+const UA = "VelarixBot";
+let mainWindow = null;
+let downloadedPath = null;
+let asset = null;
+const state = { status: "idle", tokenConfigured: false };
 
-export function registerUpdaterIpc() {
-  ipcMain.handle("update:get-state", () => state);
-  ipcMain.handle("update:check", () => undefined);
-  ipcMain.handle("update:download", () => undefined);
-  ipcMain.handle("update:install", () => undefined);
+function configPath() {
+  return join(homedir(), ".velarixbot", "config.json");
 }
 
-export function startUpdater(_mainWindow) {
-  // updates are installed manually from the private GitHub release
+function currentToken() {
+  let fileText = "";
+  try {
+    fileText = readFileSync(configPath(), "utf8");
+  } catch {
+    /* first run */
+  }
+  return readGithubToken(process.env, fileText);
+}
+
+function emit() {
+  state.tokenConfigured = tokenConfigured(currentToken());
+  const pub = publicState(state);
+  try {
+    mainWindow?.webContents.send("update:state", pub);
+  } catch {
+    /* window gone */
+  }
+  return pub;
+}
+
+function setState(patch) {
+  Object.assign(state, patch);
+  return emit();
+}
+
+function githubHeaders(token, extra = {}) {
+  return {
+    "user-agent": UA,
+    accept: "application/vnd.github+json",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  };
+}
+
+export function registerUpdaterIpc() {
+  ipcMain.handle("update:get-state", () => {
+    state.tokenConfigured = tokenConfigured(currentToken());
+    return publicState(state);
+  });
+  ipcMain.handle("update:check", () => check());
+  ipcMain.handle("update:download", () => download());
+  ipcMain.handle("update:install", () => install());
+}
+
+export function startUpdater(win) {
+  mainWindow = win;
+  emit();
+}
+
+async function check() {
+  if (!app.isPackaged) {
+    asset = null;
+    downloadedPath = null;
+    return setState({ status: "error", message: DEV_NOOP_MESSAGE, version: undefined, percent: undefined });
+  }
+  const token = currentToken();
+  if (!tokenConfigured(token)) {
+    asset = null;
+    downloadedPath = null;
+    return setState({ status: "error", message: NO_TOKEN_MESSAGE, version: undefined, percent: undefined });
+  }
+  setState({ status: "checking", message: undefined, version: undefined, percent: undefined });
+  try {
+    const res = await fetch(releasesUrl(), { headers: githubHeaders(token) });
+    if (res.status === 401 || res.status === 403) {
+      return setState({ status: "error", message: "GitHub token was rejected.", version: undefined });
+    }
+    if (!res.ok) {
+      return setState({ status: "error", message: `GitHub Releases returned ${res.status}.`, version: undefined });
+    }
+    const releases = await res.json();
+    const current = app.getVersion();
+    const newer = newestNewerRelease(releases, current);
+    if (!newer) {
+      asset = null;
+      return setState({ status: "idle", message: undefined, version: undefined });
+    }
+    const chosen = pickAsset(newer, process.platform, process.arch);
+    if (!chosen) {
+      asset = null;
+      return setState({
+        status: "error",
+        message: "No installer for this platform in the latest release.",
+        version: String(newer.tag_name || newer.name || "").replace(/^v/i, "") || undefined,
+      });
+    }
+    asset = { url: chosen.url, name: chosen.name };
+    return setState({
+      status: "available",
+      version: String(newer.tag_name || newer.name).replace(/^v/i, ""),
+      message: undefined,
+    });
+  } catch {
+    return setState({ status: "error", message: "Couldn't reach GitHub Releases.", version: undefined });
+  }
+}
+
+async function download() {
+  if (!app.isPackaged) {
+    return setState({ status: "error", message: DEV_NOOP_MESSAGE });
+  }
+  const token = currentToken();
+  if (!tokenConfigured(token)) {
+    return setState({ status: "error", message: NO_TOKEN_MESSAGE });
+  }
+  if (!asset?.url) await check();
+  if (!asset?.url || state.status === "error") return publicState(state);
+  setState({ status: "downloading", percent: 0, version: state.version, message: undefined });
+  try {
+    const res = await fetch(asset.url, {
+      headers: githubHeaders(token, { accept: "application/octet-stream" }),
+      redirect: "follow",
+    });
+    if (!res.ok || !res.body) {
+      return setState({ status: "error", message: "Download failed.", percent: undefined });
+    }
+    const dir = join(app.getPath("temp"), "velarixbot-updates");
+    mkdirSync(dir, { recursive: true });
+    const dest = join(dir, String(asset.name || "update.bin").replace(/[^A-Za-z0-9._-]/g, "_"));
+    try {
+      unlinkSync(dest);
+    } catch {
+      /* first download */
+    }
+    const total = Number(res.headers.get("content-length") || 0);
+    let seen = 0;
+    const reader = res.body.getReader();
+    const nodeStream = Readable.from(
+      (async function* () {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          seen += value.byteLength;
+          if (total > 0) {
+            state.percent = Math.min(100, Math.round((seen / total) * 100));
+            emit();
+          }
+          yield value;
+        }
+      })(),
+    );
+    await pipeline(nodeStream, createWriteStream(dest));
+    downloadedPath = dest;
+    return setState({ status: "downloaded", percent: 100, version: state.version, message: undefined });
+  } catch {
+    return setState({ status: "error", message: "Download failed.", percent: undefined });
+  }
+}
+
+async function install() {
+  if (!app.isPackaged) {
+    return setState({ status: "error", message: DEV_NOOP_MESSAGE });
+  }
+  if (!downloadedPath) return publicState(state);
+  try {
+    await shell.openPath(downloadedPath);
+    app.quit();
+  } catch {
+    return setState({ status: "error", message: "Couldn't open the installer." });
+  }
 }

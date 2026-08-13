@@ -112,6 +112,8 @@ export interface SendTurnInput {
     agents?: { command: string; args: string[]; env: Record<string, string> };
   };
   cwd?: string;
+  /** Local file paths from a drop/paste. Drivers must not upload them. */
+  attachments?: Array<{ path: string; mime?: string }>;
 }
 
 export interface TurnStartResult {

@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { attachmentPathRefs, expandAttachmentPaths } from "./attachments.ts";
 import * as box from "./box.ts";
 import * as composio from "./composio.ts";
 import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
@@ -402,7 +403,11 @@ function readCuaConnection(): { command: string; args: string[]; env: Record<str
 }
 
 // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
-async function startTurn(botId: string, text: string, opts?: { commsDepth?: number }) {
+async function startTurn(
+  botId: string,
+  text: string,
+  opts?: { commsDepth?: number; attachments?: Array<{ path: string; mime?: string }> },
+) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
   if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
@@ -500,6 +505,7 @@ async function startTurn(botId: string, text: string, opts?: { commsDepth?: numb
         model: bot.modelSelection.model,
         resumeCursor: bot.resumeCursors[bot.modelSelection.instanceId],
         transcript,
+        attachments: opts?.attachments,
         system:
           persona +
           responseOptionsPrompt +
@@ -539,7 +545,7 @@ function configStatus() {
     xai: { configured: Boolean(cfg.xai?.key) },
     composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
     box: { configured: Boolean(cfg.box?.token) },
-
+    github: { configured: Boolean(cfg.github?.token) },
   };
 }
 
@@ -759,9 +765,19 @@ const server = createServer(async (req, res) => {
     m = path.match(/^\/api\/bots\/([\w-]+)\/messages$/);
     if (m && method === "POST") {
       const body = await readBody(req);
-      const text = String(body.text ?? "").trim();
+      const rawText = String(body.text ?? "").trim();
+      const rawAttachments = Array.isArray(body.attachments) ? body.attachments : [];
+      const mimeByPath = new Map<string, string | undefined>();
+      for (const item of rawAttachments) {
+        if (item && typeof item.path === "string" && item.path.trim()) {
+          mimeByPath.set(item.path.trim(), typeof item.mime === "string" ? item.mime : undefined);
+        }
+      }
+      const paths = expandAttachmentPaths([...mimeByPath.keys()]);
+      const text = attachmentPathRefs(rawText, paths);
       if (!text) return json(res, 400, { error: "text required" });
-      await startTurn(m[1], text);
+      const attachments = paths.map((path) => ({ path, mime: mimeByPath.get(path) }));
+      await startTurn(m[1], text, { attachments });
       return json(res, 202, { ok: true });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/respond$/);
@@ -807,7 +823,7 @@ const server = createServer(async (req, res) => {
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch: Record<string, object> = {};
-      for (const key of ["xai", "composio", "box"] as const) {
+      for (const key of ["xai", "composio", "box", "github"] as const) {
         if (body[key] && typeof body[key] === "object") patch[key] = body[key];
       }
       if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to save" });

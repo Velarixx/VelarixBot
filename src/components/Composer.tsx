@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Mic, Square } from "lucide-react";
+import { Plus, Mic, Square, Paperclip, X } from "lucide-react";
 import { useStore, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
+import { chipFromDroppedFile, sendPayload, type AttachmentChip } from "@/lib/attachments";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -26,6 +27,8 @@ export function Composer({ bot }: { bot: Bot }) {
   const [caret, setCaret] = useState(0);
   const [highlight, setHighlight] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null); // Esc'd this @
+  const [chips, setChips] = useState<AttachmentChip[]>([]);
+  const chipSeq = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   // what was typed before the mic went on — partials append after it
   const baseText = useRef("");
@@ -60,10 +63,26 @@ export function Composer({ bot }: { bot: Bot }) {
     });
   };
 
+  const addFiles = (files: Array<{ name: string; path?: string; type?: string }>) => {
+    setChips((current) => {
+      const next = [...current];
+      for (const file of files) {
+        const chip = chipFromDroppedFile(file, `att-${chipSeq.current++}`);
+        if (!chip) continue;
+        if (next.some((c) => c.path === chip.path)) continue;
+        next.push(chip);
+      }
+      return next;
+    });
+  };
+
   const send = () => {
-    if (!text.trim() || bot.busy) return;
-    dispatch({ type: "send", botId: bot.id, text: text.trim() });
+    if (bot.busy) return;
+    const payload = sendPayload(text, chips);
+    if (!payload.text && !payload.attachments.length) return;
+    dispatch({ type: "send", botId: bot.id, text: payload.text, attachments: payload.attachments });
     setText("");
+    setChips([]);
   };
 
   // native dictation: partials stream into the input while the Swift
@@ -107,6 +126,30 @@ export function Composer({ bot }: { bot: Bot }) {
     setRecording((r) => !r);
   };
 
+  const onDropFiles = (list: FileList | null) => {
+    if (!list?.length) return;
+    addFiles(
+      [...list].map((file) => ({
+        name: file.name,
+        path: (file as File & { path?: string }).path,
+        type: file.type,
+      })),
+    );
+  };
+
+  const pickFiles = () => {
+    if (window.ogb?.openFiles) {
+      void window.ogb.openFiles().then((files) => addFiles(files ?? []));
+      return;
+    }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.onchange = () =>
+      onDropFiles(input.files);
+    input.click();
+  };
+
   return (
     <div className="px-5 pb-5 pt-2">
       {speechError && (
@@ -134,13 +177,51 @@ export function Composer({ bot }: { bot: Bot }) {
             ))}
           </div>
         )}
-        <div className="flex items-center gap-2 rounded-full border border-hairline/40 bg-raised/60 py-2 pl-2 pr-2">
+        <div
+          className="flex flex-col gap-2 rounded-[22px] border border-hairline/40 bg-raised/60 py-2 pl-2 pr-2"
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            onDropFiles(e.dataTransfer.files);
+          }}
+        >
+        {chips.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-2 pt-1">
+            {chips.map((chip) => (
+              <span
+                key={chip.id}
+                className="flex max-w-full items-center gap-1.5 rounded-full bg-card px-2.5 py-1 text-[12px] text-ink"
+              >
+                <span className="truncate">{chip.name}</span>
+                <button
+                  type="button"
+                  onClick={() => setChips((c) => c.filter((item) => item.id !== chip.id))}
+                  className="rounded-full p-0.5 text-ink-secondary hover:bg-raised hover:text-ink"
+                  title="Remove attachment"
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center gap-2">
         <button
           onClick={() => dispatch({ type: "newBot" })}
           className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-raised hover:text-ink"
           title="New bot"
         >
           <Plus size={20} />
+        </button>
+        <button
+          onClick={pickFiles}
+          className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-raised hover:text-ink"
+          title="Attach files"
+        >
+          <Paperclip size={16} />
         </button>
         <input
           ref={inputRef}
@@ -149,6 +230,9 @@ export function Composer({ bot }: { bot: Bot }) {
             setText(e.target.value);
             setCaret(e.target.selectionStart ?? e.target.value.length);
             setDismissedAt(null);
+          }}
+          onPaste={(e) => {
+            if (e.clipboardData?.files?.length) onDropFiles(e.clipboardData.files);
           }}
           onKeyUp={(e) => setCaret((e.target as HTMLInputElement).selectionStart ?? 0)}
           onClick={(e) => setCaret((e.target as HTMLInputElement).selectionStart ?? 0)}
@@ -201,6 +285,7 @@ export function Composer({ bot }: { bot: Bot }) {
             <Mic size={18} />
           </button>
         )}
+        </div>
         </div>
       </div>
     </div>
