@@ -104,7 +104,7 @@ function createPermissionBroker(opts: {
   timeoutMs?: number;
 }) {
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000;
-  const pending = new Map<string, { ask: Ask; finish: (behavior: string, message: string | undefined, source: string) => void }>();
+  const pending = new Map<string, { ask: Ask; finish: (behavior: string, message: string | undefined, source: string, always?: boolean) => void }>();
   if (process.platform !== "win32") {
     try {
       unlinkSync(opts.socketPath);
@@ -129,11 +129,11 @@ function createPermissionBroker(opts: {
         const askId = String(msg.id ?? newId());
         const kind = msg.kind === "question" ? ("question" as const) : ("permission" as const);
         const ask: Ask = { id: askId, kind, tool: msg.tool ?? "tool", input: msg.input ?? {}, at: Date.now() };
-        const finish = (behavior: string, message: string | undefined, source: string) => {
+        const finish = (behavior: string, message: string | undefined, source: string, always?: boolean) => {
           if (!pending.delete(askId)) return;
           clearTimeout(timer);
           try {
-            conn.write(JSON.stringify({ t: "answer", id: askId, behavior, message }) + "\n");
+            conn.write(JSON.stringify({ t: "answer", id: askId, behavior, message, always: always === true }) + "\n");
           } catch {}
           opts.onResolve({ ...ask, behavior, source });
         };
@@ -153,12 +153,12 @@ function createPermissionBroker(opts: {
   server.on("error", () => {});
   server.listen(opts.socketPath);
   return {
-    answer(askId: string, behavior: string, message?: string): boolean {
+    answer(askId: string, behavior: string, message?: string, extra?: { always?: boolean; source?: string }): boolean {
       const p = pending.get(askId);
       if (!p) return false;
       const valid = p.ask.kind === "question" ? ["answer"] : ["allow", "deny"];
       if (!valid.includes(behavior)) return false;
-      p.finish(behavior, message, "user");
+      p.finish(behavior, message, extra?.source ?? "user", extra?.always);
       return true;
     },
     close() {
@@ -232,6 +232,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const sessionId = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
       const newSessionId = sessionId ? null : newId();
 
+      // require-approval forces cards even under bypassPermissions (fullAuto)
+      const permissionMode =
+        turn.requireApproval && config.permissionMode === "bypassPermissions" ? "acceptEdits" : config.permissionMode;
+
       const args = [
         "-p",
         "--output-format", "stream-json",
@@ -240,7 +244,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // token-level streaming: content_block_delta events between the
         // whole-message frames, so the bubble grows as the model writes
         "--include-partial-messages",
-        "--permission-mode", config.permissionMode === "auto" ? "acceptEdits" : config.permissionMode,
+        "--permission-mode", permissionMode === "auto" ? "acceptEdits" : permissionMode,
       ];
       if (sessionId) args.push("--resume", sessionId);
       else args.push("--session-id", newSessionId!);
@@ -287,9 +291,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       }
       // permission broker: anything acceptEdits would silently deny becomes
       // an Allow/Deny card in chat, and the agent gets ask_user. Skipped in
-      // bypassPermissions (fullAuto) — nothing would ever ask.
+      // bypassPermissions (fullAuto) — nothing would ever ask — unless the
+      // bot's require-approval override forced acceptEdits above.
       let broker: ReturnType<typeof createPermissionBroker> | undefined;
-      if (config.permissionMode !== "bypassPermissions") {
+      if (permissionMode !== "bypassPermissions") {
         const socketPath = permissionSocketPath(threadId);
         broker = createPermissionBroker({
           socketPath,
@@ -491,7 +496,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           const broker = active.get(threadId)?.broker;
           if (!broker) throw new Error("no active turn with a permission broker on this thread");
           const behavior = decision.behavior === "answer" ? "answer" : decision.behavior;
-          if (!broker.answer(requestId, behavior, decision.message)) {
+          if (!broker.answer(requestId, behavior, decision.message, { always: decision.always, source: decision.source })) {
             throw new Error("no such pending request (it may have timed out)");
           }
         },

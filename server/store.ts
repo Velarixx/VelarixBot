@@ -7,7 +7,7 @@ export type MausColor = "green" | "blue" | "red" | "orange" | "purple" | "cyan" 
 export type MausExpression = string;
 export type BotState = "IDLE" | "RUNNING" | "DONE" | "BLOCKED" | "NEEDS_INPUT";
 export interface Usage { input: number; output: number; cost: number | null }
-export interface OptionCardData { title: string; subtitle: string; options: string[]; answered?: string; dismissed?: boolean; requestId?: string }
+export interface OptionCardData { title: string; subtitle: string; options: string[]; answered?: string; dismissed?: boolean; requestId?: string; requestType?: "permission" | "question" }
 export interface Message {
   id: string; role: "bot" | "user"; kind: "text" | "options" | "activity" | "screen"; text?: string;
   card?: OptionCardData; tool?: { name: string; ok?: boolean }; png?: string; mime?: string; at: number; usage?: Usage;
@@ -16,12 +16,14 @@ export interface BotRecord {
   id: string; threadId: ThreadId; name: string; title: string; description: string; notifications: boolean; color: MausColor;
   mascotExpression?: MausExpression | null; unread: boolean; modelSelection: ModelSelection; resumeCursors: Record<string, unknown>;
   computer: "cloud" | "local" | "off"; pinned?: boolean; hidden?: boolean; busy: boolean; state: BotState; stateDetail?: string;
-  usage: Usage; currentTurnUsage?: Usage; createdAt: number;
+  usage: Usage; currentTurnUsage?: Usage; createdAt: number; requireApproval?: boolean;
 }
 export type RoutineSchedule = { kind: "interval"; everyMinutes: number } | { kind: "daily"; time: string };
+export interface ThenStartTurn { botId: string; prompt: string }
 export interface RoutineRecord {
   id: string; botId: string; name: string; prompt: string; schedule: RoutineSchedule; enabled: boolean; running: boolean;
   nextRunAt: number; lastRunAt: number | null; lastResult: string | null; createdAt: number;
+  thenStartTurn?: ThenStartTurn;
 }
 
 const BOTS_FILE = join(DATA_DIR, "bots.json");
@@ -62,6 +64,7 @@ function migrateBot(v: unknown): BotRecord | null {
     computer: MODES.has(String(b.computer)) ? b.computer! : "off", pinned: b.pinned, hidden: b.hidden, busy: false,
     state: crashed ? "BLOCKED" : STATES.has(b.state as BotState) ? b.state! : "IDLE", ...(crashed ? { stateDetail: "interrupted" } : b.stateDetail ? { stateDetail: b.stateDetail } : {}),
     usage: validUsage(b.usage), currentTurnUsage: b.currentTurnUsage ? validUsage(b.currentTurnUsage) : undefined, createdAt: Number.isFinite(b.createdAt) ? b.createdAt! : Date.now(),
+    ...(b.requireApproval === true ? { requireApproval: true } : {}),
   };
 }
 export function nextRunAt(schedule: RoutineSchedule, from = Date.now()): number {
@@ -72,10 +75,27 @@ export function nextRunAt(schedule: RoutineSchedule, from = Date.now()): number 
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.time)) throw new Error("invalid daily time");
   const [h, m] = schedule.time.split(":").map(Number); const d = new Date(from); d.setHours(h, m, 0, 0); if (d.getTime() <= from) d.setDate(d.getDate() + 1); return d.getTime();
 }
+function validThenStartTurn(v: unknown): ThenStartTurn | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const t = v as Partial<ThenStartTurn>;
+  if (typeof t.botId !== "string" || !t.botId.trim()) return undefined;
+  if (typeof t.prompt !== "string" || !t.prompt.trim()) return undefined;
+  return { botId: t.botId.trim(), prompt: t.prompt.trim() };
+}
 function migrateRoutine(v: unknown): RoutineRecord | null {
   if (!v || typeof v !== "object") return null; const r = v as Partial<RoutineRecord>;
   if (![r.id, r.botId, r.name, r.prompt].every((x) => typeof x === "string") || !r.schedule) return null;
-  try { const next = Number.isFinite(r.nextRunAt) ? r.nextRunAt! : nextRunAt(r.schedule); return { id:r.id!,botId:r.botId!,name:r.name!,prompt:r.prompt!,schedule:r.schedule,enabled:r.enabled!==false,running:false,nextRunAt:next,lastRunAt:Number.isFinite(r.lastRunAt)?r.lastRunAt!:null,lastResult:typeof r.lastResult==="string"?r.lastResult:null,createdAt:Number.isFinite(r.createdAt)?r.createdAt!:Date.now() }; } catch { return null; }
+  try {
+    const next = Number.isFinite(r.nextRunAt) ? r.nextRunAt! : nextRunAt(r.schedule);
+    const thenStartTurn = validThenStartTurn(r.thenStartTurn);
+    return {
+      id: r.id!, botId: r.botId!, name: r.name!, prompt: r.prompt!, schedule: r.schedule, enabled: r.enabled !== false,
+      running: false, nextRunAt: next, lastRunAt: Number.isFinite(r.lastRunAt) ? r.lastRunAt! : null,
+      lastResult: typeof r.lastResult === "string" ? r.lastResult : null,
+      createdAt: Number.isFinite(r.createdAt) ? r.createdAt! : Date.now(),
+      ...(thenStartTurn ? { thenStartTurn } : {}),
+    };
+  } catch { return null; }
 }
 
 export function mentionedBots<T extends { name: string; hidden?: boolean }>(text: string, peers: T[]): T[] {
@@ -111,15 +131,21 @@ export class Store {
   recordTurnUsage(id:string,usage:Usage){const b=this.bot(id);if(!b)return;const u=validUsage(usage);b.currentTurnUsage=u;b.usage={input:b.usage.input+u.input,output:b.usage.output+u.output,cost:b.usage.cost===null&&u.cost===null?null:(b.usage.cost??0)+(u.cost??0)};this.saveBots();}
   seedIfEmpty(){if(this.bots.length)return;const b=this.createBot();this.patchBot(b.id,{name:"Milind",color:"blue"});}
   routine(id:string){return this.routines.find(r=>r.id===id)??null}
-  createRoutine(input:{botId:string;name:string;prompt:string;schedule:RoutineSchedule}){if(!this.bot(input.botId))throw new Error("no such bot");if(!input.name.trim()||!input.prompt.trim())throw new Error("name and prompt required");const r:RoutineRecord={id:newId(),...input,name:input.name.trim(),prompt:input.prompt.trim(),enabled:true,running:false,nextRunAt:nextRunAt(input.schedule),lastRunAt:null,lastResult:null,createdAt:Date.now()};this.routines.push(r);this.saveRoutines();return r;}
-  patchRoutine(id:string,patch:Pick<Partial<RoutineRecord>,"name"|"prompt"|"schedule"|"enabled">){
+  createRoutine(input:{botId:string;name:string;prompt:string;schedule:RoutineSchedule;thenStartTurn?:ThenStartTurn}){if(!this.bot(input.botId))throw new Error("no such bot");if(!input.name.trim()||!input.prompt.trim())throw new Error("name and prompt required");const thenStartTurn=validThenStartTurn(input.thenStartTurn);const r:RoutineRecord={id:newId(),botId:input.botId,name:input.name.trim(),prompt:input.prompt.trim(),schedule:input.schedule,enabled:true,running:false,nextRunAt:nextRunAt(input.schedule),lastRunAt:null,lastResult:null,createdAt:Date.now(),...(thenStartTurn?{thenStartTurn}:{})};this.routines.push(r);this.saveRoutines();return r;}
+  patchRoutine(id:string,patch:Pick<Partial<RoutineRecord>,"name"|"prompt"|"schedule"|"enabled"|"thenStartTurn">){
     const r=this.routine(id);if(!r)return null;
-    const safe: Pick<Partial<RoutineRecord>,"name"|"prompt"|"schedule"|"enabled"> = {};
+    const safe: Pick<Partial<RoutineRecord>,"name"|"prompt"|"schedule"|"enabled"|"thenStartTurn"> = {};
     if (patch.name !== undefined) { if (!patch.name.trim()) throw new Error("name required"); safe.name = patch.name.trim(); }
     if (patch.prompt !== undefined) { if (!patch.prompt.trim()) throw new Error("prompt required"); safe.prompt = patch.prompt.trim(); }
     if (patch.schedule !== undefined) { safe.schedule = patch.schedule; r.nextRunAt = nextRunAt(patch.schedule); }
     if (patch.enabled !== undefined) safe.enabled = patch.enabled === true;
-    Object.assign(r,safe);this.saveRoutines();return r;
+    Object.assign(r,safe);
+    if (patch.thenStartTurn !== undefined) {
+      const thenStartTurn = validThenStartTurn(patch.thenStartTurn);
+      if (thenStartTurn) r.thenStartTurn = thenStartTurn;
+      else delete r.thenStartTurn;
+    }
+    this.saveRoutines();return r;
   }
   markRoutine(id:string,patch:Pick<Partial<RoutineRecord>,"running"|"nextRunAt"|"lastRunAt"|"lastResult">){const r=this.routine(id);if(!r)return null;Object.assign(r,patch);this.saveRoutines();return r;}
   deleteRoutine(id:string){if(!this.routine(id))return false;this.routines=this.routines.filter(r=>r.id!==id);this.saveRoutines();return true;}

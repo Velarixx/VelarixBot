@@ -250,6 +250,20 @@ describe("harness HTTP API", () => {
     expect(found.schedule).toEqual({ kind: "daily", time: "07:15" });
   });
 
+  it("round-trips a routine thenStartTurn trigger", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const created = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "Then trigger",
+      prompt: "Do the thing",
+      schedule: { kind: "interval", everyMinutes: 15 },
+      thenStartTurn: { botId: bot.id, prompt: "Follow up." },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.routine.thenStartTurn).toEqual({ botId: bot.id, prompt: "Follow up." });
+  });
+
   it("404s unknown routes with the route in the error", async () => {
     const res = await api("GET", "/api/definitely-not-a-route");
     expect(res.status).toBe(404);

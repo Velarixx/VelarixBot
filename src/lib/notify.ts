@@ -7,6 +7,7 @@ export function shouldNotify(bot: NotifyBot, event: NotifyEvent): boolean {
   if (bot.notifications === false) return false;
   if (event.type === "request.opened") return true;
   if (event.type === "turn.completed") return true;
+  if (event.type === "stall.nudge") return true;
   return false;
 }
 
@@ -15,6 +16,7 @@ export function notifyCopy(bot: NotifyBot, event: NotifyEvent): { title: string;
   if (!shouldNotify(bot, event)) return null;
   const title = bot.name?.trim() || "VelarixBot";
   if (event.type === "request.opened") return { title, body: "Needs your input" };
+  if (event.type === "stall.nudge") return { title, body: "Still waiting on you" };
   if (event.type === "turn.completed") {
     const blocked = /blocked/i.test(String(event.stopReason ?? ""));
     return { title, body: event.ok && !blocked ? "Finished" : "Didn't finish" };

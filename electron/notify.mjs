@@ -1,7 +1,7 @@
 // OS toasts for per-bot notifications. Thin IPC: the renderer decides
 // via shouldNotify and sends a local title/body; missing permission is a
 // silent skip. Click focuses the window and asks the renderer to select
-// that bot. No sounds, no tray.
+// that bot. No sounds. Works while the window is hidden (close-to-tray).
 import { Notification, BrowserWindow, ipcMain, app } from "electron";
 
 export function registerNotifyIpc(getWindow) {

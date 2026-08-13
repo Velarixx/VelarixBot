@@ -1,10 +1,11 @@
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session, shell, systemPreferences, utilityProcess } from "electron";
+import { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, ipcMain, nativeImage, session, shell, systemPreferences, utilityProcess } from "electron";
 import path, { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
 import { startSpeech, stopSpeech } from "./speech.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { registerNotifyIpc } from "./notify.mjs";
+import { shouldQuitOnLastWindow } from "./background.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 127.0.0.1 explicitly — vite binds IPv4; a bare "localhost" here can
@@ -14,6 +15,8 @@ let SERVER_PORT = 8799;
 const APP_ICON = path.join(__dirname, "resources/app-icon.png");
 const IS_MAC = process.platform === "darwin";
 let mainWindow = null;
+let tray = null;
+let isQuitting = false;
 
 // Packaged: the harness server ships in Resources (compiled JS, zero deps)
 // and runs on Electron's own Node via utilityProcess. It serves the built
@@ -111,7 +114,49 @@ function createWindow() {
   } else {
     win.loadURL(DEV_URL);
   }
+  win.on("close", (e) => {
+    if (isQuitting) return;
+    if (!shouldQuitOnLastWindow({ platform: process.platform, trayEnabled: Boolean(tray) })) {
+      e.preventDefault();
+      win.hide();
+    }
+  });
   return win;
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createWindow();
+    startUpdater(mainWindow);
+    return mainWindow;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if (IS_MAC) app.focus({ steal: true });
+  return mainWindow;
+}
+
+function createTray() {
+  if (tray) return tray;
+  const icon = nativeImage.createFromPath(APP_ICON);
+  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
+  tray.setToolTip("VelarixBot");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "Show", click: () => showMainWindow() },
+      { type: "separator" },
+      {
+        label: "Quit",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+  tray.on("click", () => showMainWindow());
+  return tray;
 }
 
 // "This Mac" screen preview — served from the main process so the Screen
@@ -182,6 +227,12 @@ ipcMain.handle("fs:open-files", async (event) => {
   return result.filePaths.map((p) => ({ path: p, name: basename(p) }));
 });
 
+ipcMain.handle("login:get", () => Boolean(app.getLoginItemSettings()?.openAtLogin));
+ipcMain.handle("login:set", (_event, enabled) => {
+  app.setLoginItemSettings({ openAtLogin: enabled === true });
+  return Boolean(app.getLoginItemSettings()?.openAtLogin);
+});
+
 app.whenReady().then(async () => {
   if (IS_MAC) app.dock.setIcon(APP_ICON);
   // getDisplayMedia in the renderer → this handler → ScreenCaptureKit, all
@@ -205,29 +256,36 @@ app.whenReady().then(async () => {
   // failure — computer use degrades to "unavailable", the rest still works.
   startCua().catch((e) => console.error("[cua] start failed:", e));
   if (app.isPackaged) serverReady = await startServerPackaged();
+  try {
+    createTray();
+  } catch (e) {
+    console.error("[tray] failed:", e);
+  }
   mainWindow = createWindow();
   startUpdater(mainWindow);
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createWindow();
-      startUpdater(mainWindow);
-    }
+    showMainWindow();
   });
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (shouldQuitOnLastWindow({ platform: process.platform, trayEnabled: Boolean(tray) })) app.quit();
 });
 
 // EMBEDDING.md lifecycle rule: defer the first quit until the embedded
 // daemon's async cleanup completes — it can't run after the host exits.
 let cuaCleanedUp = false;
 app.on("before-quit", (e) => {
+  isQuitting = true;
   if (cuaCleanedUp) return;
   e.preventDefault();
   try {
     serverProc?.kill();
   } catch {}
+  try {
+    tray?.destroy();
+  } catch {}
+  tray = null;
   stopCua().finally(() => {
     cuaCleanedUp = true;
     app.quit();

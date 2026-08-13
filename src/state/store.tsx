@@ -26,6 +26,7 @@ export interface OptionCardData {
   dismissed?: boolean;
   /** Present when this card is a live provider ask (approval/question). */
   requestId?: string;
+  requestType?: "permission" | "question";
 }
 
 export interface Message {
@@ -65,6 +66,8 @@ export interface Bot {
   modelSelection: ModelSelection;
   /** Where this bot's computer runs; unset = auto (cloud box if one exists, else local). */
   computer?: "cloud" | "local" | "off";
+  /** Force a permission card even when the provider is in full-auto. */
+  requireApproval?: boolean;
   pinned?: boolean;
   hidden?: boolean;
   messages: Message[];
@@ -83,6 +86,7 @@ export interface Routine {
   id: string; botId: string; name: string; prompt: string; schedule: RoutineSchedule;
   enabled: boolean; running: boolean; nextRunAt: number; lastRunAt: number | null;
   lastResult: string | null; createdAt: number;
+  thenStartTurn?: { botId: string; prompt: string };
 }
 
 /** One row of GET /api/instances — the model picker's data. */
@@ -136,7 +140,7 @@ type Action =
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "select"; id: string }
   | { type: "send"; botId: string; text: string; attachments?: Array<{ path: string; mime?: string }> }
-  | { type: "answerCard"; botId: string; messageId: string; answer: string }
+  | { type: "answerCard"; botId: string; messageId: string; answer: string; always?: boolean }
   | { type: "dismissCard"; botId: string; messageId: string }
   | { type: "newBot" }
   | { type: "botAdded"; bot: Bot; select?: boolean }
@@ -168,7 +172,7 @@ type Action =
       patch: Partial<
         Pick<
           Bot,
-          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotExpression" | "pinned" | "hidden"
+          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotExpression" | "pinned" | "hidden" | "requireApproval"
         >
       >;
     };
@@ -501,6 +505,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 requestId: card.requestId,
                 behavior,
                 message: behavior === "answer" ? action.answer : undefined,
+                always: action.always === true,
               }),
             }).catch(showError);
           } else {
@@ -664,6 +669,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const copy = bot ? notifyCopy(bot, event) : null;
           if (copy && bot && window.ogb?.notify) {
             void window.ogb.notify({ ...copy, botId: bot.id });
+          }
+          break;
+        }
+        case "nudge": {
+          const nudged = stateRef.current.bots.find((b) => b.id === frame.botId);
+          const copy = nudged ? notifyCopy(nudged, { type: "stall.nudge" }) : null;
+          if (copy && nudged && window.ogb?.notify) {
+            void window.ogb.notify({ ...copy, botId: nudged.id });
           }
           break;
         }

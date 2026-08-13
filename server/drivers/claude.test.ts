@@ -305,6 +305,35 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
   });
 
+  it("forwards always on allow so the permission proxy can send updatedPermissions", async () => {
+    await create("hang");
+    await instance.adapter.sendTurn({ threadId: "t-perm-always", text: "go" });
+    await recorder.until((e) => e.type === "session.started");
+
+    const tag = "t-perm-always".replace(/[^\w-]/g, "").slice(0, 8);
+    const socketPath = join(DATA_DIR, `perm-${tag}.sock`);
+    const conn = connect(socketPath);
+    const answered = new Promise<Record<string, unknown>>((resolve) => {
+      let buf = "";
+      conn.on("data", (c) => {
+        buf += c;
+        const nl = buf.indexOf("\n");
+        if (nl !== -1) resolve(JSON.parse(buf.slice(0, nl)));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      conn.on("connect", resolve);
+      conn.on("error", reject);
+    });
+    conn.write(JSON.stringify({ t: "ask", id: "ask-always", tool: "Bash", input: { command: "ls" } }) + "\n");
+    await recorder.until((e) => e.type === "request.opened");
+    await instance.adapter.respondToRequest("t-perm-always", "ask-always", { behavior: "allow", always: true });
+    expect(await answered).toMatchObject({ behavior: "allow", always: true });
+    conn.end();
+    await instance.adapter.interruptTurn("t-perm-always");
+    await recorder.until((e) => e.type === "turn.completed");
+  });
+
   it("rejects answers to unknown or already-resolved asks", async () => {
     await create("hang");
     await instance.adapter.sendTurn({ threadId: "t-perm-2", text: "go" });
