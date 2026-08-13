@@ -116,7 +116,11 @@ const CONVERSATIONAL_INPUT_NOTE =
   "Continue in the chat. Do not present A/B/C or multiple-choice options; the user will type their next message. If they asked to create a bot, call the create_bot tool — never the shell.";
 
 const USER_INPUT_METHODS = new Set(["item/tool/requestUserInput", "tool/requestUserInput"]);
-const ELICITATION_METHOD = "mcpServer/elicitation/request";
+/** Server→client method for MCP elicitations, including MCP tool-call approvals. */
+export const CODEX_ELICITATION_METHOD = "mcpServer/elicitation/request";
+/** Feature flag that routes MCP tool approvals through CODEX_ELICITATION_METHOD. */
+export const CODEX_MCP_ELICITATION_FEATURE = "tool_call_mcp_elicitation";
+const ELICITATION_METHOD = CODEX_ELICITATION_METHOD;
 const PERMISSIONS_METHOD = "item/permissions/requestApproval";
 const COMMAND_METHODS = new Set(["execCommandApproval", "item/commandExecution/requestApproval"]);
 const EDIT_METHODS = new Set(["applyPatchApproval", "item/fileChange/requestApproval"]);

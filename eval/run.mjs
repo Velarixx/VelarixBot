@@ -11,6 +11,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { detectSecrets, formatPresence, secretValues, skipMessage, SECRET_NAMES } from "./secrets.mjs";
+import { mcpMechanicalFail } from "./mcp.mjs";
+import { maxTurns } from "./turns.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const REPO = join(ROOT, "..");
@@ -29,7 +31,7 @@ function writeGate(ran) {
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `ran=${ran}\n`);
 }
 
-function failMechanical(mechanical) {
+function failMechanical(mechanical, transcripts = []) {
   const missing = [];
   if (!mechanical.serverUp) missing.push("server up");
   if (!mechanical.uiReachable) missing.push("UI reachable");
@@ -40,6 +42,11 @@ function failMechanical(mechanical) {
   }
   const streams = mechanical.streamObserved ?? {};
   if (!Object.values(streams).some(Boolean)) missing.push("stream observed");
+  if (mechanical.mcpSkipped === false) {
+    if (!created.includes("Roster")) missing.push("Codex MCP bot created (Roster)");
+    const mcpTurn = transcripts.find((t) => t.bot === "Roster");
+    missing.push(...mcpMechanicalFail(mcpTurn));
+  }
   return missing;
 }
 
@@ -103,6 +110,7 @@ function summaryMarkdown(found, mechanical, judge, missing) {
     `- onboarding: ${mechanical.onboardingCompleted ? "yes" : "no"}`,
     `- bots created: ${(mechanical.botsCreated ?? []).join(", ") || "none"}`,
     `- Grok scenario: ${mechanical.grokSkipped ? "skipped (xAI not required)" : "ran (optional secret present)"}`,
+    `- Codex MCP on-request: ${mechanical.mcpSkipped ? "skipped (no Codex secret)" : "ran (list_bots exactly once + Allow)"}`,
     `- Allow clicked: ${mechanical.allowClicked ? "yes" : mechanical.allowShown ? "shown, click failed" : "not shown (not a fail)"}`,
     `- hard-fail: ${missing.length ? missing.join("; ") : "none"}`,
     "",
@@ -133,7 +141,8 @@ async function main() {
   }
 
   writeGate("true");
-  console.log(`Running Playwright eval.\n${formatPresence(found)}`);
+  const cap = maxTurns(process.env);
+  console.log(`Running Playwright eval.\n${formatPresence(found)}\nTIER_B_MAX_TURNS=${cap}`);
 
   const values = secretValues(process.env);
   const artifactsDir = process.env.EVAL_ARTIFACTS || join(REPO, "eval-artifacts");
@@ -188,6 +197,7 @@ async function main() {
     onboardingCompleted: false,
     botsCreated: [],
     grokSkipped: true,
+    mcpSkipped: true,
     allowClicked: false,
     allowShown: false,
     streamObserved: {},
@@ -201,7 +211,13 @@ async function main() {
     mechanical.serverUp = true;
 
     const { runFlow } = await import("./flow.mjs");
-    const result = await runFlow({ baseUrl: BASE, artifactsDir, includeGrok: found.grok });
+    const result = await runFlow({
+      baseUrl: BASE,
+      artifactsDir,
+      includeGrok: found.grok,
+      includeCodexMcp: found.codex,
+      maxTurns: cap,
+    });
     Object.assign(mechanical, result.mechanical, { serverUp: true });
     transcripts = result.transcripts;
     screenshots = result.screenshots;
@@ -235,8 +251,11 @@ async function main() {
     streamObserved: t.streamObserved,
     allowClicked: t.allowClicked,
     state: t.state,
+    tools: (t.messages ?? [])
+      .filter((m) => m?.kind === "activity" && m.tool)
+      .map((m) => ({ name: redact(m.tool.name, values), ok: m.tool.ok })),
   }));
-  const missing = failMechanical(mechanical);
+  const missing = failMechanical(mechanical, transcripts);
   const report = {
     secrets: { claude: found.claude, codex: found.codex, grok: found.grok, grokOptional: true },
     mechanical,

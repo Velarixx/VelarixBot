@@ -1,0 +1,52 @@
+# Cheap Codex app-server protocol-drift canary. Not a Playwright run.
+# Weekday daytime Europe/Amsterdam + manual dispatch. Not on pull_request.
+# Installs the real Codex CLI, lists advertised app-server methods/features
+# (including mcpServer/elicitation/request and tool_call_mcp_elicitation),
+# and fails if server/drivers/codex.ts handleServerRequest does not implement them.
+# Secret (value never logged): CODEX_AUTH_JSON. Skips cleanly when it is absent.
+name: Codex protocol canary
+
+on:
+  schedule:
+    # Same window as eval.yml: 08:00 Europe/Amsterdam weekdays = 06:00 UTC in CEST.
+    - cron: "0 6 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: protocol-canary-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: app-server protocol drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Gate (skip without Codex secret)
+        id: gate
+        run: node eval/protocol-canary.mjs --gate
+      - name: Install Codex CLI
+        if: steps.gate.outputs.ran == 'true'
+        shell: bash
+        run: |
+          set +x
+          npm i -g @openai/codex
+      - name: List advertised methods/features and check the driver
+        if: steps.gate.outputs.ran == 'true'
+        shell: bash
+        run: |
+          set +x
+          node eval/protocol-canary.mjs

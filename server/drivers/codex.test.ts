@@ -17,6 +17,8 @@ import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { FALLBACK_CODEX_MODELS } from "./codex-models.ts";
 import {
   CodexDriver,
+  CODEX_ELICITATION_METHOD,
+  CODEX_MCP_ELICITATION_FEATURE,
   codexElicitationCard,
   isCodexElicitationMethod,
   isCodexPermissionUserInput,
@@ -44,7 +46,10 @@ describe("Codex requestUserInput classification", () => {
     expect(isCodexUserInputMethod("execCommandApproval")).toBe(false);
     expect(isCodexUserInputMethod("item/fileChange/requestApproval")).toBe(false);
     expect(isCodexUserInputMethod("mcpServer/elicitation/request")).toBe(false);
+    expect(CODEX_ELICITATION_METHOD).toBe("mcpServer/elicitation/request");
+    expect(CODEX_MCP_ELICITATION_FEATURE).toBe("tool_call_mcp_elicitation");
     expect(isCodexElicitationMethod("mcpServer/elicitation/request")).toBe(true);
+    expect(isCodexElicitationMethod(CODEX_ELICITATION_METHOD)).toBe(true);
     expect(isCodexElicitationMethod("item/tool/requestUserInput")).toBe(false);
     expect(isCodexPermissionsMethod("item/permissions/requestApproval")).toBe(true);
     expect(isCodexPermissionsMethod("mcpServer/elicitation/request")).toBe(false);

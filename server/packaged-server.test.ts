@@ -119,17 +119,41 @@ describe("packaged server entry", () => {
     expect(workflow).toMatch(/needs:\s*\[mac, windows\]/);
   });
 
-  it("leaves eval and portable as workflow_dispatch only", () => {
-    for (const file of [".github/workflows/eval.yml", ".github/workflows/portable.yml"]) {
-      const text = read(file);
-      expect(text).toContain("workflow_dispatch");
-      expect(text).not.toMatch(/^\s+schedule:/m);
-      expect(text).not.toMatch(/^\s+pull_request:/m);
-      expect(text).not.toContain("smoke-packaged-server.mjs");
-    }
+  it("keeps eval/canary off pull_request and portable dispatch-only", () => {
+    const evalYml = read(".github/workflows/eval.yml");
+    expect(evalYml).toContain("workflow_dispatch");
+    expect(evalYml).toMatch(/^\s+schedule:/m);
+    expect(evalYml).toContain('cron: "0 6 * * 1-5"');
+    expect(evalYml).not.toMatch(/^\s+pull_request:/m);
+    expect(evalYml).toContain("ubuntu-latest");
+    expect(evalYml).toContain("TIER_B_MAX_TURNS");
+    expect(evalYml).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(evalYml).toContain("CODEX_AUTH_JSON");
+    expect(evalYml).toContain("XAI_API_KEY");
+    expect(evalYml).toContain("optional");
+    expect(evalYml).not.toContain("smoke-packaged-server.mjs");
+
+    const canary = read(".github/workflows/protocol-canary.yml");
+    expect(canary).toContain("workflow_dispatch");
+    expect(canary).toMatch(/^\s+schedule:/m);
+    expect(canary).toContain('cron: "0 6 * * 1-5"');
+    expect(canary).not.toMatch(/^\s+pull_request:/m);
+    expect(canary).toContain("ubuntu-latest");
+    expect(canary).toContain("CODEX_AUTH_JSON");
+    expect(canary).toContain("mcpServer/elicitation/request");
+    expect(canary).toContain("tool_call_mcp_elicitation");
+    expect(canary).not.toContain("smoke-packaged-server.mjs");
+
+    const portable = read(".github/workflows/portable.yml");
+    expect(portable).toContain("workflow_dispatch");
+    expect(portable).not.toMatch(/^\s+schedule:/m);
+    expect(portable).not.toMatch(/^\s+pull_request:/m);
+    expect(portable).not.toContain("smoke-packaged-server.mjs");
+
     const ci = read(".github/workflows/ci.yml");
     expect(ci).toContain("ubuntu-latest");
     expect(ci).not.toMatch(/matrix:/);
+    expect(ci).not.toContain("macos-15-intel");
     expect(ci).not.toContain("smoke-packaged-server.mjs");
     expect(ci).not.toContain("electron-builder");
   });

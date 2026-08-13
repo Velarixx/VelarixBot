@@ -36,6 +36,8 @@ pnpm test:watch    # same, in watch mode
 pnpm eval          # Playwright + judge against :8799 (skips without secrets)
 ```
 
+Eval secrets (values stay in Actions / your env — never commit them): `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_AUTH_JSON`. `XAI_API_KEY` is optional and never required.
+
 ## Repo map
 
 | Path | What lives there |
