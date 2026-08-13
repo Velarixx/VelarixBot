@@ -302,6 +302,11 @@ function execViaPwsh(
  * Callers pass stdio pipes (["pipe","pipe","pipe"]) and get a child with
  * live stdout/stderr streams.
  *
+ * When resolveCliCommand already returns process.execPath (`.ts` fakes,
+ * unwrapped `.cmd` JS entries), spawn that node directly with windowsHide.
+ * Do not wrap those in the pwsh CLI tree — wrap.ps1 exits 0 without
+ * running the script.
+ *
  * Throws (never EINVAL-ambushes) when the target is a .cmd shim that could
  * not be unwrapped and pwsh is unavailable — spawning a .cmd without a
  * shell is a synchronous EINVAL on current Node, and spawning it WITH a
@@ -324,6 +329,14 @@ export function spawnCliHidden(
   // Windows reaps the tree with taskkill /T /F, so drop the flag.
   const helperOpts = windowsSpawnOptions(opts);
   const env = { ...(opts.env ?? process.env), ...runEnv };
+  // Test fakes and unwrapped JS shims already resolve to this process's
+  // node. The pwsh CLI-tree wrapper exists so native .exe children inherit
+  // one hidden console — wrapping node + a .ts fake makes wrap.ps1 exit 0
+  // without running the script (`grokAgent exited 0 before the prompt
+  // result`). Spawn node directly with CREATE_NO_WINDOW instead.
+  if (spawnDirectNode(command)) {
+    return spawn(command, [...prefix, ...args], { ...helperOpts, env }) as ChildProcessWithoutNullStreams;
+  }
   const pwsh = resolvePwsh();
   if (!pwsh) {
     if (SHIM_RE.test(command)) {
@@ -354,5 +367,17 @@ export function spawnCliHidden(
   return child;
 }
 
+/** True when resolveCliCommand already handed us node (fakes / JS shims). */
+function spawnDirectNode(command: string): boolean {
+  return command === process.execPath;
+}
+
 // exposed for tests only
-export const _internal = { shimScriptTarget, whereCache, windowsSpawnOptions, windowsCliTreeSpawnOptions, pwshWrapperArgs };
+export const _internal = {
+  shimScriptTarget,
+  whereCache,
+  windowsSpawnOptions,
+  windowsCliTreeSpawnOptions,
+  pwshWrapperArgs,
+  spawnDirectNode,
+};

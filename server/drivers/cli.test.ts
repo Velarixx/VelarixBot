@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { _internal, cliExec, cliVersion, killProcessTree, resolveCliCommand } from "./cli.ts";
+import { _internal, cliExec, cliVersion, killProcessTree, resolveCliCommand, spawnCliHidden } from "./cli.ts";
 
 const PRINT_MARKER = "process.stdout.write(String(process.env.VELARIX_TEST_MARKER))";
 
@@ -155,6 +155,21 @@ describe("script CLI resolution (Windows-safe fakes)", () => {
     const resolved = resolveCliCommand("claude");
     expect(resolved.args).toEqual([]);
     expect(resolved.command).not.toBe(process.execPath);
+  });
+
+  it("spawns a .ts fake under node directly — not wrap.ps1", async () => {
+    const fake = join(testing, "fake-acp-cli.ts");
+    expect(_internal.spawnDirectNode(process.execPath)).toBe(true);
+    expect(_internal.spawnDirectNode("C:\\Program Files\\PowerShell\\7\\pwsh.exe")).toBe(false);
+    const child = spawnCliHidden(fake, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (c) => (out += c));
+    const code = await new Promise<number | null>((resolvePromise) => child.on("close", resolvePromise));
+    expect(code).toBe(0);
+    expect(out).toMatch(/fake-acp/);
+    expect(child.spawnfile).toBe(process.execPath);
+    expect(child.spawnargs.join(" ")).toContain("fake-acp-cli.ts");
+    expect(child.spawnargs.join(" ")).not.toMatch(/wrap\.ps1|pwsh/i);
   });
 });
 

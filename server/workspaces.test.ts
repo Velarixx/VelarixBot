@@ -1,11 +1,13 @@
 // Two cloud bots can run at once once each has its own Box workspace.
 // Uses the fake ACP CLI in hang mode so a turn stays busy without a live box.
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { bestEffortRm, stopChild } from "./testing/harness.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const FAKE_CLI = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
@@ -67,13 +69,8 @@ describe("per-bot box workspaces (no shared 409)", () => {
   }, 30_000);
 
   afterAll(async () => {
-    child?.kill("SIGTERM");
-    await new Promise<void>((resolve) => {
-      if (!child || child.exitCode !== null) return resolve();
-      child.on("close", () => resolve());
-      setTimeout(() => (child.kill("SIGKILL"), resolve()), 5_000).unref?.();
-    });
-    rmSync(home, { recursive: true, force: true });
+    await stopChild(child);
+    bestEffortRm(home);
   });
 
   it("bot A busy on cloud does not 409 bot B", async () => {

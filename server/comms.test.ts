@@ -10,7 +10,7 @@
 // half runs on Windows as well as POSIX. Mention-resolution unit tests
 // never needed a child process.
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,7 @@ import {
   uniqueIds,
 } from "./comms.ts";
 import { mentionedBots } from "./store.ts";
+import { bestEffortRm, stopChild } from "./testing/harness.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const FAKE_CLI = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
@@ -150,13 +151,8 @@ describe("comms e2e (fake ACP fleet)", () => {
   }, 30_000);
 
   afterAll(async () => {
-    child?.kill("SIGTERM");
-    await new Promise<void>((resolve) => {
-      if (!child || child.exitCode !== null) return resolve();
-      child.on("close", () => resolve());
-      setTimeout(() => (child.kill("SIGKILL"), resolve()), 5_000).unref?.();
-    });
-    rmSync(home, { recursive: true, force: true });
+    await stopChild(child);
+    bestEffortRm(home);
   });
 
   it("seals the internal comms endpoints behind the boot token", async () => {

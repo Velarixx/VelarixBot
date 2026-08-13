@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { killProcessTree } from "../drivers/cli.ts";
+
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 export const TESTING_DIR = SERVER_DIR;
 export const FAKE_ACP_CLI = join(TESTING_DIR, "fake-acp-cli.ts");
@@ -44,14 +46,22 @@ export async function waitForHealth(base: string, child: ChildProcess, stderr: (
   }
 }
 
+export function bestEffortRm(path: string): void {
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch {
+    /* Windows: a late child may still hold the temp home (EPERM) */
+  }
+}
+
 export async function stopChild(child: ChildProcess | undefined): Promise<void> {
   if (!child) return;
-  child.kill("SIGTERM");
+  killProcessTree(child.pid);
   await new Promise<void>((resolve) => {
     if (child.exitCode !== null) return resolve();
     child.on("close", () => resolve());
     setTimeout(() => {
-      child.kill("SIGKILL");
+      killProcessTree(child.pid);
       resolve();
     }, 5_000).unref?.();
   });
@@ -212,7 +222,7 @@ export async function bootHarness(opts: {
     await waitForHealth(base, child, () => stderr);
   } catch (e) {
     await stopChild(child);
-    rmSync(home, { recursive: true, force: true });
+    bestEffortRm(home);
     throw e;
   }
   const sse = await connectSse(base);
@@ -224,7 +234,7 @@ export async function bootHarness(opts: {
     async stop() {
       sse.close();
       await stopChild(child);
-      rmSync(home, { recursive: true, force: true });
+      bestEffortRm(home);
     },
   };
 }
