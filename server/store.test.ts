@@ -1,5 +1,5 @@
 // Durable product-foundation persistence tests.
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -89,12 +89,20 @@ describe("Store", () => {
     expect(store.patchMessage(bot.threadId, "missing", {})).toBeNull();
   });
 
-  it("deletes bot and transcript", () => {
+  it("deletes bot transcript, backup, and workspace", () => {
     const store = new Store(selection);
     const bot = store.createBot();
+    store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "later" });
     const file = join(DATA_DIR, `messages-${bot.threadId}.json`);
+    const bak = `${file}.bak`;
+    expect(existsSync(bak)).toBe(true);
+    const ws = join(DATA_DIR, "workspaces", bot.id);
+    mkdirSync(ws, { recursive: true });
+    writeFileSync(join(ws, "note.txt"), "scratch");
     expect(store.deleteBot(bot.id)).toBe(true);
     expect(existsSync(file)).toBe(false);
+    expect(existsSync(bak)).toBe(false);
+    expect(existsSync(ws)).toBe(false);
   });
 
   it("persists routine CRUD and schedule metadata", () => {

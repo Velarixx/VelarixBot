@@ -59,6 +59,12 @@ jobs:
         run: pnpm exec electron-builder --mac dmg --arm64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Verify packaged server is the just-built one
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-packaged-server.mjs --packaged \
+            release/mac-arm64/VelarixBot.app/Contents/Resources/server/index.js
       - name: Verify DMG and packaged runtime resources
         shell: bash
         run: |
@@ -99,6 +105,12 @@ jobs:
       - run: pnpm package:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Verify packaged server is the just-built one
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-packaged-server.mjs --packaged \
+            release/win-unpacked/resources/server/index.js
       - name: Verify unsigned x64 installer
         shell: pwsh
         run: |

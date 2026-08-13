@@ -47,3 +47,12 @@ Do not disable SmartScreen or Microsoft Defender globally. The first Windows rel
 ## Updates
 
 Updates are manual because the source and releases are private. Download the next release from this repository, verify its checksum, and install it over the existing version. Your bots, transcripts, routines, and settings remain in the VelarixBot user-data directory.
+
+## Uninstall
+
+Removing the app does not delete leftover config or bot data.
+
+- **macOS:** drag `/Applications/VelarixBot.app` to Trash. Leftover folders: `~/Library/Application Support/VelarixBot` (app prefs) and `~/.velarixbot` (bots, transcripts, keys, per-bot workspaces).
+- **Windows:** uninstall VelarixBot from Settings. Leftover folders: `%APPDATA%\VelarixBot` (app prefs) and `%USERPROFILE%\.velarixbot` (bots, transcripts, keys, per-bot workspaces).
+
+Delete those folders only if you want a clean slate.

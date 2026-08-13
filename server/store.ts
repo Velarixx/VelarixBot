@@ -1,6 +1,6 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DATA_DIR } from "./config.ts";
+import { botWorkspaceDir, DATA_DIR } from "./config.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
 
 export type MausColor = "green" | "blue" | "red" | "orange" | "purple" | "cyan" | "pink" | "yellow" | "teal" | "coral";
@@ -163,7 +163,7 @@ export class Store {
   patchMessage(threadId:string,id:string,patch:Partial<Message>):Message|null{const list=this.messagesFor(threadId),i=list.findIndex(m=>m.id===id);if(i<0)return null;list[i]={...list[i],...patch,card:patch.card??list[i].card};this.saveMessages(threadId);return list[i];}
   bot(id:string){return this.bots.find(b=>b.id===id)??null} botByThread(id:string){return this.bots.find(b=>b.threadId===id)??null}
   createBot():BotRecord{const bot:BotRecord={id:newId(),threadId:newId(),name:"New Bot",title:"",description:"",notifications:true,color:COLORS[this.bots.length%COLORS.length],iconShape:ICON_SHAPES[this.bots.length%ICON_SHAPES.length],unread:false,modelSelection:this.defaultSelection(),resumeCursors:{},computer:"off",busy:false,state:"IDLE",usage:zeroUsage(),createdAt:Date.now()};this.bots.unshift(bot);this.saveBots();this.appendMessage(bot.threadId,{role:"bot",kind:"text",text:"Hey — I'm your new bot. Nice to meet you."});this.appendMessage(bot.threadId,{role:"bot",kind:"options",card:onboardingCard()});return bot;}
-  deleteBot(id:string){const b=this.bot(id);if(!b)return false;this.bots=this.bots.filter(x=>x.id!==id);this.routines=this.routines.filter(r=>r.botId!==id);this.saveBots();this.saveRoutines();this.messages.delete(b.threadId);try{unlinkSync(messagesFile(b.threadId))}catch{}return true;}
+  deleteBot(id:string){const b=this.bot(id);if(!b)return false;this.bots=this.bots.filter(x=>x.id!==id);this.routines=this.routines.filter(r=>r.botId!==id);this.saveBots();this.saveRoutines();this.messages.delete(b.threadId);try{unlinkSync(messagesFile(b.threadId))}catch{}try{unlinkSync(`${messagesFile(b.threadId)}.bak`)}catch{}try{rmSync(botWorkspaceDir(b.id),{recursive:true,force:true})}catch{}return true;}
   patchBot(id:string,patch:Partial<BotRecord>){
     const b=this.bot(id);if(!b)return null;if(patch.computer&&!MODES.has(patch.computer))throw new Error("invalid computer mode");if(patch.state&&!STATES.has(patch.state))throw new Error("invalid bot state");
     const next: Partial<BotRecord> = { ...patch };

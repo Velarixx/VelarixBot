@@ -36,7 +36,7 @@ const dump = () => {
     writeFileSync(
       process.env.FAKE_CODEX_DUMP,
       JSON.stringify(
-        { argv, env: process.env, calls, decision, threadStartConfig, threadResumeConfig },
+        { argv, env: process.env, cwd: process.cwd(), calls, decision, threadStartConfig, threadResumeConfig },
         null,
         2,
       ),

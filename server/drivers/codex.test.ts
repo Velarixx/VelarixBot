@@ -6,7 +6,7 @@
 // Spawn-based tests are POSIX-only until Windows CLI spawning lands (the
 // fake is a shebang script — same constraint as codex.cmd itself).
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -203,6 +203,25 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     // no integrations → no mcp overlay on thread/start
     expect(seen.threadStartConfig).toBeNull();
     expect(seen.threadResumeConfig).toBeNull();
+    expect(seen.cwd).toBe(join(DATA_DIR, "workspaces", "codex"));
+    expect(seen.cwd).not.toBe(homedir());
+    expect(threadStart.params.cwd).toBe(seen.cwd);
+  });
+
+  it("runs the CLI in the per-bot workspace, not the home directory", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    const workspace = join(scratch, "bot-ws");
+    mkdirSync(workspace);
+    process.env.FAKE_CODEX_DUMP = dump;
+    await instance.adapter.sendTurn({ threadId: "t-cwd", text: "pwd", cwd: workspace });
+    await recorder.until((e) => e.type === "turn.completed");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.cwd).toBe(workspace);
+    const threadStart = seen.calls.find((c: { method: string }) => c.method === "thread/start");
+    expect(threadStart.params.cwd).toBe(workspace);
+    expect(threadStart.params.sandbox).toBe("workspace-write");
+    expect(seen.cwd).not.toBe(homedir());
   });
 
   it("puts image bytes on turn/start input, not argv", async () => {

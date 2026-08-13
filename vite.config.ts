@@ -28,7 +28,7 @@ export default defineConfig({
     // packager output lands inside the repo — its HTML files must never
     // trigger dev full-page reloads
     watch: {
-      ignored: ["**/release/**", "**/build/**", "**/dist/**", "**/electron/resources/**"],
+      ignored: ["**/release/**", "**/build/**", "**/dist/**", "**/dist-server/**", "**/electron/resources/**"],
     },
     // the harness server owns every provider process; the app only ever
     // talks to /api — clients hold no transports

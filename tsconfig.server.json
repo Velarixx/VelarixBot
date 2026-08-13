@@ -15,5 +15,8 @@
     "types": ["node"],
     "allowJs": true
   },
+  // update-feed.mjs is typechecked here only. Do not add it to
+  // tsconfig.server.build.json — that widens tsc rootDir to the repo root
+  // and emits dist-server/server/index.js instead of dist-server/index.js.
   "include": ["server", "electron/update-feed.mjs"]
 }
