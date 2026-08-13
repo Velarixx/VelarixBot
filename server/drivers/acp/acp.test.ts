@@ -243,6 +243,29 @@ posixOnly("ACP turns (fake CLI)", () => {
     expect(loadNames).toContain("composio");
     expect(JSON.stringify(resumed.argv)).not.toContain(composioKey);
   });
+
+  it("dumps memory on session/new when enabled", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    const token = "mem_acp_secret";
+    await instance.adapter.sendTurn({
+      threadId: "t-memory-new",
+      text: "go",
+      integrations: {
+        memory: {
+          command: process.execPath,
+          args: ["/fake/memory-proxy.js"],
+          env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: token },
+        },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.threadId === "t-memory-new");
+    const started = JSON.parse(readFileSync(dump, "utf8"));
+    const newNames = (started.sessionNew?.mcpServers ?? []).map((s: { name: string }) => s.name);
+    expect(newNames).toContain("memory");
+    expect(JSON.stringify(started.argv)).not.toContain(token);
+  });
 });
 
 describe.skipIf(process.platform === "win32")("ACP snapshot", () => {

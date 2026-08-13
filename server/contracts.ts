@@ -112,6 +112,9 @@ export interface SendTurnInput {
      * create real sidebar bots. The harness owns turns, permissions, and
      * recursion limits; the proxy only forwards. */
     agents?: { command: string; args: string[]; env: Record<string, string> };
+    /** Local markdown memory: remember / recall MCP tools. Spawn contract is
+     * built by the harness (token in env, never argv). */
+    memory?: { command: string; args: string[]; env: Record<string, string> };
   };
   cwd?: string;
   /** Local file paths from a drop/paste. Drivers must not upload them. */
