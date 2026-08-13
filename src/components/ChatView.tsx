@@ -123,6 +123,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   const streaming = state.streaming[bot.threadId];
   const provisioning = state.provisioning[bot.id];
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
+  const participants = (bot.threadParticipants ?? [])
+    .map((id) => state.bots.find((item) => item.id === id))
+    .filter((item): item is Bot => Boolean(item));
 
   // Scroll pinning: follow the bottom while the user hasn't scrolled away.
   // Follow breaks ONLY on an upward user gesture (wheel/touch), never on
@@ -154,7 +157,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       <div className="flex items-center justify-between px-5 py-3">
         <button
           onClick={() => dispatch({ type: "toggleSettings" })}
-          className="flex items-center gap-2.5 rounded-lg px-1.5 py-1 hover:bg-raised/50"
+          className="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 hover:bg-raised/50"
           title="Bot settings"
         >
           <MausAvatar
@@ -164,7 +167,14 @@ export function ChatView({ bot }: { bot: Bot }) {
             motion={mascotMotion?.kind ?? "none"}
             motionKey={mascotMotion?.nonce ?? 0}
           />
-          <span className="text-[15px] font-semibold text-ink">{bot.name}</span>
+          <span className="min-w-0 text-left">
+            <span className="block text-[15px] font-semibold text-ink">{bot.name}</span>
+            {participants.length > 1 && (
+              <span className="block truncate text-[11px] text-ink-secondary">
+                With {participants.filter((p) => p.id !== bot.id).map((p) => p.name).join(", ")}
+              </span>
+            )}
+          </span>
           {bot.busy && <Loader2 size={14} className="animate-spin text-ink-secondary" />}
           <span title={bot.stateDetail} className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide", stateTone[bot.state ?? "IDLE"])}>{stateLabel(bot.state ?? "IDLE")}</span>
         </button>

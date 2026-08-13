@@ -24,9 +24,9 @@ export interface OptionCardData {
   options: string[];
   answered?: string;
   dismissed?: boolean;
-  /** Present when this card is a live provider ask (approval/question). */
+  /** Present when this card is a live provider ask (approval/question/sign-in). */
   requestId?: string;
-  requestType?: "permission" | "question";
+  requestType?: "permission" | "question" | "credential";
 }
 
 export interface Message {
@@ -68,6 +68,10 @@ export interface Bot {
   computer?: "cloud" | "local" | "off";
   /** Force a permission card even when the provider is in full-auto. */
   requireApproval?: boolean;
+  /** Connected-app slugs this bot may use. Empty/missing = none. */
+  enabledApps?: string[];
+  /** Other bots sharing this transcript (group mention / ask_bot). */
+  threadParticipants?: string[];
   pinned?: boolean;
   hidden?: boolean;
   messages: Message[];
@@ -87,6 +91,15 @@ export interface Routine {
   enabled: boolean; running: boolean; nextRunAt: number; lastRunAt: number | null;
   lastResult: string | null; createdAt: number;
   thenStartTurn?: { botId: string; prompt: string };
+  skillId?: string;
+}
+
+export interface Skill {
+  id: string;
+  name: string;
+  botId: string;
+  markdown: string;
+  createdAt: number;
 }
 
 /** One row of GET /api/instances — the model picker's data. */
@@ -172,7 +185,17 @@ type Action =
       patch: Partial<
         Pick<
           Bot,
-          "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotExpression" | "pinned" | "hidden" | "requireApproval"
+          | "name"
+          | "title"
+          | "description"
+          | "notifications"
+          | "computer"
+          | "color"
+          | "mascotExpression"
+          | "pinned"
+          | "hidden"
+          | "requireApproval"
+          | "enabledApps"
         >
       >;
     };
@@ -497,8 +520,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const bot = stateRef.current.bots.find((b) => b.id === action.botId);
           const card = bot?.messages.find((m) => m.id === action.messageId)?.card;
           if (card?.requestId) {
-            const behavior =
-              action.answer === "Allow" ? "allow" : action.answer === "Deny" ? "deny" : "answer";
+            const credential = card.requestType === "credential";
+            const behavior = credential
+              ? /deny|dismiss|cancel/i.test(action.answer)
+                ? "deny"
+                : "allow"
+              : action.answer === "Allow"
+                ? "allow"
+                : action.answer === "Deny"
+                  ? "deny"
+                  : "answer";
             api(`/api/bots/${action.botId}/respond`, {
               method: "POST",
               body: JSON.stringify({

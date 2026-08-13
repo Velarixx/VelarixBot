@@ -163,6 +163,37 @@ posixOnly("ACP turns (fake CLI)", () => {
     expect(done).toMatchObject({ ok: false });
     expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(true);
   });
+
+  it("dumps composio on session/new and session/load when enabled", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    const composioKey = "ck_acp_secret";
+    const composio = {
+      command: process.execPath,
+      args: ["/fake/composio-proxy.js"],
+      env: { OMB_COMPOSIO_KEY: composioKey, OMB_ALLOWED_TOOLKITS: "googledrive" },
+    };
+
+    await instance.adapter.sendTurn({ threadId: "t-composio-new", text: "go", integrations: { composio } });
+    await recorder.until((e) => e.type === "turn.completed" && e.threadId === "t-composio-new");
+    const started = JSON.parse(readFileSync(dump, "utf8"));
+    const newNames = (started.sessionNew?.mcpServers ?? []).map((s: { name: string }) => s.name);
+    expect(newNames).toContain("composio");
+    expect(JSON.stringify(started.argv)).not.toContain(composioKey);
+
+    await instance.adapter.sendTurn({
+      threadId: "t-composio-load",
+      text: "again",
+      resumeCursor: "fake-acp-session",
+      integrations: { composio },
+    });
+    await recorder.until((e) => e.type === "turn.completed" && e.threadId === "t-composio-load");
+    const resumed = JSON.parse(readFileSync(dump, "utf8"));
+    const loadNames = (resumed.sessionLoad?.mcpServers ?? []).map((s: { name: string }) => s.name);
+    expect(loadNames).toContain("composio");
+    expect(JSON.stringify(resumed.argv)).not.toContain(composioKey);
+  });
 });
 
 describe.skipIf(process.platform === "win32")("ACP snapshot", () => {

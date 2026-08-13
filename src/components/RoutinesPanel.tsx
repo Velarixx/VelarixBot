@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { CalendarClock, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
-import { api, useStore, type Routine, type RoutineSchedule } from "@/state/store";
+import { api, useStore, type Routine, type RoutineSchedule, type Skill } from "@/state/store";
 
 function scheduleLabel(schedule: RoutineSchedule) {
   return schedule.kind === "daily" ? `Daily at ${schedule.time}` : `Every ${schedule.everyMinutes} min`;
@@ -19,9 +19,12 @@ export function RoutinesPanel() {
   const [time, setTime] = useState("09:00");
   const [thenBotId, setThenBotId] = useState("");
   const [thenPrompt, setThenPrompt] = useState("");
+  const [skillId, setSkillId] = useState("");
+  const [skills, setSkills] = useState<Skill[]>([]);
 
   useEffect(() => {
     api("/api/routines").then(({ routines }) => dispatch({ type: "routinesLoaded", routines })).catch((e) => setError(e.message));
+    api("/api/skills").then(({ skills: list }) => setSkills(list ?? [])).catch(() => {});
   }, [dispatch]);
 
   useEffect(() => {
@@ -53,10 +56,11 @@ export function RoutinesPanel() {
           prompt: prompt.trim(),
           schedule,
           ...(thenBotId && thenPrompt.trim() ? { thenStartTurn: { botId: thenBotId, prompt: thenPrompt.trim() } } : {}),
+          ...(skillId ? { skillId } : {}),
         }),
       });
       dispatch({ type: "routineSaved", routine });
-      setName(""); setPrompt(""); setThenBotId(""); setThenPrompt(""); setCreating(false);
+      setName(""); setPrompt(""); setThenBotId(""); setThenPrompt(""); setSkillId(""); setCreating(false);
       dispatch({ type: "toggleRoutines", open: true });
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setSaving(false); }
@@ -89,11 +93,13 @@ export function RoutinesPanel() {
         )}
         <label className="block text-[12px] text-ink-secondary">Then also start a turn on (optional)<select value={thenBotId} onChange={(e) => setThenBotId(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink"><option value="">None</option>{state.bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label>
         {thenBotId ? <label className="block text-[12px] text-ink-secondary">Prompt<textarea required rows={3} value={thenPrompt} onChange={(e) => setThenPrompt(e.target.value)} placeholder="Follow up on that result…" className="mt-1 w-full resize-none rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label> : null}
+        <label className="block text-[12px] text-ink-secondary">Taught skill (optional)<select value={skillId} onChange={(e) => setSkillId(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink"><option value="">None</option>{skills.filter((s) => s.botId === botId || !botId).map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}</select></label>
         <div className="flex justify-end gap-2"><button type="button" onClick={() => { setCreating(false); dispatch({ type: "toggleRoutines", open: true }); }} className="rounded-lg px-3 py-2 text-[13px] text-ink-secondary">Cancel</button><button disabled={saving} className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white disabled:opacity-50">{saving && <Loader2 size={13} className="animate-spin" />}Create</button></div>
       </form> : <button onClick={() => setCreating(true)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white"><Plus size={16} />New routine</button>}
       <div className="mt-4 space-y-2">{state.routines.length === 0 && !creating ? <div className="rounded-xl border border-dashed border-hairline/50 p-6 text-center text-[13px] text-ink-secondary">No routines yet.</div> : state.routines.map((routine) => {
         const bot = state.bots.find((item) => item.id === routine.botId);
-        return <div key={routine.id} className="rounded-xl bg-card p-3.5"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate text-[14px] font-medium text-ink">{routine.name}</div><div className="mt-0.5 text-[12px] text-ink-secondary">{bot?.name ?? "Deleted bot"} · {scheduleLabel(routine.schedule)}</div></div><span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${routine.running ? "bg-accent/15 text-accent" : routine.enabled ? "bg-success/15 text-success" : "bg-raised text-ink-secondary"}`}>{routine.running ? "Running" : routine.enabled ? "Enabled" : "Paused"}</span></div><p className="mt-2 line-clamp-2 text-[12.5px] leading-relaxed text-ink-secondary">{routine.prompt}</p><div className="mt-3 flex items-center justify-between"><span className="text-[11px] text-ink-secondary">Next {new Date(routine.nextRunAt).toLocaleString()}</span><div className="flex gap-1"><button aria-label={routine.enabled ? "Disable routine" : "Enable routine"} title={routine.enabled ? "Disable" : "Enable"} onClick={() => void mutate(routine, { enabled: !routine.enabled })} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink">{routine.enabled ? <Pause size={15} /> : <Play size={15} />}</button><button aria-label="Delete routine" title="Delete" onClick={() => void remove(routine)} className="rounded-md p-1.5 text-ink-secondary hover:bg-danger/10 hover:text-danger"><Trash2 size={15} /></button></div></div>{routine.lastResult && <div className="mt-2 truncate text-[11px] text-ink-secondary">Last: {routine.lastResult}</div>}</div>;
+        const skill = skills.find((item) => item.id === routine.skillId);
+        return <div key={routine.id} className="rounded-xl bg-card p-3.5"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate text-[14px] font-medium text-ink">{routine.name}</div><div className="mt-0.5 text-[12px] text-ink-secondary">{bot?.name ?? "Deleted bot"} · {scheduleLabel(routine.schedule)}{skill ? ` · ${skill.name}` : ""}</div></div><span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${routine.running ? "bg-accent/15 text-accent" : routine.enabled ? "bg-success/15 text-success" : "bg-raised text-ink-secondary"}`}>{routine.running ? "Running" : routine.enabled ? "Enabled" : "Paused"}</span></div><p className="mt-2 line-clamp-2 text-[12.5px] leading-relaxed text-ink-secondary">{routine.prompt}</p><label className="mt-2 block text-[11px] text-ink-secondary">Skill<select value={routine.skillId ?? ""} onChange={(e) => void mutate(routine, { skillId: e.target.value || "" })} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink"><option value="">None</option>{skills.filter((item) => item.botId === routine.botId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><div className="mt-3 flex items-center justify-between"><span className="text-[11px] text-ink-secondary">Next {new Date(routine.nextRunAt).toLocaleString()}</span><div className="flex gap-1"><button aria-label={routine.enabled ? "Disable routine" : "Enable routine"} title={routine.enabled ? "Disable" : "Enable"} onClick={() => void mutate(routine, { enabled: !routine.enabled })} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink">{routine.enabled ? <Pause size={15} /> : <Play size={15} />}</button><button aria-label="Delete routine" title="Delete" onClick={() => void remove(routine)} className="rounded-md p-1.5 text-ink-secondary hover:bg-danger/10 hover:text-danger"><Trash2 size={15} /></button></div></div>{routine.lastResult && <div className="mt-2 truncate text-[11px] text-ink-secondary">Last: {routine.lastResult}</div>}</div>;
       })}</div>
     </div>
   </aside>;

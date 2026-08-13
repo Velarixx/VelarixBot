@@ -364,7 +364,11 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
       threadId: "t-mcp-start",
       text: "use tools",
       integrations: {
-        composio: { key: composioKey, url: "https://test.composio.dev/mcp" },
+        composio: {
+          command: process.execPath,
+          args: ["/fake/composio-proxy.js"],
+          env: { OMB_COMPOSIO_KEY: composioKey, OMB_ALLOWED_TOOLKITS: "googledrive" },
+        },
         computer: { boxId: "box-1", token: "box-token" },
         agents: {
           command: process.execPath,
@@ -386,10 +390,12 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
       env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "tok" },
     });
     expect(mcp.agents.args.at(-1)).toMatch(/agents-proxy\.(ts|js)$/);
-    expect(mcp.composio).toEqual({
-      url: "https://test.composio.dev/mcp",
-      bearer_token_env_var: "CODEX_MCP_COMPOSIO_KEY",
+    expect(mcp.composio).toMatchObject({
+      command: process.execPath,
+      args: ["/fake/composio-proxy.js"],
+      env: { OMB_COMPOSIO_KEY: composioKey, OMB_ALLOWED_TOOLKITS: "googledrive" },
     });
+    expect(mcp.composio.args.at(-1)).toMatch(/composio-proxy\.(ts|js)$/);
     expect(mcp.computer).toMatchObject({
       command: process.execPath,
       env: {
@@ -399,10 +405,7 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
       },
     });
     expect(mcp.computer.args.at(-1)).toMatch(/computer-proxy\.(ts|js)$/);
-    // composio secret lives in the child env the overlay names, not argv or config JSON
-    expect(seen.env.CODEX_MCP_COMPOSIO_KEY).toBe(composioKey);
     expect(JSON.stringify(seen.argv)).not.toContain(composioKey);
-    expect(JSON.stringify(seen.threadStartConfig)).not.toContain(composioKey);
   });
 
   it("mounts localComputer as the computer mcp server", async () => {
@@ -444,7 +447,11 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
       text: "again",
       resumeCursor: "codex-thread-9",
       integrations: {
-        composio: { key: composioKey, url: "https://test.composio.dev/mcp" },
+        composio: {
+          command: process.execPath,
+          args: ["/fake/composio-proxy.js"],
+          env: { OMB_COMPOSIO_KEY: composioKey, OMB_ALLOWED_TOOLKITS: "gmail" },
+        },
         agents: {
           command: process.execPath,
           args: ["/fake/agents-proxy.js"],
@@ -468,13 +475,9 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
       args: ["/fake/agents-proxy.js"],
     });
     expect(mcp.agents.args.at(-1)).toMatch(/agents-proxy\.(ts|js)$/);
-    expect(mcp.composio).toEqual({
-      url: "https://test.composio.dev/mcp",
-      bearer_token_env_var: "CODEX_MCP_COMPOSIO_KEY",
-    });
-    expect(seen.env.CODEX_MCP_COMPOSIO_KEY).toBe(composioKey);
+    expect(mcp.composio.env.OMB_COMPOSIO_KEY).toBe(composioKey);
+    expect(mcp.composio.env.OMB_ALLOWED_TOOLKITS).toBe("gmail");
     expect(JSON.stringify(seen.argv)).not.toContain(composioKey);
-    expect(JSON.stringify(seen.threadResumeConfig)).not.toContain(composioKey);
   });
 
   it("a clean exit 0 before turn/completed is a finished turn, not a kill", async () => {

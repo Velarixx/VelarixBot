@@ -69,7 +69,7 @@ export type RuntimeEvent = RuntimeEventBase &
     | { type: "content.delta"; streamKind: "assistant_text" | "reasoning_text"; delta: string }
     | {
         type: "request.opened";
-        requestType: "permission" | "question";
+        requestType: "permission" | "question" | "credential";
         tool: string;
         summary: string;
         choices?: string[];
@@ -97,7 +97,9 @@ export interface SendTurnInput {
   system?: string;
   /** Per-bot integrations the driver may hand to the agent as tools. */
   integrations?: {
-    composio?: { url?: string; key: string };
+    /** Connected apps for this bot, via the composio-proxy stdio MCP.
+     * Spawn contract is built by the harness (key in env, never argv). */
+    composio?: { command: string; args: string[]; env: Record<string, string> };
     /** The bot's cloud computer (box.ascii.dev) for desktop/browser use. */
     computer?: { boxId: string; token: string };
     /** Local computer use via the Electron-hosted cua-driver daemon —

@@ -15,13 +15,49 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import {
+  COMMS_CYCLE_ERROR,
+  COMMS_DEPTH_ERROR,
+  MAX_COMMS_DEPTH,
+  commsGuard,
+  parseVisited,
+  uniqueIds,
+} from "./comms.ts";
 import { mentionedBots } from "./store.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const FAKE_CLI = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
 const BASE = `http://127.0.0.1:${PORT}`;
+const COMMS_TOKEN = "test-comms-e2e-token";
 const posixOnly = describe.skipIf(process.platform === "win32");
+
+describe("comms depth and cycle guard", () => {
+  it("caps chains at two hops (depth 0 and 1 may ask; depth 2 may not)", () => {
+    expect(MAX_COMMS_DEPTH).toBe(2);
+    expect(commsGuard("a", "b", 0, []).ok).toBe(true);
+    expect(commsGuard("b", "c", 1, ["a"]).ok).toBe(true);
+    const blocked = commsGuard("c", "d", 2, ["a", "b"]);
+    expect(blocked).toEqual({ ok: false, error: COMMS_DEPTH_ERROR });
+  });
+
+  it("blocks a revisit even when depth still allows a hop", () => {
+    const pingPong = commsGuard("b", "a", 1, ["a"]);
+    expect(pingPong).toEqual({ ok: false, error: COMMS_CYCLE_ERROR });
+    const self = commsGuard("a", "a", 0, []);
+    expect(self).toEqual({ ok: false, error: "a bot cannot message itself" });
+  });
+
+  it("parses visited from arrays and comma strings", () => {
+    expect(parseVisited([" a ", "a", "b"])).toEqual(["a", "b"]);
+    expect(parseVisited("a,b, a")).toEqual(["a", "b"]);
+    expect(parseVisited(undefined)).toEqual([]);
+  });
+
+  it("dedupes participant ids in order", () => {
+    expect(uniqueIds(["a", "b", "a", " c ", ""])).toEqual(["a", "b", "c"]);
+  });
+});
 
 describe("mentionedBots", () => {
   const peers = [
@@ -29,6 +65,7 @@ describe("mentionedBots", () => {
     { id: "2", name: "New Bot 2" },
     { id: "3", name: "Milind" },
     { id: "4", name: "Ghost", hidden: true },
+    { id: "5", name: "Scout" },
   ];
   it("matches a tag at a word start, case-insensitively", () => {
     expect(mentionedBots("hey @milind, look", peers).map((b) => b.id)).toEqual(["3"]);
@@ -39,6 +76,9 @@ describe("mentionedBots", () => {
   });
   it("dedupes repeats and collects multiple bots", () => {
     expect(mentionedBots("@Milind and @New Bot and @Milind", peers).map((b) => b.id)).toEqual(["3", "1"]);
+  });
+  it("group mention includes all named bots", () => {
+    expect(mentionedBots("@Milind and @Scout, please both look", peers).map((b) => b.id)).toEqual(["3", "5"]);
   });
   it("ignores emails, hidden bots, and mid-word @", () => {
     expect(mentionedBots("mail milind@milind.dev please", peers)).toEqual([]);
@@ -51,14 +91,19 @@ posixOnly("comms e2e (fake ACP fleet)", () => {
   let home: string;
   let stderr = "";
 
-  const api = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
+  const api = async (method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<{ status: number; body: any }> => {
     const res = await fetch(`${BASE}${path}`, {
       method,
-      headers: body ? { "content-type": "application/json" } : undefined,
+      headers: {
+        ...(body ? { "content-type": "application/json" } : {}),
+        ...headers,
+      },
       body: body ? JSON.stringify(body) : undefined,
     });
     return { status: res.status, body: await res.json() };
   };
+  const ask = (body: unknown) =>
+    api("POST", "/api/internal/ask-bot", body, { authorization: `Bearer ${COMMS_TOKEN}` });
 
   beforeAll(async () => {
     chmodSync(FAKE_CLI, 0o755);
@@ -84,6 +129,7 @@ posixOnly("comms e2e (fake ACP fleet)", () => {
         HOME: home,
         USERPROFILE: home,
         OMB_PORT: String(PORT),
+        OMB_COMMS_TOKEN: COMMS_TOKEN,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -116,8 +162,8 @@ posixOnly("comms e2e (fake ACP fleet)", () => {
   it("seals the internal comms endpoints behind the boot token", async () => {
     const agents = await api("GET", "/api/internal/agents?self=x");
     expect(agents.status).toBe(401);
-    const ask = await api("POST", "/api/internal/ask-bot", { toBotId: "x", message: "hi" });
-    expect(ask.status).toBe(401);
+    const denied = await api("POST", "/api/internal/ask-bot", { toBotId: "x", message: "hi" });
+    expect(denied.status).toBe(401);
     const create = await api("POST", "/api/internal/create-bot", {
       name: "Ops",
       title: "Ops",
@@ -173,6 +219,14 @@ posixOnly("comms e2e (fake ACP fleet)", () => {
       const note = askerBot.messages.find((m: any) => m.kind === "activity" && m.tool?.name?.startsWith("asked @Helper"));
       expect(note).toBeTruthy();
 
+      // group thread: Helper's reply is on Asker's transcript (handoff does
+      // not route through the user)
+      const groupReply = askerBot.messages.find(
+        (m: any) => m.kind === "text" && m.role === "bot" && m.text?.startsWith("@Helper:"),
+      );
+      expect(groupReply?.text).toContain("hello from fake acp");
+      expect(askerBot.threadParticipants).toEqual(expect.arrayContaining([asker.id, helper.id]));
+
       // B's thread received the attributed message and ran a real turn
       const helperBot = (await api("GET", "/api/bots")).body.bots.find((b: any) => b.id === helper.id);
       const inbound = helperBot.messages.find((m: any) => m.role === "user" && m.kind === "text");
@@ -182,4 +236,24 @@ posixOnly("comms e2e (fake ACP fleet)", () => {
     },
     40_000,
   );
+
+  it("refuses a depth-3 ask and a visited-set cycle", async () => {
+    const bots = (await api("GET", "/api/bots")).body.bots.filter((b: { hidden?: boolean }) => !b.hidden);
+    const from = bots[0];
+    const to = bots.find((b: { id: string }) => b.id !== from.id);
+    expect(to).toBeTruthy();
+    const deep = await ask({ fromBotId: from.id, toBotId: to.id, message: "too deep", depth: 2, visited: [from.id] });
+    expect(deep.status).toBe(200);
+    expect(deep.body.error).toBe(COMMS_DEPTH_ERROR);
+
+    const cycle = await ask({
+      fromBotId: from.id,
+      toBotId: to.id,
+      message: "loop",
+      depth: 1,
+      visited: [to.id],
+    });
+    expect(cycle.status).toBe(200);
+    expect(cycle.body.error).toBe(COMMS_CYCLE_ERROR);
+  });
 });

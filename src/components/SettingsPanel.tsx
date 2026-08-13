@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { ChevronLeft, X } from "lucide-react";
-import { useStore, type Bot } from "@/state/store";
+import { api, useStore, type Bot } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import {
   PICKABLE_STATES,
@@ -32,11 +33,30 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const patch = (
     p: Partial<
-      Pick<Bot, "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotExpression" | "requireApproval">
+      Pick<Bot, "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotExpression" | "requireApproval" | "enabledApps">
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   const activeState = stateForBot(bot);
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
+  const [apps, setApps] = useState<Array<{ slug: string; label: string }>>([]);
+
+  useEffect(() => {
+    let alive = true;
+    api("/api/connectors/catalog")
+      .then((r) => {
+        if (!alive) return;
+        setApps((r.cards ?? []).map((c: { slug: string; label: string }) => ({ slug: c.slug, label: c.label })));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const toggleApp = (slug: string) => {
+    const current = bot.enabledApps ?? [];
+    patch({ enabledApps: current.includes(slug) ? current.filter((s) => s !== slug) : [...current, slug] });
+  };
 
   return (
     <aside className="animate-panel-in flex h-full w-[400px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
@@ -232,6 +252,47 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 )}
               />
             </button>
+          </div>
+
+          <div className="rounded-xl bg-card p-4">
+            <div className="text-[15px] font-medium text-ink">Apps this bot may use</div>
+            <div className="mt-0.5 text-[13px] text-ink-secondary">
+              Connected apps stay workspace-wide. Only toggled apps are mounted as tools for this bot.
+            </div>
+            {apps.length === 0 ? (
+              <div className="mt-3 text-[12px] text-ink-secondary">No catalog yet — connect apps from the plugins panel.</div>
+            ) : (
+              <div className="mt-3 max-h-56 overflow-y-auto rounded-lg border border-hairline/40">
+                {apps.map((app, i) => {
+                  const on = (bot.enabledApps ?? []).includes(app.slug);
+                  return (
+                    <div
+                      key={app.slug}
+                      className={cn("flex items-center justify-between gap-3 px-3 py-2", i > 0 && "border-t border-hairline/40")}
+                    >
+                      <span className="truncate text-[13px] text-ink">{app.label}</span>
+                      <button
+                        role="switch"
+                        aria-checked={on}
+                        aria-label={`${on ? "Disable" : "Enable"} ${app.label}`}
+                        onClick={() => toggleApp(app.slug)}
+                        className={cn(
+                          "relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors",
+                          on ? "bg-accent" : "bg-raised",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "absolute top-[3px] size-4 rounded-full bg-white transition-all",
+                            on ? "left-[17px]" : "left-[3px]",
+                          )}
+                        />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -15,8 +15,13 @@ import type { AppConfig } from "./config.ts";
 const BOX_API = "https://ascii.dev/api/box/v1";
 const READY = new Set(["idle", "ready", "running"]);
 
+function apiBase(cfg: AppConfig) {
+  const url = cfg.box?.url?.trim();
+  return (url || BOX_API).replace(/\/$/, "");
+}
+
 function boxFetch(cfg: AppConfig, path: string, opts: RequestInit = {}) {
-  return fetch(`${BOX_API}${path}`, {
+  return fetch(`${apiBase(cfg)}${path}`, {
     ...opts,
     headers: {
       authorization: `Bearer ${cfg.box?.token}`,
@@ -32,9 +37,15 @@ async function boxJson(cfg: AppConfig, path: string, opts: RequestInit = {}) {
   return { ok: res.ok && body?.ok !== false, status: res.status, body };
 }
 
-/** Stable identity: every bot deliberately sees the same durable workspace. */
+/** Shared-name leftover from the single-VM era. New boxes are named per
+ * bot; leftover shared VMs ("openmausbot-workspace") are not reused. */
 export const WORKSPACE_BOX_NAME = "velarixbot-workspace";
-const LEGACY_WORKSPACE_BOX_NAME = "openmausbot-workspace";
+
+/** Convenience isolation — same Box account/token, not a security boundary. */
+export function boxNameForBot(botId: string): string {
+  const safe = String(botId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48) || "bot";
+  return `${WORKSPACE_BOX_NAME}-${safe}`;
+}
 
 export async function runCommand(cfg: AppConfig, boxId: string, command: string, { timeoutMs = 120_000 } = {}) {
   const res = await boxFetch(cfg, `/boxes/${boxId}/commands`, {
@@ -84,14 +95,9 @@ async function waitReady(cfg: AppConfig, boxId: string, budgetMs = 90_000) {
 }
 
 export async function findBox(cfg: AppConfig, botId: string) {
-  void botId; // retained for API compatibility
   const { body } = await boxJson(cfg, "/boxes");
-  return (
-    (body?.boxes ?? []).find(
-      (b: any) =>
-        (b.name === WORKSPACE_BOX_NAME || b.name === LEGACY_WORKSPACE_BOX_NAME) && b.state !== "error",
-    ) ?? null
-  );
+  const named = boxNameForBot(botId);
+  return (body?.boxes ?? []).find((b: any) => b.name === named && b.state !== "error") ?? null;
 }
 
 export function boxConfigured(cfg: AppConfig) {
@@ -117,7 +123,7 @@ export async function provisionBox(cfg: AppConfig, botId: string, botName: strin
   if (!boxConfigured(cfg)) {
     throw new Error('box provider not enabled — add {"box":{"token":"…"}} to ~/.velarixbot/config.json');
   }
-  const vmName = WORKSPACE_BOX_NAME;
+  const vmName = boxNameForBot(botId);
   let box = await findBox(cfg, botId);
   let created = false;
   if (!box) {

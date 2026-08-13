@@ -87,6 +87,7 @@ beforeAll(async () => {
       OMB_BOT_ID: "bot-asker",
       OMB_COMMS_TOKEN: TOKEN,
       OMB_TURN_DEPTH: "0",
+      OMB_VISITED: "bot-asker",
     },
     stdio: ["pipe", "pipe", "inherit"],
   });
@@ -131,7 +132,13 @@ describe("agents-proxy MCP surface", () => {
     const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
     expect(res.result.content[0].text).toContain("Helper replied:");
     expect(res.result.content[0].text).toContain("hi from helper");
-    expect(lastAskBody).toMatchObject({ fromBotId: "bot-asker", toBotId: "bot-helper", message: "ping", depth: 0 });
+    expect(lastAskBody).toMatchObject({
+      fromBotId: "bot-asker",
+      toBotId: "bot-helper",
+      message: "ping",
+      depth: 0,
+      visited: "bot-asker",
+    });
   });
 
   it("renders a busy peer as a clean answer, not an error", async () => {
@@ -142,10 +149,10 @@ describe("agents-proxy MCP surface", () => {
   });
 
   it("surfaces the harness's depth refusal as a tool error", async () => {
-    askResponse = { error: "message chains are limited to one hop" };
+    askResponse = { error: "message chains are limited to two hops" };
     const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
     expect(res.result.isError).toBe(true);
-    expect(res.result.content[0].text).toContain("one hop");
+    expect(res.result.content[0].text).toContain("two hops");
   });
 
   it("rejects unknown tools with -32602", async () => {
@@ -192,10 +199,10 @@ describe("agents-proxy MCP surface", () => {
   });
 
   it("create_bot surfaces a harness depth refusal as a tool error", async () => {
-    createResponse = { error: "message chains are limited to one hop" };
+    createResponse = { error: "message chains are limited to two hops" };
     const res = await callTool("create_bot", { name: "X", title: "X", description: "X" });
     expect(res.result.isError).toBe(true);
-    expect(res.result.content[0].text).toContain("one hop");
+    expect(res.result.content[0].text).toContain("two hops");
   });
 
   it("requires name, title, and description", async () => {

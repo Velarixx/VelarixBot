@@ -150,4 +150,51 @@ describe("BoxAgentDriver asks (fake box)", () => {
     await instance.adapter.interruptTurn("t-empty");
     await recorder.until((e) => e.type === "turn.completed");
   });
+
+  it("emits a credential handoff, resumes on confirm, and keeps secrets out of events", async () => {
+    const answers: unknown[] = [];
+    const secret = "password: hunter2-never-leak";
+    const fake = await startFakeBox({
+      events: [
+        {
+          id: "cred-1",
+          type: "credential",
+          tool: "browser",
+          summary: `Sign in to GitHub. ${secret}`,
+        },
+      ],
+      onAsk: (body) => answers.push(body),
+      status: () => (answers.length ? "completed" : "running"),
+    });
+    server = fake.server;
+    instance = await BoxAgentDriver.create({
+      instanceId: "box-handoff",
+      displayName: "Box Handoff",
+      environment: { BOX_TOKEN: "tok_test" },
+      enabled: true,
+      config: { pollMs: 5, apiBase: fake.base },
+    });
+    recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({
+      threadId: "t-handoff",
+      text: "log in",
+      integrations: { computer: { boxId: "box-1", token: "tok_test" } },
+    });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({
+      type: "request.opened",
+      requestId: "cred-1",
+      requestType: "credential",
+      tool: "browser",
+    });
+    expect(JSON.stringify(opened)).not.toContain("hunter2");
+    expect((opened as { summary: string }).summary).not.toContain("hunter2");
+
+    await instance.adapter.respondToRequest("t-handoff", "cred-1", { behavior: "allow", source: "user" });
+    const resolved = await recorder.until((e) => e.type === "request.resolved");
+    expect(resolved).toMatchObject({ behavior: "allow", source: "user", requestId: "cred-1" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.stringify(recorder.events)).not.toContain("hunter2");
+  });
 });

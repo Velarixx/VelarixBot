@@ -20,6 +20,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
+import { HANDOFF_CONTINUE, sanitizeHandoffSummary } from "../handoff.ts";
 
 const DRIVER_KIND = "boxAgent";
 const BOX_API = "https://ascii.dev/api/box/v1";
@@ -54,27 +55,31 @@ function decodeConfig(raw: unknown): BoxAgentConfig {
 
 function isAskEvent(ev: any): boolean {
   if (!ev || typeof ev !== "object") return false;
-  if (ev.ask || ev.permission || ev.approval) return true;
+  if (ev.ask || ev.permission || ev.approval || ev.credential || ev.handoff) return true;
   const kind = String(ev.type ?? ev.kind ?? "");
-  return /ask|permission|approval|question|needs.?input|user.?input/i.test(kind);
+  return /ask|permission|approval|question|needs.?input|user.?input|credential|sign.?in|handoff/i.test(kind);
 }
 
 function askFromEvent(ev: any): {
   id: string;
-  kind: "permission" | "question";
+  kind: "permission" | "question" | "credential";
   tool: string;
   summary: string;
   choices?: string[];
 } {
-  const nested = ev.ask ?? ev.permission ?? ev.approval ?? ev;
+  const nested = ev.ask ?? ev.permission ?? ev.approval ?? ev.credential ?? ev.handoff ?? ev;
   const kindRaw = String(ev.type ?? ev.kind ?? nested.kind ?? nested.type ?? "");
-  const kind: "permission" | "question" =
-    /question|input/i.test(kindRaw) && !/permission|approval/i.test(kindRaw) ? "question" : "permission";
-  const id = String(nested.id ?? nested.askId ?? ev.id ?? ev.eventId ?? newId());
   const tool = String(nested.tool ?? ev.tool ?? nested.name ?? "tool");
   const summary = String(
     nested.question ?? nested.summary ?? nested.text ?? nested.message ?? nested.command ?? tool,
   ).slice(0, 300);
+  const credential = /credential|sign.?in|log.?in|handoff|takeover|2fa|password/i.test(`${kindRaw} ${tool} ${summary}`);
+  const kind: "permission" | "question" | "credential" = credential
+    ? "credential"
+    : /question|input/i.test(kindRaw) && !/permission|approval/i.test(kindRaw)
+      ? "question"
+      : "permission";
+  const id = String(nested.id ?? nested.askId ?? ev.id ?? ev.eventId ?? newId());
   const choicesRaw = nested.choices ?? ev.choices;
   const choices = Array.isArray(choicesRaw) ? choicesRaw.map(String).slice(0, 5) : undefined;
   return { id, kind, tool, summary, choices };
@@ -195,8 +200,8 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
           requestId: ask.id,
           requestType: ask.kind,
           tool: ask.tool,
-          summary: ask.summary,
-          choices: ask.choices,
+          summary: ask.kind === "credential" ? sanitizeHandoffSummary(ask.summary) : ask.summary,
+          choices: ask.kind === "credential" ? ask.choices ?? [HANDOFF_CONTINUE] : ask.choices,
         });
       };
 
@@ -221,8 +226,14 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
               const id = String(ev.id ?? ev.eventId ?? JSON.stringify(ev).slice(0, 120));
               if (seen.has(id)) continue;
               seen.add(id);
-              appendNative(threadId, { dir: "in", source: "box.events", msg: ev });
-              if (isAskEvent(ev)) {
+              const ask = isAskEvent(ev) ? askFromEvent(ev) : null;
+              appendNative(
+                threadId,
+                ask?.kind === "credential"
+                  ? { dir: "in", source: "box.events", msg: { type: "credential", id: ask.id, tool: ask.tool } }
+                  : { dir: "in", source: "box.events", msg: ev },
+              );
+              if (ask) {
                 openAsk(ev);
                 continue;
               }
