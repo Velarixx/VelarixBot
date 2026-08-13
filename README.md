@@ -173,24 +173,18 @@ flowchart LR
 
 ## Quick start
 
-**Easiest:** invited team members download the macOS `.dmg` or Windows `.exe` from
-[private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases) and follow
-[the one-time trust instructions](INTERNAL_INSTALL.md). The harness server is embedded — no Node, pnpm, or source checkout.
+1. Open [private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases).
+2. Download the latest release for your computer:
+   - Apple Silicon Mac: `VelarixBot-<version>-arm64.dmg`
+   - Intel Mac: `VelarixBot-<version>-x64.dmg`
+   - Windows: `VelarixBot-Setup-<version>-x64.exe`
+3. Verify the download against `SHA256SUMS.txt` and follow the
+   [one-time installation and trust instructions](INTERNAL_INSTALL.md).
+4. Open VelarixBot and use a logged-in [`claude`](https://claude.com/claude-code),
+   [`codex`](https://github.com/openai/codex), or [`grok`](https://x.ai/cli) CLI.
 
-**From source:**
-
-```sh
-git clone https://github.com/Velarixx/VelarixBot && cd VelarixBot
-pnpm install
-
-pnpm dev:server    # harness server → 127.0.0.1:8799
-pnpm dev           # app → http://127.0.0.1:5199
-pnpm dev:desktop   # or the Electron shell
-```
-
-Source-development requirements: **macOS or Windows**, **Node 24+**, **pnpm**, and at least one agent CLI: [`claude`](https://claude.com/claude-code),
-[`codex`](https://github.com/openai/codex), or [`grok`](https://x.ai/cli) — installed and logged in. They appear
-in the model picker automatically.
+The release contains the desktop app and harness server. Team members do not need Git, Node, pnpm, a source checkout,
+or a local build.
 
 Optional, pasted once in **App Settings** (gear in the sidebar footer):
 
@@ -223,10 +217,22 @@ Automatic updates are disabled because Releases are private and VelarixBot does 
 Download each update manually from [private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases), verify its
 checksum, and install it over the existing version.
 
+## Developer setup (maintainers only)
+
+These commands are for changing VelarixBot, not installing it for normal use:
+
 ```sh
+git clone https://github.com/Velarixx/VelarixBot && cd VelarixBot
+pnpm install
+pnpm dev:server    # harness server → 127.0.0.1:8799
+pnpm dev           # app → http://127.0.0.1:5199
+pnpm dev:desktop   # Electron shell
 pnpm typecheck     # app + server
 pnpm build         # typecheck + production build
 ```
+
+Development requires macOS or Windows, Node 24+, and pnpm. GitHub Actions, not developer machines, builds the
+downloadable release artifacts.
 
 ## Status
 
