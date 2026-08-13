@@ -1,6 +1,8 @@
 # Playwright + LLM-judge eval. Nightly and every rc tag/release.
 # Does not publish, tag, or edit release artifacts.
-# Skips cleanly (exit 0) when provider secrets are absent so CI stays green.
+# Skips cleanly (exit 0) when Claude/Codex secrets are absent (forks / PRs
+# without secrets stay green). On Velarixx/VelarixBot those secrets exist,
+# so schedule / rc / dispatch actually run.
 name: Playwright eval
 
 on:
@@ -28,8 +30,10 @@ jobs:
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       EVAL_ARTIFACTS: ${{ github.workspace }}/eval-artifacts
-      # Claude + Codex only. Grok/xAI is not required and is never requested.
+      # Existing repo secrets (names only). Never echo these values.
+      # Claude: issue #39 / `claude setup-token`
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Codex: OpenAI CI auth.json seed — https://developers.openai.com/codex/auth/ci-cd-auth
       CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +43,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Gate (skip without secrets)
+      - name: Gate (skip without Claude/Codex secrets)
         id: gate
         run: node eval/run.mjs --gate
       - name: Install Chromium
@@ -54,7 +58,10 @@ jobs:
           if [ -n "${CODEX_AUTH_JSON:-}" ]; then npm i -g @openai/codex; fi
       - name: Run Playwright eval
         if: steps.gate.outputs.ran == 'true'
-        run: node eval/run.mjs
+        shell: bash
+        run: |
+          set +x
+          node eval/run.mjs
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.ran == 'true' && (success() || failure())
         with:

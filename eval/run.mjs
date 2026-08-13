@@ -76,8 +76,9 @@ function seedHome(home, found, env) {
   writeFileSync(join(home, ".velarixbot", "config.json"), JSON.stringify(cfg, null, 2));
 
   if (found.codex) {
-    mkdirSync(join(home, ".codex"), { recursive: true });
-    writeFileSync(join(home, ".codex", "auth.json"), env[SECRET_NAMES.codex]);
+    const codexHome = join(home, ".codex");
+    mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    writeFileSync(join(codexHome, "auth.json"), env[SECRET_NAMES.codex], { mode: 0o600 });
   }
 }
 
@@ -159,13 +160,14 @@ async function main() {
     ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
     HOME: home,
     USERPROFILE: home,
+    CODEX_HOME: join(home, ".codex"),
     OMB_PORT: String(PORT),
     OMB_STATIC_DIR: dist,
     ELECTRON_SKIP_BINARY_DOWNLOAD: "1",
   };
   if (found.claude) serverEnv[SECRET_NAMES.claude] = process.env[SECRET_NAMES.claude];
-  // ANTHROPIC_API_KEY / OPENAI_API_KEY / XAI_API_KEY stay out of the child env.
-  // Codex login is temp-HOME ~/.codex/auth.json. Grok/xAI is optional and unused unless already set.
+  // Codex secret is written to CODEX_HOME/auth.json only — never forwarded as env,
+  // argv, or artifacts. ANTHROPIC_API_KEY / OPENAI_API_KEY / XAI_API_KEY stay out.
 
   let stderr = "";
   const child = spawn(process.execPath, [join(REPO, "server", "index.ts")], {

@@ -2,6 +2,8 @@
 // Required: Claude + Codex. Grok/xAI is optional and never gates the run.
 // Never log, return, or write secret values — only booleans and names.
 
+// Names already used on Velarixx/VelarixBot (issue #39 + OpenAI Codex CI docs).
+// Values stay in Actions secrets — this file only knows the names.
 export const SECRET_NAMES = Object.freeze({
   claude: "CLAUDE_CODE_OAUTH_TOKEN",
   codex: "CODEX_AUTH_JSON",

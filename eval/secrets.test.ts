@@ -60,6 +60,14 @@ describe("eval secret gate", () => {
     expect(skipMessage()).toContain("Grok / xAI is not required");
   });
 
+  it("opens the gate for the existing Codex secret name", () => {
+    const found = detectSecrets({ [SECRET_NAMES.codex]: "auth-json-must-not-leak" });
+    expect(SECRET_NAMES.codex).toBe("CODEX_AUTH_JSON");
+    expect(SECRET_NAMES.claude).toBe("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(found).toEqual({ claude: false, codex: true, grok: false, ready: true });
+    expect(formatPresence(found)).not.toContain("auth-json-must-not-leak");
+  });
+
   it("does not open the gate for a Grok-only env", () => {
     const found = detectSecrets({ [SECRET_NAMES.grok]: "xai-must-not-open-the-gate" });
     expect(found).toEqual({ claude: false, codex: false, grok: true, ready: false });
