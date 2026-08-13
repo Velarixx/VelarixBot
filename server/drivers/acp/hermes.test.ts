@@ -37,6 +37,22 @@ describe("Hermes decodeConfig", () => {
     expect(HermesAgentDriver.models.default).toBe("gpt-5.6-sol");
     expect(HermesAgentDriver.models.options.map((o) => o.id)).toEqual(["gpt-5.6-sol", "gpt-5.5"]);
   });
+
+  it("is user-portable: bare PATH name by default, config.cli override, no baked-in install path", () => {
+    // the default is a bare binary name resolved on PATH — never a directory
+    const cli = HermesAgentDriver.decodeConfig({}).cli;
+    expect(cli).toBe("hermes");
+    expect(cli).not.toMatch(/[\\/]/);
+    // a per-instance override points at a custom binary verbatim
+    expect(HermesAgentDriver.decodeConfig({ cli: "/opt/custom/hermes" }).cli).toBe("/opt/custom/hermes");
+    // and the driver source carries no developer-machine absolute paths;
+    // the auth probe must stay homedir-relative (~/.hermes/auth.json)
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "hermes.ts"), "utf8");
+    expect(source).not.toMatch(/[A-Za-z]:\\/); // no Windows drive letters
+    expect(source).not.toMatch(/(\/Users\/|\/home\/|\\Users\\)/);
+    expect(source).toContain("homedir()");
+    expect(source).toContain('".hermes"');
+  });
 });
 
 describe("Hermes turns (fake CLI)", () => {
