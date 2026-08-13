@@ -15,6 +15,14 @@ import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotState, Usage } from "@/lib/product";
 import { appendStreamingResponseText } from "../../server/response-options";
 import { notifyCopy, unreadBotCount, type NotifyEventType } from "@/lib/notify";
+import {
+  cancelPrompt,
+  enqueuePrompt,
+  takeNext,
+  type QueuedPrompt,
+} from "@/lib/prompt-queue";
+
+export type { QueuedPrompt };
 
 export type { MausColor } from "@/lib/mascot";
 
@@ -153,6 +161,8 @@ interface AppState {
     nonce: number;
     kind: Exclude<MausMotion, "none">;
   } | null;
+  /** Composer follow-ups waiting for the current turn to finish, per bot. */
+  queued: Record<string, QueuedPrompt[]>;
 }
 
 type Action =
@@ -161,6 +171,9 @@ type Action =
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "select"; id: string }
   | { type: "send"; botId: string; text: string; attachments?: Array<{ path: string; mime?: string }> }
+  | { type: "enqueue"; botId: string; item: QueuedPrompt }
+  | { type: "cancelQueued"; botId: string; id: string }
+  | { type: "flushQueue"; botId: string }
   | { type: "answerCard"; botId: string; messageId: string; answer: string; always?: boolean }
   | { type: "dismissCard"; botId: string; messageId: string }
   | { type: "newBot" }
@@ -290,7 +303,8 @@ function reducer(state: AppState, action: Action): AppState {
       const bots = state.bots.filter((b) => b.id !== action.botId);
       const selectedId =
         state.selectedId === action.botId ? (bots.find((b) => !b.hidden)?.id ?? bots[0]?.id ?? "") : state.selectedId;
-      return { ...state, bots, selectedId };
+      const { [action.botId]: _, ...queued } = state.queued;
+      return { ...state, bots, selectedId, queued };
     }
     case "markUnread":
       return updateBot(withMascotMotion(state, action.botId, "surprise"), action.botId, (b) => ({ ...b, unread: true }));
@@ -466,9 +480,38 @@ function reducer(state: AppState, action: Action): AppState {
         : state;
       return updateBot(next, action.botId, (b) => ({ ...b, ...action.patch }));
     }
-    // handled entirely by the async wrapper
+    case "enqueue":
+      return {
+        ...state,
+        queued: {
+          ...state.queued,
+          [action.botId]: enqueuePrompt(state.queued[action.botId] ?? [], action.item),
+        },
+      };
+    case "cancelQueued":
+      return {
+        ...state,
+        queued: {
+          ...state.queued,
+          [action.botId]: cancelPrompt(state.queued[action.botId] ?? [], action.id),
+        },
+      };
+    case "flushQueue": {
+      const bot = state.bots.find((b) => b.id === action.botId);
+      const { next, rest } = takeNext(state.queued[action.botId] ?? []);
+      if (!bot || bot.busy || !next) return state;
+      return {
+        ...withMascotMotion(updateBot(state, action.botId, (b) => ({ ...b, busy: true })), action.botId, "working"),
+        queued: { ...state.queued, [action.botId]: rest },
+      };
+    }
+    // wrapper POSTs; busy flips now so a follow-up Enter queues instead of racing
     case "send":
-      return withMascotMotion(state, action.botId, "working");
+      return withMascotMotion(
+        updateBot(state, action.botId, (b) => ({ ...b, busy: true })),
+        action.botId,
+        "working",
+      );
     case "newBot":
     case "duplicateBot":
     case "interrupt":
@@ -497,6 +540,7 @@ const initialState: AppState = {
   connected: false,
   error: null,
   mascotMotion: null,
+  queued: {},
 };
 
 // ── API client ─────────────────────────────────────────────────────────
@@ -536,16 +580,50 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify(patch),
       }).catch(() => {});
     };
+    let queueSeq = 0;
+    const posting = new Set<string>();
+    const postMessage = (botId: string, text: string, attachments?: Array<{ path: string; mime?: string }>) => {
+      posting.add(botId);
+      api(`/api/bots/${botId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ text, attachments: attachments ?? [] }),
+      })
+        .catch((e) => {
+          rawDispatch({ type: "botPatched", bot: { id: botId, busy: false } });
+          showError(e);
+        })
+        .finally(() => posting.delete(botId));
+    };
 
     const wrapped: React.Dispatch<Action> = (action) => {
+      if (action.type === "send") {
+        const bot = stateRef.current.bots.find((b) => b.id === action.botId);
+        if (bot?.busy || posting.has(action.botId)) {
+          rawDispatch({
+            type: "enqueue",
+            botId: action.botId,
+            item: {
+              id: `q-${++queueSeq}`,
+              text: action.text,
+              attachments: action.attachments ?? [],
+            },
+          });
+          return;
+        }
+        rawDispatch(action);
+        postMessage(action.botId, action.text, action.attachments);
+        return;
+      }
+      if (action.type === "flushQueue") {
+        const bot = stateRef.current.bots.find((b) => b.id === action.botId);
+        const { next } = takeNext(stateRef.current.queued[action.botId] ?? []);
+        if (!bot || bot.busy || posting.has(action.botId) || !next) return;
+        rawDispatch(action);
+        postMessage(action.botId, next.text, next.attachments);
+        return;
+      }
       rawDispatch(action);
       switch (action.type) {
-        case "send":
-          api(`/api/bots/${action.botId}/messages`, {
-            method: "POST",
-            body: JSON.stringify({ text: action.text, attachments: action.attachments ?? [] }),
-          }).catch(showError);
-          break;
         case "answerCard": {
           const bot = stateRef.current.bots.find((b) => b.id === action.botId);
           const card = bot?.messages.find((m) => m.id === action.messageId)?.card;
@@ -663,6 +741,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
     return wrapped;
   }, []);
+
+  // Drain one queued follow-up when a bot becomes idle. Interrupt leaves
+  // the queue in place; cancelQueued removes an item before this runs.
+  useEffect(() => {
+    for (const bot of state.bots) {
+      if (bot.busy) continue;
+      const next = state.queued[bot.id]?.[0];
+      if (next) dispatch({ type: "flushQueue", botId: bot.id });
+    }
+  }, [state.bots, state.queued, dispatch]);
 
   // ── initial load + SSE fold ──────────────────────────────────────────
   useEffect(() => {

@@ -5,6 +5,12 @@ import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
 import { chipFromDroppedFile, sendPayload, type AttachmentChip } from "@/lib/attachments";
+import {
+  filterSlashCommands,
+  moveHighlight,
+  slashQueryAt,
+  type SlashHit,
+} from "@/lib/slash-commands";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -33,20 +39,30 @@ export function Composer({ bot }: { bot: Bot }) {
   // what was typed before the mic went on — partials append after it
   const baseText = useRef("");
 
+  const queued = state.queued[bot.id] ?? [];
+
+  // ── slash-command menu (typing `/` at a word start) ──
+  const slash = slashQueryAt(text, caret);
+  const slashHits = useMemo(() => {
+    if (!slash || slash.start === dismissedAt) return [];
+    return filterSlashCommands(slash.query, { busy: Boolean(bot.busy) });
+  }, [slash, dismissedAt, bot.busy]);
+  const slashOpen = slashHits.length > 0;
+
   // ── @mention picker (tag another bot; the agent reaches it via ask_bot) ──
   const mention = mentionQueryAt(text, caret);
   const candidates = useMemo(() => {
-    if (!mention || mention.start === dismissedAt) return [];
+    if (slashOpen || !mention || mention.start === dismissedAt) return [];
     const peers = state.bots.filter((b) => b.id !== bot.id && !b.hidden);
     const q = mention.query.trim().toLowerCase();
     // "@Scout " — the full name plus a space — is a COMPLETED tag, not a
     // search: keep the picker closed so Enter sends instead of re-picking
     if (mention.query.endsWith(" ") && peers.some((b) => b.name.toLowerCase() === q)) return [];
     return peers.filter((b) => !q || b.name.toLowerCase().includes(q)).slice(0, 6);
-  }, [mention, dismissedAt, state.bots, bot.id]);
+  }, [slashOpen, mention, dismissedAt, state.bots, bot.id]);
   const pickerOpen = candidates.length > 0;
 
-  useEffect(() => setHighlight(0), [mention?.start, mention?.query]);
+  useEffect(() => setHighlight(0), [slash?.start, slash?.query, mention?.start, mention?.query]);
 
   const pickMention = (peer: Bot) => {
     if (!mention) return;
@@ -77,7 +93,6 @@ export function Composer({ bot }: { bot: Bot }) {
   };
 
   const send = () => {
-    if (bot.busy) return;
     const payload = sendPayload(text, chips);
     if (!payload.text && !payload.attachments.length) return;
     dispatch({ type: "send", botId: bot.id, text: payload.text, attachments: payload.attachments });
@@ -150,6 +165,41 @@ export function Composer({ bot }: { bot: Bot }) {
     input.click();
   };
 
+  const runSlash = (hit: SlashHit) => {
+    if (!hit.enabled) return;
+    if (hit.command.id === "help") {
+      setText("/");
+      setCaret(1);
+      setDismissedAt(null);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(1, 1);
+      });
+      return;
+    }
+    setText("");
+    setCaret(0);
+    setDismissedAt(null);
+    switch (hit.command.id) {
+      case "newBot":
+        dispatch({ type: "newBot" });
+        break;
+      case "model":
+        dispatch({ type: "toggleSettings", open: true });
+        break;
+      case "computer":
+        dispatch({ type: "toggleComputer", open: true });
+        break;
+      case "attach":
+        pickFiles();
+        break;
+      case "stop":
+        dispatch({ type: "interrupt", botId: bot.id });
+        break;
+    }
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
   return (
     <div className="px-5 pb-5 pt-2">
       {speechError && (
@@ -158,6 +208,53 @@ export function Composer({ bot }: { bot: Bot }) {
         </div>
       )}
       <div className="relative mx-auto max-w-[900px]">
+        {queued.length > 0 && (
+          <div className="mb-2 flex flex-col gap-1.5">
+            {queued.map((item, i) => (
+              <div
+                key={item.id}
+                className="flex items-center gap-2 rounded-xl border border-dashed border-hairline/50 bg-raised/40 px-3 py-2"
+              >
+                <span className="shrink-0 rounded bg-inset px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">
+                  Queued {i + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{item.text || "Attachment"}</span>
+                <button
+                  type="button"
+                  onClick={() => dispatch({ type: "cancelQueued", botId: bot.id, id: item.id })}
+                  className="rounded-full p-0.5 text-ink-secondary hover:bg-raised hover:text-ink"
+                  title="Cancel queued prompt"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {slashOpen && (
+          <div
+            data-slash-menu
+            className="absolute bottom-full left-10 z-20 mb-2 w-80 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg"
+          >
+            {slashHits.map((hit, i) => (
+              <button
+                key={hit.command.id}
+                type="button"
+                disabled={!hit.enabled}
+                onClick={() => runSlash(hit)}
+                onMouseEnter={() => setHighlight(i)}
+                className={cn(
+                  "flex w-full flex-col gap-0.5 px-3 py-2 text-left",
+                  i === highlight ? "bg-raised-hover" : "",
+                  hit.enabled ? "text-ink" : "cursor-not-allowed text-ink-secondary/50",
+                )}
+              >
+                <span className="text-[14px] font-medium">/{hit.command.name}</span>
+                <span className="text-[12px] text-ink-secondary">{hit.command.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {pickerOpen && (
           <div className="absolute bottom-full left-10 z-20 mb-2 w-72 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg">
             {candidates.map((peer, i) => (
@@ -237,11 +334,29 @@ export function Composer({ bot }: { bot: Bot }) {
           onKeyUp={(e) => setCaret((e.target as HTMLInputElement).selectionStart ?? 0)}
           onClick={(e) => setCaret((e.target as HTMLInputElement).selectionStart ?? 0)}
           onKeyDown={(e) => {
+            if (slashOpen) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                const delta = e.key === "ArrowDown" ? 1 : -1;
+                setHighlight((h) => moveHighlight(h, delta, slashHits.length));
+                return;
+              }
+              if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                runSlash(slashHits[highlight] ?? slashHits[0]);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setDismissedAt(slash?.start ?? null);
+                return;
+              }
+            }
             if (pickerOpen) {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
                 const delta = e.key === "ArrowDown" ? 1 : -1;
-                setHighlight((h) => (h + delta + candidates.length) % candidates.length);
+                setHighlight((h) => moveHighlight(h, delta, candidates.length));
                 return;
               }
               if (e.key === "Enter" || e.key === "Tab") {
@@ -259,7 +374,7 @@ export function Composer({ bot }: { bot: Bot }) {
             if (e.key === "Escape" && recording) setRecording(false);
           }}
           placeholder={
-            recording ? "Listening…" : bot.busy ? `${bot.name} is working…` : `Message ${bot.name}`
+            recording ? "Listening…" : bot.busy ? `Queue a follow-up for ${bot.name}` : `Message ${bot.name}`
           }
           className="w-full bg-transparent text-[15px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
