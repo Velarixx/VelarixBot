@@ -4,7 +4,7 @@
 // suite is deterministic with or without agent CLIs installed — and pins
 // the shadow-instance behavior end to end while it's at it.
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -391,6 +391,64 @@ describe("harness HTTP API", () => {
     const found = listed.body.bots.find((b: { id: string }) => b.id === bot.id);
     expect(found.skillId).toBe(skill.body.skill.id);
     expect(found.iconShape).toBe("hexagon");
+  });
+
+  it("round-trips bot memory and writes workspace.md", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const empty = await api("GET", `/api/bots/${bot.id}/memory`);
+    expect(empty.status).toBe(200);
+    expect(empty.body).toMatchObject({ user: "", distilled: "", workspace: "" });
+
+    const put = await api("PUT", `/api/bots/${bot.id}/memory`, {
+      user: "Call me Sam.",
+      distilled: "Prefers bullets.",
+      workspace: "Team ships on Fridays.",
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.user).toContain("Call me Sam.");
+    expect(put.body.distilled).toContain("Prefers bullets.");
+    expect(put.body.workspace).toContain("Team ships on Fridays.");
+    expect(existsSync(join(home, ".velarixbot", "memory", "workspace.md"))).toBe(true);
+    expect(existsSync(join(home, ".velarixbot", "memory", `${bot.id}.md`))).toBe(true);
+
+    const denied = await api("POST", "/api/internal/remember", { fromBotId: bot.id, note: "secret-note" });
+    expect(denied.status).toBe(401);
+
+    const remember = await api(
+      "POST",
+      "/api/internal/remember",
+      { fromBotId: bot.id, note: "Timezone is CET.", scope: "bot" },
+      { authorization: `Bearer ${COMMS_TOKEN}` },
+    );
+    expect(remember.status).toBe(200);
+    expect(JSON.stringify(remember.body)).not.toContain(COMMS_TOKEN);
+
+    const workspaceNote = await api(
+      "POST",
+      "/api/internal/remember",
+      { fromBotId: bot.id, note: "No deploys on Monday.", scope: "workspace" },
+      { authorization: `Bearer ${COMMS_TOKEN}` },
+    );
+    expect(workspaceNote.status).toBe(200);
+
+    const recall = await api(
+      "POST",
+      "/api/internal/recall",
+      { fromBotId: bot.id, query: "Monday" },
+      { authorization: `Bearer ${COMMS_TOKEN}` },
+    );
+    expect(recall.status).toBe(200);
+    expect(recall.body.text).toContain("No deploys on Monday.");
+    expect(recall.body.text).not.toContain("Call me Sam.");
+    expect(JSON.stringify(recall.body)).not.toContain(COMMS_TOKEN);
+
+    const all = await api("GET", `/api/bots/${bot.id}/memory`);
+    expect(all.body.user).toContain("Timezone is CET.");
+    expect(all.body.workspace).toContain("No deploys on Monday.");
+
+    const nothing = await api("PUT", `/api/bots/${bot.id}/memory`, {});
+    expect(nothing.status).toBe(400);
   });
 
   it("stores per-bot enabledApps toggles", async () => {

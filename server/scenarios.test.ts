@@ -1,8 +1,9 @@
 // P1-A harness HTTP/SSE scenario runner. Boots the real server against the
 // existing fake CLIs (no live claude/codex/acp) and asserts the mechanical
 // invariants on every PR: turn.completed, state transitions, option cards,
-// usage totals, rule auto-resolve, peer-queue drain, memory after a turn,
-// group-thread fold, and create_bot round trip.
+// usage totals, rule auto-resolve, peer-queue drain, memory after a turn
+// (including Codex via another instance's generateText), group-thread fold,
+// and create_bot round trip.
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -133,6 +134,16 @@ describe("harness HTTP/SSE scenarios (fake CLIs)", () => {
     const card = after.messages.findLast((m: { kind: string; card?: { requestId?: string } }) => m.kind === "options" && !m.card?.requestId);
     expect(card?.card?.options?.length).toBeGreaterThanOrEqual(2);
 
+    const memory = await untilFile(join(h.home, ".velarixbot", "memory", `${bot.id}.md`), (text) =>
+      text.includes(DISTILL_MARKER) && /concise replies/i.test(text),
+    );
+    expect(memory).toContain(DISTILL_MARKER);
+  }, 40_000);
+
+  it("codex turn still gets a memory file via another instance's generateText", async () => {
+    const bot = await addBot("Codex Memory", codexSel);
+    await send(bot.id, "remember I like short answers");
+    await h.sse.until(turnDone(bot.threadId));
     const memory = await untilFile(join(h.home, ".velarixbot", "memory", `${bot.id}.md`), (text) =>
       text.includes(DISTILL_MARKER) && /concise replies/i.test(text),
     );

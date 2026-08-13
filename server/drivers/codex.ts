@@ -72,6 +72,9 @@ function mcpServersFromIntegrations(integrations: SendTurnInput["integrations"])
   if (integrations?.agents) {
     mcpServers.agents = { ...integrations.agents };
   }
+  if (integrations?.memory) {
+    mcpServers.memory = { ...integrations.memory };
+  }
   return mcpServers;
 }
 

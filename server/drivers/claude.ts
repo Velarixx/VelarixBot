@@ -9,6 +9,7 @@
 //     — per-bot allowed toolkits, key in env not argv
 //   - the bot's cloud computer (box.ascii.dev) via server/computer-proxy.ts
 //     — screenshot/exec/open_url, the CUA-on-the-box bridge
+//   - remember / recall via server/memory-proxy.ts (token in env, never argv)
 
 import { existsSync, unlinkSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
@@ -285,6 +286,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (turn.integrations?.agents) {
         mcpServers.agents = { ...turn.integrations.agents };
         allowed.push("mcp__agents");
+      }
+      if (turn.integrations?.memory) {
+        mcpServers.memory = { ...turn.integrations.memory };
+        allowed.push("mcp__memory");
       }
       // permission broker: anything acceptEdits would silently deny becomes
       // an Allow/Deny card in chat, and the agent gets ask_user. Skipped in

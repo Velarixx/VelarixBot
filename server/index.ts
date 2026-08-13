@@ -28,7 +28,19 @@ import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { HANDOFF_CONTINUE, HANDOFF_SUBTITLE, HANDOFF_TITLE, sanitizeHandoffSummary } from "./handoff.ts";
-import { deleteBotMemory, distillMemory, memoryPrompt, turnTextFromMessages } from "./memory.ts";
+import {
+  deleteBotMemory,
+  distillMemory,
+  fleetGenerateText,
+  memoryPrompt,
+  readBotMemory,
+  readWorkspace,
+  recallMemory,
+  rememberNote,
+  turnTextFromMessages,
+  writeBotMemory,
+  writeWorkspace,
+} from "./memory.ts";
 import { createPeerQueue } from "./peer-queue.ts";
 import { createProactive } from "./proactive.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "./response-options.ts";
@@ -74,7 +86,8 @@ bus.attach(registry.instances());
 
 // ── peer-agent comms wiring ────────────────────────────────────────────
 // A shared secret guards the localhost-only /api/internal endpoints the
-// agents-proxy calls; regenerated each boot (the proxy gets it via env).
+// agents-proxy and memory-proxy call; regenerated each boot (the proxy
+// gets it via env).
 const COMMS_TOKEN = process.env.OMB_COMMS_TOKEN || randomBytes(24).toString("hex");
 // Cap message chains: depth 0 = a user-initiated turn (may ask a peer);
 // a peer invoked via ask_bot runs at depth 1 and may ask once more;
@@ -86,6 +99,10 @@ const agentsProxyPath = (() => {
 })();
 const composioProxyPath = (() => {
   const ts = join(dirname(fileURLToPath(import.meta.url)), "composio-proxy.ts");
+  return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
+})();
+const memoryProxyPath = (() => {
+  const ts = join(dirname(fileURLToPath(import.meta.url)), "memory-proxy.ts");
   return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
 })();
 // in the packaged app process.execPath is Electron — run the proxy as node
@@ -116,6 +133,19 @@ function composioIntegration(allowedApps: string[]) {
       OMB_COMPOSIO_URL: cfg.composio?.url || "",
       OMB_COMPOSIO_KEY: cfg.composio!.key!,
       OMB_ALLOWED_TOOLKITS: allowedApps.join(","),
+    },
+  };
+}
+
+function memoryIntegration(botId: string) {
+  return {
+    command: process.execPath,
+    args: [memoryProxyPath],
+    env: {
+      ...AGENTS_NODE_FLAG,
+      OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
+      OMB_BOT_ID: botId,
+      OMB_COMMS_TOKEN: COMMS_TOKEN,
     },
   };
 }
@@ -523,11 +553,10 @@ bus.subscribe((event: RuntimeEvent) => {
         if (routine?.thenStartTurn) proactive.routineCompleted(routine.thenStartTurn);
       }
       if (event.ok) {
-        const instance = registry.get(bot.modelSelection.instanceId);
         void distillMemory({
           botId: bot.id,
           turnText: turnTextFromMessages(store.messagesFor(event.threadId)),
-          generateText: instance?.generateText?.bind(instance),
+          generateText: fleetGenerateText(registry.instances(), bot.modelSelection.instanceId),
         });
       }
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
@@ -710,6 +739,9 @@ async function startTurn(
       if (commsDepth < MAX_COMMS_DEPTH && instance.adapter.capabilities.agentsMcp === true) {
         integrations.agents = agentsIntegration(bot.id, commsDepth, visited, groupThreadId);
       }
+      if (instance.adapter.capabilities.agentsMcp === true) {
+        integrations.memory = memoryIntegration(bot.id);
+      }
       // @mentions in the user's message (the composer's tagging UI) become
       // an explicit delegation nudge — the agent still does the ask_bot call
       // itself, so the harness stays the single owner of turns/permissions
@@ -743,6 +775,9 @@ async function startTurn(
               : "") +
           (integrations.agents
             ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply — the reply stays in this transcript, do not ask the user to relay it. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar. Never create bots with the shell, PowerShell, or by writing scripts — only create_bot."
+            : "") +
+          (integrations.memory
+            ? " You have remember and recall tools. remember saves a lasting note for this bot (or the shared workspace). recall reads those notes. Prefer remember for durable facts instead of relying on chat history."
             : "") +
           (tagged.length
             ? ` The user tagged ${tagged
@@ -890,6 +925,23 @@ const server = createServer(async (req, res) => {
           bot: { id: created.id, name: created.name, title: created.title, description: created.description, model: created.modelSelection.model },
         });
       }
+      if (method === "POST" && path === "/api/internal/remember") {
+        const body = await readBody(req);
+        const fromBotId = String(body.fromBotId ?? "");
+        const note = String(body.note ?? "").trim();
+        const scope = body.scope === "workspace" ? "workspace" : "bot";
+        if (!fromBotId || !store.bot(fromBotId)) return json(res, 404, { error: "no such bot" });
+        if (!note) return json(res, 400, { error: "note required" });
+        rememberNote(fromBotId, note, scope);
+        return json(res, 200, { ok: true, scope });
+      }
+      if (method === "POST" && path === "/api/internal/recall") {
+        const body = await readBody(req);
+        const fromBotId = String(body.fromBotId ?? "");
+        const query = typeof body.query === "string" ? body.query : undefined;
+        if (!fromBotId || !store.bot(fromBotId)) return json(res, 404, { error: "no such bot" });
+        return json(res, 200, { text: recallMemory(fromBotId, query) });
+      }
       return json(res, 404, { error: "unknown internal endpoint" });
     }
 
@@ -940,6 +992,32 @@ const server = createServer(async (req, res) => {
     if (approvalsMatch && method === "DELETE") {
       if (!store.bot(approvalsMatch[1])) return json(res, 404, { error: "no such bot" });
       return deleteRule(approvalsMatch[1], approvalsMatch[2]) ? json(res, 200, { ok: true }) : json(res, 404, { error: "no such rule" });
+    }
+
+    // ── per-bot + shared workspace memory (local markdown; no embeddings) ──
+    let memoryMatch = path.match(/^\/api\/bots\/([\w-]+)\/memory$/);
+    if (memoryMatch && method === "GET") {
+      if (!store.bot(memoryMatch[1])) return json(res, 404, { error: "no such bot" });
+      const botMem = readBotMemory(memoryMatch[1]);
+      return json(res, 200, { user: botMem.user, distilled: botMem.distilled, workspace: readWorkspace() });
+    }
+    if (memoryMatch && (method === "PUT" || method === "PATCH")) {
+      if (!store.bot(memoryMatch[1])) return json(res, 404, { error: "no such bot" });
+      const body = await readBody(req);
+      const hasUser = typeof body.user === "string";
+      const hasDistilled = typeof body.distilled === "string";
+      const hasWorkspace = typeof body.workspace === "string";
+      if (!hasUser && !hasDistilled && !hasWorkspace) return json(res, 400, { error: "nothing to save" });
+      if (hasUser || hasDistilled) {
+        const existing = readBotMemory(memoryMatch[1]);
+        writeBotMemory(memoryMatch[1], {
+          user: hasUser ? body.user : existing.user,
+          distilled: hasDistilled ? body.distilled : existing.distilled,
+        });
+      }
+      if (hasWorkspace) writeWorkspace(body.workspace);
+      const botMem = readBotMemory(memoryMatch[1]);
+      return json(res, 200, { user: botMem.user, distilled: botMem.distilled, workspace: readWorkspace() });
     }
 
     // ── taught skills ──
