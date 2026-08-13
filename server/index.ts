@@ -43,7 +43,7 @@ bus.attach(registry.instances());
 // ── peer-agent comms wiring ────────────────────────────────────────────
 // A shared secret guards the localhost-only /api/internal endpoints the
 // agents-proxy calls; regenerated each boot (the proxy gets it via env).
-const COMMS_TOKEN = randomBytes(24).toString("hex");
+const COMMS_TOKEN = process.env.OMB_COMMS_TOKEN || randomBytes(24).toString("hex");
 // Cap message chains: depth 0 = a user-initiated turn (may ask a peer);
 // a peer invoked via ask_bot runs at depth 1 and gets NO agents tool, so
 // A→B is allowed but B→C (and A→B→A loops) never start.
@@ -109,6 +109,42 @@ async function defaultSelection() {
   const available = described.filter((d) => d.snapshot.state === "available");
   const pick = available.find((d) => d.driverKind === "codex") ?? available.find((d) => d.driverKind === "claudeAgent") ?? available[0] ?? described[0];
   return { instanceId: pick?.instanceId ?? "claude", model: pick?.models.default || "claude-sonnet-5" };
+}
+
+async function selectionForModel(model?: string) {
+  const selection = await defaultSelection();
+  const slug = model?.trim();
+  if (!slug) return selection;
+  const described = await registry.describe();
+  const available = described.filter((d) => d.snapshot.state === "available");
+  const pool = available.length ? available : described;
+  const hit =
+    pool.find((d) => d.models.options.some((o) => o.id === slug)) ??
+    pool.find((d) => d.models.default === slug) ??
+    pool.find((d) => d.instanceId === selection.instanceId) ??
+    pool[0];
+  return { instanceId: hit?.instanceId ?? selection.instanceId, model: slug };
+}
+
+function publicBot(id: string) {
+  const bot = store.bot(id);
+  if (!bot) return null;
+  return { ...bot, messages: store.messagesFor(bot.threadId) };
+}
+
+/** Create a sidebar bot and fan it out on SSE so the UI list updates even
+ * when the creator is an agents-proxy call rather than the composer +. */
+async function createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string }) {
+  const bot = store.createBot();
+  store.patchBot(bot.id, {
+    modelSelection: await selectionForModel(init?.model),
+    ...(init?.name?.trim() ? { name: init.name.trim() } : {}),
+    ...(typeof init?.title === "string" ? { title: init.title } : {}),
+    ...(typeof init?.description === "string" ? { description: init.description } : {}),
+  });
+  const full = publicBot(bot.id)!;
+  broadcast({ kind: "bot.added", bot: full });
+  return full;
 }
 let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
 const store = new Store(() => bootSelection);
@@ -407,6 +443,7 @@ async function startTurn(botId: string, text: string, opts?: { commsDepth?: numb
     `You are ${bot.name}, a personal bot in VelarixBot.`,
     bot.title && `Role: ${bot.title}.`,
     bot.description && `About: ${bot.description}`,
+    "Stay in that character. Coordinate in this VelarixBot workspace; do not implement the user's repo or run a coding audit unless they explicitly ask for code. Do not dump a feature tour or A/B/C onboarding.",
   ]
     .filter(Boolean)
     .join(" ");
@@ -439,18 +476,12 @@ async function startTurn(botId: string, text: string, opts?: { commsDepth?: numb
         const cua = readCuaConnection();
         if (cua) integrations.localComputer = cua;
       }
-      // peer-agent comms: give a user-initiated turn the list_bots/ask_bot
-      // tools. A comms-invoked turn (depth ≥ cap) gets none — hard recursion
-      // stop, so the user's tokens can't be burned by a bot-to-bot loop.
-      // Only drivers that mount the tools get the integration (and, via the
-      // integrations.agents gate below, the prompt hint) — a bot on a driver
-      // without it must not be told about tools it cannot call. Any bot can
-      // still be the TARGET of ask_bot regardless of its driver.
-      if (
-        commsDepth < MAX_COMMS_DEPTH &&
-        instance.adapter.capabilities.agentsMcp === true &&
-        store.bots.filter((b) => b.id !== bot.id && !b.hidden).length > 0
-      ) {
+      // peer-agent comms: give a user-initiated turn list_bots / ask_bot /
+      // create_bot. Always mount at depth 0 so a lone bot can still create
+      // sidebar peers. A comms-invoked turn (depth ≥ cap) gets none — hard
+      // recursion stop. Only drivers that mount the tools get the integration
+      // (and the prompt hint). Any bot can still be the TARGET of ask_bot.
+      if (commsDepth < MAX_COMMS_DEPTH && instance.adapter.capabilities.agentsMcp === true) {
         integrations.agents = agentsIntegration(bot.id, commsDepth);
       }
       // @mentions in the user's message (the composer's tagging UI) become
@@ -478,7 +509,7 @@ async function startTurn(botId: string, text: string, opts?: { commsDepth?: numb
               ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
               : "") +
           (integrations.agents
-            ? " You can work with the user's other bots through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
+            ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar."
             : "") +
           (tagged.length
             ? ` The user tagged ${tagged
@@ -593,6 +624,30 @@ const server = createServer(async (req, res) => {
         const reply = await askBotAndWait(toBotId, prefixed, depth);
         return json(res, 200, { botName: target.name, text: reply });
       }
+      if (method === "POST" && path === "/api/internal/create-bot") {
+        const body = await readBody(req);
+        const fromBotId = String(body.fromBotId ?? "");
+        const name = String(body.name ?? "").trim();
+        const title = String(body.title ?? "").trim();
+        const description = String(body.description ?? "").trim();
+        const model = String(body.model ?? "").trim();
+        const depth = Number(body.depth ?? 0) || 0;
+        if (!name || !title || !description) return json(res, 400, { error: "name, title, and description required" });
+        if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: "message chains are limited to one hop" });
+        const created = await createSidebarBot({ name, title, description, ...(model ? { model } : {}) });
+        const from = store.bot(fromBotId);
+        if (from) {
+          const note = store.appendMessage(from.threadId, {
+            role: "bot",
+            kind: "activity",
+            tool: { name: `created @${created.name}` },
+          });
+          broadcast({ kind: "message", threadId: from.threadId, message: note });
+        }
+        return json(res, 200, {
+          bot: { id: created.id, name: created.name, title: created.title, description: created.description, model: created.modelSelection.model },
+        });
+      }
       return json(res, 404, { error: "unknown internal endpoint" });
     }
 
@@ -640,9 +695,8 @@ const server = createServer(async (req, res) => {
       });
     }
     if (method === "POST" && path === "/api/bots") {
-      const bot = store.createBot();
-      store.patchBot(bot.id, { modelSelection: await defaultSelection() });
-      return json(res, 201, { bot: { ...store.bot(bot.id)!, messages: store.messagesFor(bot.threadId) } });
+      const bot = await createSidebarBot();
+      return json(res, 201, { bot });
     }
     let m = path.match(/^\/api\/bots\/([\w-]+)$/);
     if (m && method === "PATCH") {

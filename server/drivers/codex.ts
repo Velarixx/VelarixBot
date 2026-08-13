@@ -8,7 +8,9 @@
 // codex-cli 0.144.4 by agentcal.
 //
 // resumeCursor is the codex thread id; a later turn tries thread/resume
-// and falls back to a fresh thread/start.
+// and falls back to a fresh thread/start. Persona is
+// thread/start|resume.developerInstructions (not prepended onto user text).
+// A child that exits 0 before turn/completed is a finished turn, not a kill.
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -319,33 +321,40 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         }
       };
 
+      const ingestLine = (line: string) => {
+        if (!line.trim()) return;
+        let msg: any;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          return;
+        }
+        appendNative(threadId, { dir: "in", source: "codex.app-server", msg });
+        if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+          const pend = rpcPending.get(msg.id);
+          if (pend) {
+            rpcPending.delete(msg.id);
+            msg.error ? pend.reject(new Error(msg.error.message ?? JSON.stringify(msg.error))) : pend.resolve(msg.result);
+          }
+        } else if (msg.id !== undefined && msg.method) {
+          handleServerRequest(msg);
+        } else if (msg.method) {
+          handleNotification(msg);
+        }
+      };
+
       let buf = "";
-      child.stdout.on("data", (chunk) => {
-        buf += chunk;
+      const flushStdout = () => {
         let nl;
         while ((nl = buf.indexOf("\n")) !== -1) {
           const line = buf.slice(0, nl);
           buf = buf.slice(nl + 1);
-          if (!line.trim()) continue;
-          let msg: any;
-          try {
-            msg = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          appendNative(threadId, { dir: "in", source: "codex.app-server", msg });
-          if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
-            const pend = rpcPending.get(msg.id);
-            if (pend) {
-              rpcPending.delete(msg.id);
-              msg.error ? pend.reject(new Error(msg.error.message ?? JSON.stringify(msg.error))) : pend.resolve(msg.result);
-            }
-          } else if (msg.id !== undefined && msg.method) {
-            handleServerRequest(msg);
-          } else if (msg.method) {
-            handleNotification(msg);
-          }
+          ingestLine(line);
         }
+      };
+      child.stdout.on("data", (chunk) => {
+        buf += chunk;
+        flushStdout();
       });
 
       let stderr = "";
@@ -358,14 +367,21 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         settle(false, "spawn_error");
       });
       child.on("close", (code) => {
-        if (!state.settled) {
-          emit({
-            ...base(threadId, turnId),
-            type: "runtime.error",
-            message: `codex exited ${code} before turn/completed${stderr ? `: ${stderr.trim().slice(-300)}` : ""}`,
-          });
-          settle(false, "exit_before_result");
+        flushStdout();
+        if (state.settled) return;
+        // Codex sometimes exits 0 without a turn/completed notification
+        // (or the notification is still in the just-flushed buffer). That is
+        // a clean end, not a killed turn — only a non-zero close is failure.
+        if (code === 0) {
+          settle(true, null);
+          return;
         }
+        emit({
+          ...base(threadId, turnId),
+          type: "runtime.error",
+          message: `codex exited ${code} before turn/completed${stderr ? `: ${stderr.trim().slice(-300)}` : ""}`,
+        });
+        settle(false, "exit_before_result");
       });
 
       active.set(threadId, { stop, turnId, asks });
@@ -382,10 +398,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           // each sendTurn spawns a fresh app-server, so resume must carry the
           // same mcp_servers overlay as start — otherwise extras vanish after
           // turn 1. thread/resume.config is a SessionFlags layer, same as start.
+          // developerInstructions is the persona slot on both start and resume.
           if (cursor) {
             try {
               const resumeParams: Record<string, unknown> = { threadId: cursor };
               if (mcpOverlay) resumeParams.config = mcpOverlay;
+              if (turn.system) resumeParams.developerInstructions = turn.system;
               const resumed = await request("thread/resume", resumeParams);
               codexThreadId = resumed?.thread?.id ?? cursor;
             } catch {
@@ -401,6 +419,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               ephemeral: false,
             };
             if (mcpOverlay) threadStartParams.config = mcpOverlay;
+            // thread/start accepts developerInstructions (camelCase, same as
+            // approvalPolicy). That's the real system slot — do not prepend
+            // persona onto the user turn text.
+            if (turn.system) threadStartParams.developerInstructions = turn.system;
             const started = await request("thread/start", threadStartParams);
             codexThreadId = started?.thread?.id ?? null;
             startedModel = started?.model ?? null;
@@ -408,7 +430,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           emit({ ...base(threadId, turnId), type: "session.started", sessionId: codexThreadId, model: startedModel ?? turn.model ?? null });
           await request("turn/start", {
             threadId: codexThreadId,
-            input: [{ type: "text", text: turn.system ? `${turn.system}\n\n${turn.text}` : turn.text }],
+            input: [{ type: "text", text: turn.text }],
           });
         } catch (e) {
           if (!state.settled) {

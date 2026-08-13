@@ -118,6 +118,12 @@ posixOnly("comms e2e (fake ACP fleet)", () => {
     expect(agents.status).toBe(401);
     const ask = await api("POST", "/api/internal/ask-bot", { toBotId: "x", message: "hi" });
     expect(ask.status).toBe(401);
+    const create = await api("POST", "/api/internal/create-bot", {
+      name: "Ops",
+      title: "Ops",
+      description: "Ops",
+    });
+    expect(create.status).toBe(401);
   });
 
   it(

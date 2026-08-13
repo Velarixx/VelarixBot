@@ -14,15 +14,19 @@ const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SERVER_DIR, "..");
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
 const BASE = `http://127.0.0.1:${PORT}`;
+const COMMS_TOKEN = "test-create-bot-token";
 
 let child: ChildProcess;
 let home: string;
 let stderr = "";
 
-const api = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
+const api = async (method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<{ status: number; body: any }> => {
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: body ? { "content-type": "application/json" } : undefined,
+    headers: {
+      ...(body ? { "content-type": "application/json" } : {}),
+      ...headers,
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   return { status: res.status, body: await res.json() };
@@ -42,9 +46,10 @@ beforeAll(async () => {
     env: {
       ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
       ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-      HOME: home,
-      USERPROFILE: home,
-      OMB_PORT: String(PORT),
+        HOME: home,
+        USERPROFILE: home,
+        OMB_PORT: String(PORT),
+        OMB_COMMS_TOKEN: COMMS_TOKEN,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -166,6 +171,59 @@ describe("harness HTTP API", () => {
     const after = await api("GET", "/api/config");
     expect(after.body.profile).toBeUndefined();
     expect(JSON.stringify(after.body)).not.toContain("Ada@Example.com");
+  });
+
+  it("create-bot is token-gated and adds a named bot to the roster", async () => {
+    const denied = await api("POST", "/api/internal/create-bot", {
+      name: "Ops",
+      title: "Ops specialist",
+      description: "Handles ops",
+    });
+    expect(denied.status).toBe(401);
+
+    const missing = await api(
+      "POST",
+      "/api/internal/create-bot",
+      { name: "Ops", title: "", description: "" },
+      { authorization: `Bearer ${COMMS_TOKEN}` },
+    );
+    expect(missing.status).toBe(400);
+
+    const hop = await api(
+      "POST",
+      "/api/internal/create-bot",
+      { name: "Ops", title: "Ops specialist", description: "Handles ops", depth: 1 },
+      { authorization: `Bearer ${COMMS_TOKEN}` },
+    );
+    expect(hop.status).toBe(200);
+    expect(hop.body.error).toContain("one hop");
+
+    const created = await api(
+      "POST",
+      "/api/internal/create-bot",
+      {
+        name: "Ops",
+        title: "Ops specialist",
+        description: "Handles ops",
+        model: "ghost-model",
+      },
+      { authorization: `Bearer ${COMMS_TOKEN}` },
+    );
+    expect(created.status).toBe(200);
+    expect(created.body.bot).toMatchObject({
+      name: "Ops",
+      title: "Ops specialist",
+      description: "Handles ops",
+      model: "ghost-model",
+    });
+    expect(created.body.bot.id).toBeTruthy();
+    expect(JSON.stringify(created.body)).not.toContain(COMMS_TOKEN);
+
+    const roster = await api("GET", "/api/bots");
+    const ops = roster.body.bots.find((b: { name: string }) => b.name === "Ops");
+    expect(ops).toBeTruthy();
+    expect(ops.title).toBe("Ops specialist");
+    expect(ops.modelSelection.model).toBe("ghost-model");
   });
 
   it("404s unknown routes with the route in the error", async () => {
