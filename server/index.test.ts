@@ -150,6 +150,7 @@ describe("harness HTTP API", () => {
     expect(status).toBe(200);
     expect(body.app).toBe("velarixbot");
     expect(typeof body.pid).toBe("number");
+    expect(body.stamp).toBe("ensureBotWorkspace+mcpOverlay");
   });
 
   it("seeds one starter bot with its greeting", async () => {
