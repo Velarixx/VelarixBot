@@ -114,6 +114,8 @@ export interface SendTurnInput {
   cwd?: string;
   /** Local file paths from a drop/paste. Drivers must not upload them. */
   attachments?: Array<{ path: string; mime?: string }>;
+  /** Per-bot override: still surface a permission card under provider full-auto. */
+  requireApproval?: boolean;
 }
 
 export interface TurnStartResult {
@@ -136,7 +138,7 @@ export interface ProviderAdapter {
   respondToRequest(
     threadId: ThreadId,
     requestId: string,
-    decision: { behavior: "allow" | "deny" | "answer"; message?: string },
+    decision: { behavior: "allow" | "deny" | "answer"; message?: string; always?: boolean; source?: string },
   ): Promise<void>;
   hasSession(threadId: ThreadId): boolean;
   stopAll(): Promise<void>;

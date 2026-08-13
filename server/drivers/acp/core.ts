@@ -99,7 +99,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         stop: () => void;
         interrupt: () => void;
         turnId: string;
-        asks: Map<string, (behavior: string) => void>;
+        asks: Map<string, (behavior: string, source?: string) => void>;
       }
       const active = new Map<string, Turn>();
 
@@ -227,7 +227,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             });
 
           const toolCall = params.toolCall ?? {};
-          if (config.fullAuto) {
+          if (config.fullAuto && !turn.requireApproval) {
             const allow = optionFor("allow");
             if (!allow) missing("allow");
             return send({
@@ -240,7 +240,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           const tool = kind === "execute" ? "shell" : kind === "edit" ? "edit" : kind || "tool";
           const summary = String(toolCall.rawInput?.command ?? toolCall.title ?? tool).slice(0, 200);
           const requestId = newId();
-          const finish = (behavior: string) => {
+          const finish = (behavior: string, source?: string) => {
             if (!asks.delete(requestId)) return;
             clearTimeout(timer);
             const want = behavior === "allow" ? "allow" : "reject";
@@ -256,7 +256,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               type: "request.resolved",
               requestId,
               behavior: optionId && behavior === "allow" ? "allow" : "deny",
-              source: optionId ? "user" : "system",
+              source: source ?? (optionId ? "user" : "system"),
             });
           };
           const timer = setTimeout(() => {
@@ -481,7 +481,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             const turn = active.get(threadId);
             const finish = turn?.asks.get(requestId);
             if (!finish) throw new Error("no such pending request");
-            finish(decision.behavior === "allow" ? "allow" : "deny");
+            finish(decision.behavior === "allow" ? "allow" : "deny", decision.source);
           },
           hasSession: (threadId) => active.has(threadId),
           stopAll: async () => {

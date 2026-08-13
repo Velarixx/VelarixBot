@@ -16,6 +16,7 @@ export function OptionCard({
   const [custom, setCustom] = useState("");
   const card = message.card;
   if (!card || card.dismissed) return null;
+  const permission = card.requestType === "permission" || (!card.requestType && !!card.requestId && card.title === "Approval needed");
 
   const answer = (text: string) => {
     if (!text.trim()) return;
@@ -71,6 +72,17 @@ export function OptionCard({
           placeholder="Type your own answer"
           className="mt-3 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-secondary focus:outline-none focus:border-hairline"
         />
+      )}
+
+      {!card.answered && permission && (
+        <button
+          onClick={() =>
+            dispatch({ type: "answerCard", botId, messageId: message.id, answer: "Allow", always: true })
+          }
+          className="mt-3 text-[13px] text-ink-secondary hover:text-ink"
+        >
+          Always allow for this bot
+        </button>
       )}
     </div>
   );

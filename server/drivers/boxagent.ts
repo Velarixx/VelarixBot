@@ -320,7 +320,7 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
           const pending = slot.asks.get(requestId);
           if (!pending) throw new Error("no such pending request (it may have timed out)");
           const behavior = decision.behavior === "answer" ? "answer" : decision.behavior;
-          await pending.finish(behavior, decision.message, "user");
+          await pending.finish(behavior, decision.message, decision.source ?? "user");
         },
         hasSession: (threadId) => active.has(threadId),
         stopAll: async () => {

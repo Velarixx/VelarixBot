@@ -35,6 +35,11 @@ contextBridge.exposeInMainWorld("ogb", {
   },
   openFiles: () => ipcRenderer.invoke("fs:open-files"),
 
+  loginItem: {
+    get: () => ipcRenderer.invoke("login:get"),
+    set: (enabled) => ipcRenderer.invoke("login:set", enabled),
+  },
+
   /** In-app auto-update. State object:
    *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"error",
    *    version?, percent?, message?, tokenConfigured? }. onState fires immediately

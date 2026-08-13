@@ -108,7 +108,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     interface Turn {
       stop: () => void;
       turnId: string;
-      asks: Map<string, (behavior: string, message?: string) => void>;
+      asks: Map<string, (behavior: string, message?: string, source?: string) => void>;
     }
     const active = new Map<string, Turn>();
 
@@ -148,7 +148,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       });
 
       const state = { settled: false, lastText: "", sawStreamDelta: false };
-      const asks = new Map<string, (behavior: string, message?: string) => void>();
+      const asks = new Map<string, (behavior: string, message?: string, source?: string) => void>();
       let nextId = 1;
       const rpcPending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 
@@ -190,7 +190,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             : isQuestion
               ? "ask_user"
               : "shell";
-        if (config.fullAuto && !isQuestion) {
+        if (config.fullAuto && !isQuestion && !turn.requireApproval) {
           return send({ jsonrpc: "2.0", id: msg.id, result: { decision: legacy ? "approved" : "accept" } });
         }
         const requestId = newId();
@@ -205,7 +205,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const choices = isQuestion
           ? (params.questions?.[0]?.options ?? []).map((o: any) => o.label).slice(0, 5)
           : undefined;
-        const finish = (behavior: string, message?: string) => {
+        const finish = (behavior: string, message?: string, source = "user") => {
           if (!asks.delete(requestId)) return;
           clearTimeout(timer);
           if (isQuestion) {
@@ -221,7 +221,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               result: { decision: behavior === "allow" ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline" },
             });
           }
-          emit({ ...base(threadId, turnId), type: "request.resolved", requestId, behavior, source: "user" });
+          emit({ ...base(threadId, turnId), type: "request.resolved", requestId, behavior, source });
         };
         const timer = setTimeout(
           () => (isQuestion ? finish("answer", QUESTION_TIMEOUT_NOTE) : finish("deny", DENY_TIMEOUT_NOTE)),
@@ -474,7 +474,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           const turn = active.get(threadId);
           const finish = turn?.asks.get(requestId);
           if (!finish) throw new Error("no such pending request");
-          finish(decision.behavior, decision.message);
+          finish(decision.behavior, decision.message, decision.source ?? "user");
         },
         hasSession: (threadId) => active.has(threadId),
         stopAll: async () => {

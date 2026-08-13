@@ -10,12 +10,14 @@ describe("shouldNotify", () => {
     expect(shouldNotify(on, { type: "turn.completed", ok: true })).toBe(true);
     expect(shouldNotify(on, { type: "turn.completed", ok: false })).toBe(true);
     expect(shouldNotify(on, { type: "turn.completed", ok: false, stopReason: "BLOCKED" })).toBe(true);
+    expect(shouldNotify(on, { type: "stall.nudge" })).toBe(true);
   });
 
   it("sends nothing when the bot toggle is off", () => {
     expect(shouldNotify(off, { type: "request.opened" })).toBe(false);
     expect(shouldNotify(off, { type: "turn.completed", ok: true })).toBe(false);
     expect(shouldNotify(off, { type: "turn.completed", ok: false, stopReason: "BLOCKED" })).toBe(false);
+    expect(shouldNotify(off, { type: "stall.nudge" })).toBe(false);
   });
 
   it("ignores other runtime events", () => {
@@ -28,6 +30,7 @@ describe("shouldNotify", () => {
 describe("notifyCopy", () => {
   it("uses only local title/body strings", () => {
     expect(notifyCopy(on, { type: "request.opened" })).toEqual({ title: "Scout", body: "Needs your input" });
+    expect(notifyCopy(on, { type: "stall.nudge" })).toEqual({ title: "Scout", body: "Still waiting on you" });
     expect(notifyCopy(on, { type: "turn.completed", ok: true })).toEqual({ title: "Scout", body: "Finished" });
     expect(notifyCopy(on, { type: "turn.completed", ok: false })).toEqual({ title: "Scout", body: "Didn't finish" });
     expect(notifyCopy(on, { type: "turn.completed", ok: true, stopReason: "BLOCKED" })).toEqual({

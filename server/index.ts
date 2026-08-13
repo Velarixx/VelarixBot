@@ -9,6 +9,7 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { attachmentPathRefs, expandAttachmentPaths } from "./attachments.ts";
+import { alwaysAllow, resolveOpenedRequest } from "./approvals.ts";
 import * as box from "./box.ts";
 import * as composio from "./composio.ts";
 import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
@@ -17,6 +18,8 @@ import type { RuntimeEvent } from "./contracts.ts";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
+import { deleteBotMemory, distillMemory, memoryPrompt, turnTextFromMessages } from "./memory.ts";
+import { createProactive } from "./proactive.ts";
 import { parseResponseOptions, responseOptionsPrompt } from "./response-options.ts";
 import { mentionedBots, nextRunAt, Store, type Message, type Usage } from "./store.ts";
 
@@ -152,6 +155,21 @@ const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
 const routineByThread = new Map<string, string>();
+const pendingAskByRequest = new Map<string, { botId: string; tool: string; summary: string; requestType: string }>();
+
+const proactive = createProactive({
+  now: () => Date.now(),
+  onNudge: (botId) => {
+    const bot = store.bot(botId);
+    if (!bot) return;
+    store.patchBot(botId, { unread: true });
+    broadcast({ kind: "bot", bot: store.bot(botId) });
+    broadcast({ kind: "nudge", botId, reason: "stall" });
+  },
+  onTrigger: (botId, prompt) => {
+    startTurn(botId, prompt).catch(() => {});
+  },
+});
 
 async function runRoutine(id: string) {
   const routine = store.routine(id);
@@ -179,6 +197,7 @@ function schedulerTick(now = Date.now()) {
   for (const routine of store.routines) {
     if (routine.enabled && !routine.running && routine.nextRunAt <= now) void runRoutine(routine.id);
   }
+  proactive.tick(now);
 }
 setTimeout(schedulerTick, 25).unref?.();
 setInterval(schedulerTick, 15_000).unref?.();
@@ -224,6 +243,7 @@ bus.subscribe((event: RuntimeEvent) => {
     case "turn.started":
       if (event.turnId) turnUsage.delete(event.turnId);
       store.patchBot(bot.id, { busy: true, state: "RUNNING", stateDetail: undefined });
+      proactive.noteState(bot.id, "RUNNING");
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
       break;
     case "thread.token-usage.updated":
@@ -254,6 +274,26 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       break;
     case "request.opened": {
+      if (event.requestId) {
+        pendingAskByRequest.set(event.requestId, {
+          botId: bot.id,
+          tool: event.tool,
+          summary: event.summary,
+          requestType: event.requestType,
+        });
+      }
+      if (event.requestType === "permission" && event.requestId) {
+        const auto = resolveOpenedRequest(bot.id, event.tool, event.summary);
+        if (auto) {
+          const instance = registry.get(bot.modelSelection.instanceId);
+          if (instance) {
+            void instance.adapter
+              .respondToRequest(event.threadId, event.requestId, { behavior: auto.behavior, source: auto.source })
+              .catch(() => {});
+            break;
+          }
+        }
+      }
       const permission = event.requestType === "permission";
       const message = pushMessage({
         role: "bot",
@@ -263,10 +303,12 @@ bus.subscribe((event: RuntimeEvent) => {
           subtitle: event.summary,
           options: event.choices?.length ? event.choices : permission ? ["Allow", "Deny"] : [],
           requestId: event.requestId,
+          requestType: event.requestType,
         },
       });
       if (event.requestId) askMessageByRequest.set(event.requestId, message.id);
       store.patchBot(bot.id, { state: "NEEDS_INPUT" });
+      proactive.noteState(bot.id, "NEEDS_INPUT");
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
       break;
     }
@@ -282,7 +324,9 @@ bus.subscribe((event: RuntimeEvent) => {
         }
         if (event.requestId) askMessageByRequest.delete(event.requestId);
       }
+      if (event.requestId) pendingAskByRequest.delete(event.requestId);
       store.patchBot(bot.id, { state: "RUNNING" });
+      proactive.noteState(bot.id, "RUNNING");
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
       break;
     }
@@ -290,6 +334,7 @@ bus.subscribe((event: RuntimeEvent) => {
       if (event.turnId) responseOptionsByTurn.delete(event.turnId);
       pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
       store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
+      proactive.noteState(bot.id, "BLOCKED");
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
       break;
     case "turn.completed": {
@@ -314,10 +359,21 @@ bus.subscribe((event: RuntimeEvent) => {
         });
       }
       store.patchBot(bot.id, { busy: false, unread: true, state: event.ok ? "DONE" : "BLOCKED", stateDetail: event.stopReason ?? undefined });
+      proactive.noteState(bot.id, event.ok ? "DONE" : "BLOCKED");
       const routineId = routineByThread.get(event.threadId);
       if (routineId) {
+        const routine = store.routine(routineId);
         store.markRoutine(routineId, { running: false, lastResult: event.ok ? "DONE" : `BLOCKED: ${event.stopReason ?? "failed"}` });
         routineByThread.delete(event.threadId);
+        if (routine?.thenStartTurn) proactive.routineCompleted(routine.thenStartTurn);
+      }
+      if (event.ok) {
+        const instance = registry.get(bot.modelSelection.instanceId);
+        void distillMemory({
+          botId: bot.id,
+          turnText: turnTextFromMessages(store.messagesFor(event.threadId)),
+          generateText: instance?.generateText?.bind(instance),
+        });
       }
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
       break;
@@ -411,6 +467,7 @@ async function startTurn(
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
   if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
+  proactive.reset(botId);
   const commsDepth = opts?.commsDepth ?? 0;
 
   const instance = registry.get(bot.modelSelection.instanceId);
@@ -431,6 +488,7 @@ async function startTurn(
   const fullAuto = configured?.config && typeof configured.config === "object" && (configured.config as { fullAuto?: unknown }).fullAuto === true;
   if (bot.computer === "local" && fullAuto) {
     store.patchBot(bot.id, { state: "BLOCKED", stateDetail: "local computer cannot be combined with provider full-auto" });
+    proactive.noteState(bot.id, "BLOCKED");
     throw Object.assign(new Error("unsafe configuration: local computer cannot be combined with provider full-auto"), { status: 409 });
   }
 
@@ -457,6 +515,7 @@ async function startTurn(
   // in the background — box provisioning can take ~90s and must never
   // hang the HTTP request
   store.patchBot(bot.id, { busy: true, unread: false, state: "RUNNING", stateDetail: undefined });
+  proactive.noteState(bot.id, "RUNNING");
   broadcast({ kind: "bot", bot: store.bot(bot.id) });
 
   void (async () => {
@@ -508,6 +567,7 @@ async function startTurn(
         attachments: opts?.attachments,
         system:
           persona +
+          memoryPrompt(bot.id) +
           responseOptionsPrompt +
           (integrations.computer && instance.driverKind !== "boxAgent"
             ? " You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps."
@@ -523,6 +583,7 @@ async function startTurn(
                 .join(" and ")} in their message — bring them in with ask_bot and fold their reply into your answer.`
             : ""),
         integrations,
+        requireApproval: bot.requireApproval === true,
       });
       if (integrations.computer) startScreenPoller(bot.id);
     } catch (e) {
@@ -534,6 +595,7 @@ async function startTurn(
       });
       broadcast({ kind: "message", threadId: bot.threadId, message: failure });
       store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: message.slice(0, 160) });
+      proactive.noteState(bot.id, "BLOCKED");
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
     }
   })();
@@ -682,12 +744,12 @@ const server = createServer(async (req, res) => {
     if (method === "GET" && path === "/api/routines") return json(res, 200, { routines: store.routines });
     if (method === "POST" && path === "/api/routines") {
       const body = await readBody(req);
-      return json(res, 201, { routine: store.createRoutine({ botId: String(body.botId ?? ""), name: String(body.name ?? ""), prompt: String(body.prompt ?? ""), schedule: body.schedule }) });
+      return json(res, 201, { routine: store.createRoutine({ botId: String(body.botId ?? ""), name: String(body.name ?? ""), prompt: String(body.prompt ?? ""), schedule: body.schedule, thenStartTurn: body.thenStartTurn }) });
     }
     let routineMatch = path.match(/^\/api\/routines\/([\w-]+)$/);
     if (routineMatch && method === "PATCH") {
       const body = await readBody(req);
-      const routine = store.patchRoutine(routineMatch[1], { name: body.name, prompt: body.prompt, schedule: body.schedule, enabled: body.enabled });
+      const routine = store.patchRoutine(routineMatch[1], { name: body.name, prompt: body.prompt, schedule: body.schedule, enabled: body.enabled, thenStartTurn: body.thenStartTurn });
       return routine ? json(res, 200, { routine }) : json(res, 404, { error: "no such routine" });
     }
     if (routineMatch && method === "DELETE") return store.deleteRoutine(routineMatch[1]) ? json(res, 200, { ok: true }) : json(res, 404, { error: "no such routine" });
@@ -708,7 +770,7 @@ const server = createServer(async (req, res) => {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: Record<string, unknown> = {};
-      for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotExpression", "pinned", "hidden"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotExpression", "pinned", "hidden", "requireApproval"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (patch.computer === "local" && process.env.OMB_LOCAL_CUA_SUPPORTED === "0") {
@@ -734,6 +796,7 @@ const server = createServer(async (req, res) => {
       // a running turn dies with its bot
       await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
       stopScreenPoller(bot.id);
+      deleteBotMemory(bot.id);
       store.deleteBot(bot.id);
       for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
         try {
@@ -784,12 +847,19 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
-      const body = await readBody(req);
       const instance = registry.get(bot.modelSelection.instanceId);
       if (!instance) return json(res, 409, { error: "provider unavailable" });
-      await instance.adapter.respondToRequest(bot.threadId, String(body.requestId), {
+      const body = await readBody(req);
+      const requestId = String(body.requestId);
+      const pending = pendingAskByRequest.get(requestId);
+      if (body.always === true && pending?.requestType === "permission") {
+        alwaysAllow(bot.id, pending.tool, pending.summary);
+      }
+      await instance.adapter.respondToRequest(bot.threadId, requestId, {
         behavior: body.behavior,
         message: body.message,
+        always: body.always === true,
+        source: "user",
       });
       return json(res, 200, { ok: true });
     }
@@ -800,6 +870,7 @@ const server = createServer(async (req, res) => {
       const instance = registry.get(bot.modelSelection.instanceId);
       await instance?.adapter.interruptTurn(bot.threadId);
       store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
+      proactive.noteState(bot.id, "BLOCKED");
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
       return json(res, 200, { ok: true });
     }

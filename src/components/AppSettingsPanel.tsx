@@ -2,12 +2,45 @@
 // bots. Per-bot settings (name, persona, model, computer)
 // live in SettingsPanel; contextual Box-token entry stays in ComputerPanel.
 import { X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useStore } from "@/state/store";
 import { ApiKeyRow } from "./ApiKeys";
 import { useUpdaterState } from "@/lib/updater";
+import { cn } from "@/lib/cn";
 
 
-/** Manual update check row — packaged app only (no bridge in dev). */
+/** Launch-at-login — desktop shell only; default off. */
+function LaunchAtLoginRow() {
+  const login = window.ogb?.loginItem;
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    if (!login) return;
+    void login.get().then((enabled) => setOn(enabled === true));
+  }, [login]);
+  if (!login) return null;
+  return (
+    <div className="mt-4 flex items-center justify-between gap-4 rounded-xl bg-card p-4">
+      <div>
+        <div className="text-[15px] font-medium text-ink">Launch at login</div>
+        <div className="mt-0.5 text-[13px] text-ink-secondary">
+          Open VelarixBot when you sign in. Off by default. The harness stays local.
+        </div>
+      </div>
+      <button
+        role="switch"
+        aria-checked={on}
+        onClick={() => {
+          const next = !on;
+          setOn(next);
+          void login.set(next).then((enabled) => setOn(enabled === true));
+        }}
+        className={cn("relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors", on ? "bg-accent" : "bg-raised")}
+      >
+        <span className={cn("absolute top-[3px] size-5 rounded-full bg-white transition-all", on ? "left-[21px]" : "left-[3px]")} />
+      </button>
+    </div>
+  );
+}
 function UpdatesRow() {
   const s = useUpdaterState();
   if (!window.ogb?.updater) return null;
@@ -100,6 +133,8 @@ export function AppSettingsPanel() {
             />
           </div>
         </div>
+
+        <LaunchAtLoginRow />
 
         <UpdatesRow />
       </div>

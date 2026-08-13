@@ -25,6 +25,11 @@ declare global {
       onNotifyClick?(cb: (botId: string) => void): () => void;
       /** Desktop file picker for composer attachments (local paths). */
       openFiles?(): Promise<Array<{ path: string; name: string }>>;
+      /** Launch at login. Default off. Packaged/desktop only. */
+      loginItem?: {
+        get(): Promise<boolean>;
+        set(enabled: boolean): Promise<boolean>;
+      };
       /** In-app auto-update (packaged app only; honest no-op in dev). onState
        * fires immediately with the current state, then on transitions. */
       updater?: {

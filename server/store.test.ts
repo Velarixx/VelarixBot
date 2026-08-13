@@ -114,6 +114,24 @@ describe("Store", () => {
     expect(new Store(selection).routine(routine.id)?.schedule).toEqual({ kind: "daily", time: "09:30" });
   });
 
+  it("persists requireApproval and a routine thenStartTurn trigger", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const other = store.createBot();
+    store.patchBot(bot.id, { requireApproval: true });
+    const routine = store.createRoutine({
+      botId: bot.id,
+      name: "Brief",
+      prompt: "Brief me",
+      schedule: { kind: "interval", everyMinutes: 30 },
+      thenStartTurn: { botId: other.id, prompt: "Follow up." },
+    });
+    expect(routine.thenStartTurn).toEqual({ botId: other.id, prompt: "Follow up." });
+    const reloaded = new Store(selection);
+    expect(reloaded.bot(bot.id)?.requireApproval).toBe(true);
+    expect(reloaded.routine(routine.id)?.thenStartTurn).toEqual({ botId: other.id, prompt: "Follow up." });
+  });
+
   it("validates daily and interval routines", () => {
     const store = new Store(selection);
     const bot = store.createBot();

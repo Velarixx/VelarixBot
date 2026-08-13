@@ -38,7 +38,7 @@ export function ensureDirs() {
       }
     }
   }
-  for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR]) mkdirSync(dir, { recursive: true });
+  for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR, join(DATA_DIR, "memory")]) mkdirSync(dir, { recursive: true });
 }
 
 export function loadConfig(): AppConfig {

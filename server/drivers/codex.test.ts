@@ -241,6 +241,17 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ decision: "approved" });
   });
 
+  it("requireApproval forces a card even under fullAuto", async () => {
+    await create({ mode: "approval", fullAuto: true });
+    await instance.adapter.sendTurn({ threadId: "t-require", text: "clean up", requireApproval: true });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "permission", tool: "shell" });
+    await instance.adapter.respondToRequest("t-require", opened.requestId!, { behavior: "allow", source: "rule" });
+    const resolved = await recorder.until((e) => e.type === "request.resolved");
+    expect(resolved).toMatchObject({ behavior: "allow", source: "rule" });
+    await recorder.until((e) => e.type === "turn.completed");
+  });
+
   it("rejects a second turn while one is in flight", async () => {
     await create({ mode: "approval" }); // approval mode parks the turn open
     await instance.adapter.sendTurn({ threadId: "t-busy", text: "one" });
