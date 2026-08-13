@@ -65,6 +65,12 @@ jobs:
           set -euo pipefail
           node scripts/verify-packaged-server.mjs --packaged \
             release/mac-arm64/VelarixBot.app/Contents/Resources/server/index.js
+      - name: Smoke packaged server (headless)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/smoke-packaged-server.mjs \
+            release/mac-arm64/VelarixBot.app/Contents/Resources/server/index.js
       - name: Verify DMG and packaged runtime resources
         shell: bash
         run: |
@@ -110,6 +116,12 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/verify-packaged-server.mjs --packaged \
+            release/win-unpacked/resources/server/index.js
+      - name: Smoke packaged server (headless)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/smoke-packaged-server.mjs \
             release/win-unpacked/resources/server/index.js
       - name: Verify unsigned x64 installer
         shell: pwsh

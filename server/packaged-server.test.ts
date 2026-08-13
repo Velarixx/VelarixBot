@@ -8,6 +8,13 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  CURRENT_CODE_MARKERS,
+  SERVER_SMOKE_STAMP,
+  assertCurrentPackagedCode,
+  smokeEnv,
+  smokePackagedServer,
+} from "../scripts/smoke-packaged-server.mjs";
+import {
   BUILT_ENTRY_REL,
   MAIN_FORK_RE,
   RESOURCES_SERVER_ENTRY_REL,
@@ -72,7 +79,7 @@ describe("packaged server entry", () => {
     expect(() => assertPackagedMatchesBuilt(join(scratch, "missing.js"), built.hash)).toThrow(/packaged server missing/);
   });
 
-  it("emits index.js (not server/index.js) when compiling with the build tsconfig", () => {
+  it("emits index.js (not server/index.js) when compiling with the build tsconfig", async () => {
     scratch = mkdtempSync(join(tmpdir(), "omb-tsc-emit-"));
     const tsc = join(ROOT, "node_modules", "typescript", "bin", "tsc");
     const result = spawnSync(process.execPath, [tsc, "-p", "tsconfig.server.build.json", "--outDir", scratch, "--pretty", "false"], {
@@ -83,21 +90,33 @@ describe("packaged server entry", () => {
     const built = assertBuiltServerEntry(scratch);
     expect(built.entry).toBe(join(scratch, "index.js"));
     expect(readFileSync(built.entry, "utf8")).toMatch(/createServer|VelarixBot|OMB_PORT/);
-  }, 30_000);
+    expect(readFileSync(built.entry, "utf8")).toContain(SERVER_SMOKE_STAMP);
+    const smoked = await smokePackagedServer(built.entry);
+    expect(smoked.health).toMatchObject({ app: "velarixbot", stamp: SERVER_SMOKE_STAMP });
+    expect(smoked.health).toEqual(expect.objectContaining({ pid: expect.any(Number) }));
+  }, 60_000);
 
   it("gates the just-built server on both release runners", () => {
     const workflow = read(".github/workflows/release.yml");
     expect(workflow).toContain("verify-packaged-server.mjs");
+    expect(workflow).toContain("smoke-packaged-server.mjs");
     expect(workflow).toMatch(/mac-arm64\/VelarixBot\.app\/Contents\/Resources\/server\/index\.js/);
     expect(workflow).toMatch(/win-unpacked\/resources\/server\/index\.js/);
     expect(workflow).toContain("macos-latest");
     expect(workflow).not.toContain("macos-15-intel");
+    expect(workflow).not.toMatch(/^\s+pull_request:/m);
+    expect(workflow).toContain("workflow_dispatch");
     const mac = workflow.slice(workflow.indexOf("  mac:"), workflow.indexOf("  windows:"));
     const win = workflow.slice(workflow.indexOf("  windows:"), workflow.indexOf("  release:"));
     expect(mac).toContain("verify-packaged-server.mjs");
     expect(win).toContain("verify-packaged-server.mjs");
+    expect(mac).toContain("smoke-packaged-server.mjs");
+    expect(win).toContain("smoke-packaged-server.mjs");
+    expect(mac.indexOf("verify-packaged-server.mjs")).toBeLessThan(mac.indexOf("smoke-packaged-server.mjs"));
+    expect(win.indexOf("verify-packaged-server.mjs")).toBeLessThan(win.indexOf("smoke-packaged-server.mjs"));
     expect(mac).toContain("--arm64");
     expect(mac).not.toMatch(/--x64/);
+    expect(workflow).toMatch(/needs:\s*\[mac, windows\]/);
   });
 
   it("leaves eval and portable as workflow_dispatch only", () => {
@@ -106,9 +125,100 @@ describe("packaged server entry", () => {
       expect(text).toContain("workflow_dispatch");
       expect(text).not.toMatch(/^\s+schedule:/m);
       expect(text).not.toMatch(/^\s+pull_request:/m);
+      expect(text).not.toContain("smoke-packaged-server.mjs");
     }
     const ci = read(".github/workflows/ci.yml");
     expect(ci).toContain("ubuntu-latest");
     expect(ci).not.toMatch(/matrix:/);
+    expect(ci).not.toContain("smoke-packaged-server.mjs");
+    expect(ci).not.toContain("electron-builder");
+  });
+});
+
+describe("packaged server smoke", () => {
+  let scratch = "";
+  afterEach(() => {
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    scratch = "";
+  });
+
+  const fakeEntry = (source: string) => {
+    scratch = mkdtempSync(join(tmpdir(), "omb-packaged-smoke-"));
+    const entry = join(scratch, "index.js");
+    writeFileSync(entry, source);
+    return entry;
+  };
+
+  it("keeps health.stamp in lockstep with the smoke script", () => {
+    expect(SERVER_SMOKE_STAMP).toBe(CURRENT_CODE_MARKERS.join("+"));
+    expect(read("server/index.ts")).toContain(`stamp: "${SERVER_SMOKE_STAMP}"`);
+    expect(read("server/drivers/codex.ts")).toContain("mcpOverlay");
+    expect(read("server/index.ts")).toContain("ensureBotWorkspace");
+  });
+
+  it("does not pass Actions secrets into the smoked process", () => {
+    const env = smokeEnv("/tmp/omb-smoke-home", 8799);
+    expect(env).not.toHaveProperty("GITHUB_TOKEN");
+    expect(env).not.toHaveProperty("GH_TOKEN");
+    expect(env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(env).not.toHaveProperty("CODEX_AUTH_JSON");
+    expect(env.HOME).toBe("/tmp/omb-smoke-home");
+    expect(env.USERPROFILE).toBe("/tmp/omb-smoke-home");
+    expect(env.OMB_PORT).toBe("8799");
+  });
+
+  it("rejects a stale rc.3-shaped tree before boot", () => {
+    const entry = fakeEntry(`export const marker = "stale-rc.3";\n`);
+    expect(() => assertCurrentPackagedCode(entry)).toThrow(/stale|missing/i);
+    expect(() => assertCurrentPackagedCode(join(scratch, "missing.js"))).toThrow(/packaged server missing/);
+  });
+
+  it("boots a current packaged-shaped entry to /api/health", async () => {
+    const entry = fakeEntry(`
+import { createServer } from "node:http";
+const PORT = Number(process.env.OMB_PORT || 8799);
+createServer((req, res) => {
+  if (req.url === "/api/health") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      app: "velarixbot",
+      pid: process.pid,
+      static: false,
+      stamp: "${SERVER_SMOKE_STAMP}",
+    }));
+    return;
+  }
+  res.statusCode = 404;
+  res.end();
+}).listen(PORT, "127.0.0.1");
+`);
+    const smoked = await smokePackagedServer(entry);
+    expect(smoked.health).toMatchObject({ app: "velarixbot", stamp: SERVER_SMOKE_STAMP });
+  });
+
+  it("fails a server that listens with rc.3 health (no stamp)", async () => {
+    const entry = fakeEntry(`
+import { createServer } from "node:http";
+const PORT = Number(process.env.OMB_PORT || 8799);
+// ${CURRENT_CODE_MARKERS.join(" ")} ${SERVER_SMOKE_STAMP}
+createServer((req, res) => {
+  if (req.url === "/api/health") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ app: "velarixbot", pid: process.pid, static: false }));
+    return;
+  }
+  res.statusCode = 404;
+  res.end();
+}).listen(PORT, "127.0.0.1");
+`);
+    await expect(smokePackagedServer(entry, { timeoutMs: 8_000 })).rejects.toThrow(/stamp|stale/i);
+  });
+
+  it("fails a current-looking file that never listens", async () => {
+    const entry = fakeEntry(`
+// ${CURRENT_CODE_MARKERS.join(" ")} ${SERVER_SMOKE_STAMP}
+setInterval(() => {}, 60_000);
+`);
+    await expect(smokePackagedServer(entry, { timeoutMs: 800 })).rejects.toThrow(/never answered|exited/);
   });
 });
