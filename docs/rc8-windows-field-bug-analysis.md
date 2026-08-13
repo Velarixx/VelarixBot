@@ -2,6 +2,10 @@
 
 Date: 2026-08-13. Analysis only; no application code was changed.
 
+> **Updated 2026-08-13 (evening): two follow-up sections were appended.**
+> 1. [rc.9 packaging verification](#follow-up-1--rc9-ships-a-current-server-packaging-bug-fixed) — rc.9 exists, implements the packaging fixes below, and its Windows installer is verified clean.
+> 2. [Live-test: the Allow → "user rejected MCP tool call" failure](#follow-up-2--live-test-on-rc9-allow--user-rejected-mcp-tool-call) — a **current-source** Codex approval-protocol bug that survives the packaging fix. Must-fix for rc.10.
+
 Scope inspected: `main` (0b9d897), tag `v0.2.0-rc.8` (c18a13a — one release-config-only commit behind `main`), tags rc.3–rc.7, merged PRs #47–#50, and the **actual shipped rc.8 Windows installer** (`VelarixBot-Setup-0.2.0-rc.8-x64.exe` downloaded from the GitHub release and unpacked).
 
 ## Executive summary
@@ -164,3 +168,75 @@ Nice-to-have:
 ## Does the addendum's sequencing still hold?
 
 Mostly yes, but re-scoped. "rc.9 in the current P0 wave" holds — with the crucial correction that **rc.9's content is primarily release engineering, not send-path fixes**: claims 1 and 2 are already fixed in source and have been since rc.5–rc.7; shipping them requires the packaging fix, without which any further rc is equally hollow (as rc.7's hotfix already demonstrated, invisibly). The genuinely new source changes for rc.9 are small (cwd sandbox, two grounding lines, `.bak` cleanup). "Tier B in parallel" also holds, but its priority argument needs adjusting: as designed it would **not** have caught this incident; the parallel Tier B work should include pointing it (or a release smoke) at the packaged artifact and actually turning it on in CI, otherwise it only protects the path that was never broken.
+
+---
+
+# Follow-up 1 — rc.9 ships a current server (packaging bug fixed)
+
+Verified 2026-08-13 evening, after Dyon's correction that his live test ran **rc.9**, not rc.8.
+
+Tag `v0.2.0-rc.9` = b6b0c4f ("rc.9: stop shipping stale dist-server, per-bot cwd, grounding", PR [#55](https://github.com/Velarixx/VelarixBot/pull/55)); `main` == rc.9 at the time of writing. It implements the must-fix items from this report:
+
+- `dist-server/` removed from git (the whole tracked tree deleted in the diff).
+- `build:server` is now `scripts/build-server.mjs`: cleans `dist-server/` before compiling and asserts the flat `dist-server/index.js` entry exists and no nested `dist-server/server/index.js` was emitted (`assertBuiltServerEntry`, `scripts/verify-packaged-server.mjs`).
+- `tsconfig.server.build.json` pins `"rootDir": "server"` and its own `include: ["server"]`; `tsconfig.server.json` gained a comment warning not to widen the build include again.
+- Release verification: `.github/workflows/release.yml` now runs `node scripts/verify-packaged-server.mjs --packaged …resources/server/index.js` on both the mac and Windows jobs (sha256 of packaged entry vs just-built entry) before publishing.
+- Per-bot cwd: `server/config.ts` adds `botWorkspaceDir`/`ensureBotWorkspace` (`~/.velarixbot/workspaces/<botId>`); `server/index.ts` passes `cwd: ensureBotWorkspace(bot.id)` into `sendTurn`; `server/drivers/codex.ts` uses it for both the process spawn and `thread/start.cwd` (claim 4 fixed).
+- Grounding: new `server/grounding.ts` (`CODEX_GROUNDING` — no in-app browser, create_bot only; `CHAT_ONLY_GROUNDING` for openrouter/omnirouter/grok), appended unconditionally in `startTurn` (claims 3-partial and 6 fixed).
+
+**Shipped-artifact verification** (same method as the rc.8 forensics): downloaded `VelarixBot-Setup-0.2.0-rc.9-x64.exe` from the release (target b6b0c4f, release run 31735513580, succeeded with the new verify step), extracted `$PLUGINSDIR/app-64.7z` → `resources/server/`. Result: a **single flat tree of current rc.9 code** — `grounding.js`, `memory-proxy.js`, `openai-compat.js` present; `drivers/codex.js` contains `ensureBotWorkspace`, `mcpOverlay`, `developerInstructions`; **no nested `server/server/` directory**. The stale-rc.3 payload is gone. Dyon's live test therefore ran the real, current rc.9 server — which is what makes the next section a live **source** bug, not another packaging symptom.
+
+# Follow-up 2 — live test on rc.9: Allow → "user rejected MCP tool call"
+
+Live test (Dyon, rc.9 installed at `C:\Users\Dyon\AppData\Local\Programs\VelarixBot`): codex bot, prompt "call list_bots exactly once…". UI showed a real `list_bots` tool call plus an approval card; Dyon clicked Allow. Events: `request.opened {requestType: permission, tool: shell}` → `request.resolved {behavior: allow, source: user}` → `item.completed {ok: false}` (same second), and the model reported the MCP tool result `{"content":[{"type":"text","text":"user rejected MCP tool call"}],"isError":true}`.
+
+To get ground truth I pulled the Codex CLI itself: the npm binary package (`@openai/codex` 0.147.0) and the matching open-source tree (`openai/codex` at `rust-v0.147.0`), plus the `rust-v0.144.4` feature table (the version this driver's header claims it was verified against).
+
+## Exact code path, Allow → Codex
+
+1. On rc.9 the agents MCP server **is** mounted (packaging fixed), so `list_bots` is a real MCP tool. Codex starts an `mcpToolCall` item; the driver's `item/started` handler titles the activity chip with the tool name (`server/drivers/codex.ts` 326–338) — that is the "list_bots tool call" Dyon saw.
+2. Under `approvalPolicy: "on-request"` the CLI requires approval for MCP tool calls (`requires_mcp_tool_approval_for_mode`, `codex-rs/core/src/mcp_tool_call.rs` 2179–2191 — note the agents proxy declares **no** `readOnlyHint` annotations on its tools, `server/drivers/agents-proxy.ts` 26–56, so even read-only `list_bots` prompts).
+3. The CLI routes that approval through the **MCP elicitation channel**: feature `tool_call_mcp_elicitation` is `Stage::Stable, default_enabled: true` (`codex-rs/features/src/lib.rs` 1381–1386 at 0.147.0; identically stable + default-on at `rust-v0.144.4`, lines 1264–1268). So the server→client request is **`mcpServer/elicitation/request`** (`app-server-protocol/src/protocol/common.rs` — `McpServerElicitationRequest`), *not* `item/tool/requestUserInput`.
+4. VelarixBot's driver does not know that method. `handleServerRequest` (`server/drivers/codex.ts` 214–232) recognizes only `execCommandApproval`/`applyPatchApproval` (legacy), `item/fileChange/requestApproval`, and the two `requestUserInput` methods; everything else falls to the generic branch → `tool: "shell"`, `requestType: "permission"` (and the summary falls through `command`/`questions`/`reason` — none exist on elicitation params — to the literal string "shell"). **That is exactly why a list_bots approval was carded as a generic shell permission.**
+5. Dyon clicks Allow → `POST /api/bots/:id/respond` (`server/index.ts` 1171–1190) → `respondToRequest` (`codex.ts` 537–542) → `finish("allow")` → the non-user-input branch replies on the correct JSON-RPC id with **`{decision: "accept"}`** (`codex.ts` 282–287) and emits `request.resolved {behavior: allow, source: user}` (288) — Dyon's log, verbatim.
+6. The CLI expected `McpServerElicitationRequestResponse` = `{action: "accept"|"decline"|"cancel", content?, _meta?}` (`app-server-protocol/src/protocol/v2/mcp.rs` 259–263, 737–741). Our `{decision: "accept"}` has no `action` field, so serde fails — and the app-server **coerces a deserialization failure into `action: Decline`**:
+
+   `codex-rs/app-server/src/bespoke_event_handling.rs` 1740–1750 — `mcp_server_elicitation_response_from_client_result`: `serde_json::from_value::<McpServerElicitationRequestResponse>(value).unwrap_or_else(|err| { error!("failed to deserialize…"); McpServerElicitationRequestResponse { action: Decline, … } })`.
+7. `Decline` maps to `McpToolApprovalDecision::Decline` (`mcp_tool_call.rs` 1818–1855), whose skip message is the exact string Dyon saw: `"user rejected MCP tool call"` (`mcp_tool_call.rs` 262). The CLI completes the item as failed; the driver folds `item/completed` status failed/declined into `item.completed ok:false` (`codex.ts` 352–359). Timeline (resolve and failure in the same second) matches a local decline with no tool execution.
+
+The "Decline" coercion (as opposed to "Cancel", which is what a missing response produces and would have read "user cancelled MCP tool call") is a distinctive fingerprint: the CLI *received and failed to parse* our reply.
+
+## Verdicts on Dyon's 8 conclusions
+
+| # | Conclusion | Verdict |
+|---|---|---|
+| 1 | Allow click works | **Confirmed** — UI → `/respond` → `respondToRequest` → `finish("allow")` all fire |
+| 2 | Recorded as `behavior: allow, source: user` | **Confirmed** — `codex.ts` 288 |
+| 3 | Failure occurs after VelarixBot passes the approval to Codex | **Refined** — the failure *is* the pass itself: the reply goes out on the right request id but in the wrong shape (`{decision}` instead of `{action}`), so Codex receives it and cannot parse it |
+| 4 | Codex's MCP layer returns "user rejected MCP tool call" | **Confirmed** — the string is the CLI's own (`mcp_tool_call.rs` 262; present in the shipped binary, absent from this repo) |
+| 5 | Not user error, not a broken LLM connection | **Confirmed** — model, thread, MCP mount, and UI all functioned |
+| 6 | Approval-translation incompatibility between the driver and the installed app-server protocol | **Confirmed, made precise** — the driver never implemented the `mcpServer/elicitation/request` method that current CLIs (≥ 0.144, feature stable + default-on) use for MCP tool approvals; its generic fallback answers with the command-approval schema |
+| 7 | list_bots incorrectly presented as a generic shell permission | **Confirmed** — unknown-method fallback classifies `tool: "shell"` (`codex.ts` 219–224); the "list_bots" name in the UI came from the separate `item/started` mcpToolCall event, not the card |
+| 8 | Reconnecting to ChatGPT differently would not fix it | **Confirmed** — auth is uninvolved; the deny is manufactured locally from a malformed JSON-RPC response |
+
+Answers to the specific sub-questions:
+
+- **Wrong channel?** No — the reply rides the correct JSON-RPC id (`msg.id`). Wrong *payload schema*, right channel. No item-id mismatch either.
+- **Second approval required by sandbox/approvalPolicy?** No second approval exists. `on-request` routes the *one* MCP approval through a method the driver doesn't speak. (`item/permissions/requestApproval` is a further method in the same family — network/permission escalations — that the driver would also mishandle; its deserialize-failure coercion grants an empty permission profile, `bespoke_event_handling.rs` 1878–1886.)
+- **Does the stale build make Codex invent a shell call named list_bots?** Moot for this test — rc.9 mounts agents and the call was a real `mcpToolCall` (evidenced by the chip title path and the MCP-formatted result). On the rc.3-stale builds the model had no such tool at all (previous section).
+- **`"static": true` on `/api/health`?** It means the server was started with `OMB_STATIC_DIR` set and is serving the built UI itself (`server/index.ts` 67, 1207–1209). The packaged Electron app is what sets that env (`electron/main.mjs` 34–42); dev servers report `static: false`. Combined with the pid handshake, port 8799 was answered by the installed rc.9 app's own harness — not a stray dev server or the eval.
+
+## Why the tests are green anyway
+
+The fake app-server models MCP approvals exclusively as `item/tool/requestUserInput` with Accept/Decline/Cancel options (`server/testing/fake-codex-app-server.ts` 143, 163, 183); no fixture ever sends `mcpServer/elicitation/request`. The driver's Accept/Decline/Cancel `requestUserInput` handling (`codex.ts` 118–128, 249–304) is correct for the CLI's *fallback* path — the one used only when the elicitation feature is off — so every driver test passes while the real default path was never exercised. The driver header's "verified against codex-cli 0.144.4" cannot have covered a mounted-MCP + on-request approval, because 0.144.4 already defaulted to elicitation.
+
+## Impact and fix (survives the packaging fix — this is a current-source bug)
+
+**Must-fix (rc.10, release-blocking for the agents/MCP feature):** with default settings (fullAuto off → `approvalPolicy: on-request`), **every MCP tool call on a codex bot — list_bots, ask_bot, create_bot, memory remember/recall, composio, computer — is auto-declined the moment the user clicks Allow.** The flagship "create a bot" flow cannot work on codex for any user on a current Codex CLI, even with rc.9's packaging fix in place. (`fullAuto: true` masks it: approvals are auto-accepted before prompting, which is presumably how manual testing passed.)
+
+Recommended change (what, not a patch):
+
+1. In `handleServerRequest` (`server/drivers/codex.ts`), add first-class handling for `mcpServer/elicitation/request`: classify as `requestType: "permission"` with the MCP server/tool name (params carry `serverName` and a `message`) instead of `tool: "shell"`, and on resolve reply with the elicitation schema — `{action: "accept"}` / `{action: "decline"}` (plus the `_meta` persist key when wiring Always-allow into `AcceptForSession`/`AcceptAndRemember`).
+2. Handle `item/permissions/requestApproval` explicitly (respond with a valid `PermissionsRequestApprovalResponse`), and make the unknown-method default fail loudly (log + surface a runtime error) rather than replying with the command-approval schema to methods it does not recognize.
+3. Extend `server/testing/fake-codex-app-server.ts` with an elicitation-based MCP approval scenario and assert the exact accept reply shape in `codex.test.ts`; pin the tested protocol to the CLI version matrix (the fallback `requestUserInput` path should stay covered for older CLIs / feature-off configs).
+4. Nice-to-have: declare `annotations: { readOnlyHint: true }` on `list_bots` (and recall) in the agents/memory proxies so read-only tools stop prompting at all under default approval modes.
