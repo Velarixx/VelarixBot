@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { cliExec } from "../cli.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 // Where `hermes login` stores the ChatGPT OAuth credentials (mirrors Codex's
@@ -61,6 +62,17 @@ const support: AcpSupport = {
 
   // buildPromptText omitted on purpose — the core default (persona prepended
   // codex-style) is the contract here.
+
+  // One-shot text (bot titles, memory distill) via the CLI's non-interactive
+  // mode. Same key-hygiene env as turns; hard 60s cap.
+  generateText: async (config, env, prompt) => {
+    const result = await cliExec(config.cli, ["exec", "-p", prompt], {
+      timeout: 60_000,
+      env: env as NodeJS.ProcessEnv,
+    });
+    if (!result.ok) throw new Error(result.stderr.trim() || `\`${config.cli}\` exec failed`);
+    return result.stdout.trim();
+  },
 };
 
 export const HermesAgentDriver = createAcpDriver(support);

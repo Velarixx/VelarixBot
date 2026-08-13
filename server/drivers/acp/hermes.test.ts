@@ -230,6 +230,45 @@ describe("Hermes turns (fake CLI)", () => {
   });
 });
 
+describe("Hermes generateText (one-shot exec)", () => {
+  it("runs `hermes exec -p` and returns trimmed text without leaking keys", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "omb-hermes-gen-"));
+    const dump = join(scratch, "dump.json");
+    process.env.OPENAI_API_KEY = "sk-should-not-leak";
+    const instance = await HermesAgentDriver.create({
+      instanceId: "hermes-gen",
+      displayName: undefined,
+      environment: { FAKE_ACP_DUMP: dump },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    try {
+      expect(instance.generateText).toBeTypeOf("function");
+      const text = await instance.generateText!("distill this");
+      expect(text).toBe("User prefers concise replies. Last turn noted.");
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      expect(seen.execArgv).toEqual(["exec", "-p", "distill this"]);
+      expect(seen.env.OPENAI_API_KEY).toBeUndefined();
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+      await instance.dispose();
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects when the one-shot exec fails (missing binary)", async () => {
+    const instance = await HermesAgentDriver.create({
+      instanceId: "hermes-gen-missing",
+      displayName: undefined,
+      environment: {},
+      enabled: true,
+      config: { cli: "definitely-not-a-real-hermes-binary", fullAuto: false },
+    });
+    await expect(instance.generateText!("hi")).rejects.toThrow();
+    await instance.dispose();
+  });
+});
+
 describe("Hermes snapshot", () => {
   it("a missing binary is unavailable with a CLI-not-found reason", async () => {
     const instance = await HermesAgentDriver.create({

@@ -51,6 +51,12 @@ if (argv.includes("--version")) {
   console.log("fake-acp 1.0.0");
   process.exit(0);
 }
+// one-shot generateText surface (`cli exec -p …`) — hermes-style
+if (argv[0] === "exec" && argv.includes("-p")) {
+  if (dumpPath) writeDump({ execArgv: argv });
+  console.log("User prefers concise replies. Last turn noted.");
+  process.exit(0);
+}
 if (dumpPath) writeDump({});
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");

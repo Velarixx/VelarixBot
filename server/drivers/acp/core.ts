@@ -63,6 +63,14 @@ export interface AcpSupport {
   isAuthenticated(env: Record<string, string | undefined>): boolean;
   /** Compose the session/prompt text. Default prepends the persona. */
   buildPromptText?(turn: SendTurnInput): string;
+  /** Optional cheap one-shot text call (titles, memory distill) — e.g. a
+   * `cli exec -p …` subprocess. Receives the instance config and the
+   * already-transformed child env. Omit when the CLI has no one-shot mode. */
+  generateText?(
+    config: AcpConfig,
+    env: Record<string, string | undefined>,
+    prompt: string,
+  ): Promise<string>;
 }
 
 const INIT_TIMEOUT = 20_000;
@@ -497,6 +505,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         enabled: input.enabled,
         models: support.models,
         snapshot,
+        ...(support.generateText
+          ? { generateText: (prompt: string) => support.generateText!(config, childEnv(), prompt) }
+          : {}),
         adapter: {
           provider: DRIVER_KIND,
           capabilities: { sessionModelSwitch: "unsupported", agentsMcp: true },
