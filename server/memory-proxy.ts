@@ -47,6 +47,7 @@ const TOOLS = [
         query: { type: "string", description: "Optional case-insensitive substring to match." },
       },
     },
+    annotations: { readOnlyHint: true },
   },
 ];
 

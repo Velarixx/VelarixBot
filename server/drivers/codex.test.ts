@@ -15,7 +15,14 @@ import type { ProviderInstance } from "../contracts.ts";
 import { DATA_DIR } from "../config.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { FALLBACK_CODEX_MODELS } from "./codex-models.ts";
-import { CodexDriver, isCodexPermissionUserInput, isCodexUserInputMethod } from "./codex.ts";
+import {
+  CodexDriver,
+  codexElicitationCard,
+  isCodexElicitationMethod,
+  isCodexPermissionUserInput,
+  isCodexPermissionsMethod,
+  isCodexUserInputMethod,
+} from "./codex.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-codex-app-server.ts");
 const posixOnly = describe.skipIf(process.platform === "win32");
@@ -36,6 +43,11 @@ describe("Codex requestUserInput classification", () => {
     expect(isCodexUserInputMethod("tool/requestUserInput")).toBe(true);
     expect(isCodexUserInputMethod("execCommandApproval")).toBe(false);
     expect(isCodexUserInputMethod("item/fileChange/requestApproval")).toBe(false);
+    expect(isCodexUserInputMethod("mcpServer/elicitation/request")).toBe(false);
+    expect(isCodexElicitationMethod("mcpServer/elicitation/request")).toBe(true);
+    expect(isCodexElicitationMethod("item/tool/requestUserInput")).toBe(false);
+    expect(isCodexPermissionsMethod("item/permissions/requestApproval")).toBe(true);
+    expect(isCodexPermissionsMethod("mcpServer/elicitation/request")).toBe(false);
   });
 
   it("does not treat A/B/C what-next questions as permission asks", () => {
@@ -55,6 +67,27 @@ describe("Codex requestUserInput classification", () => {
       }),
     ).toBe(false);
     expect(isCodexPermissionUserInput({ questions: [{ id: "q", question: "Free form?" }] })).toBe(false);
+  });
+
+  it("cards MCP elicitation with the server/tool name, not shell", () => {
+    expect(
+      codexElicitationCard({
+        serverName: "agents",
+        message: 'Allow the agents MCP server to run tool "list_bots"?',
+        _meta: { codex_approval_kind: "mcp_tool_call" },
+      }),
+    ).toEqual({
+      tool: "list_bots",
+      summary: 'Allow the agents MCP server to run tool "list_bots"?',
+    });
+    expect(codexElicitationCard({ serverName: "memory", message: "Allow recall?" })).toEqual({
+      tool: "memory",
+      summary: "Allow recall?",
+    });
+    expect(codexElicitationCard({ serverName: "agents", _meta: { tool_title: "list_bots" } })).toEqual({
+      tool: "list_bots",
+      summary: "agents list_bots",
+    });
   });
 
   it("still treats Accept/Decline/Cancel user-input as a permission ask", () => {
@@ -339,6 +372,175 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     const resolved = await recorder.until((e) => e.type === "request.resolved");
     expect(resolved).toMatchObject({ behavior: "allow", source: "rule" });
     await recorder.until((e) => e.type === "turn.completed");
+  });
+
+  it("replies to MCP elicitation Allow with {action: accept}, not {decision}", async () => {
+    await create({ mode: "elicitation" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-elicit", text: "call list_bots exactly once" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({
+      requestType: "permission",
+      tool: "list_bots",
+      summary: 'Allow the agents MCP server to run tool "list_bots"?',
+    });
+    expect(opened).not.toMatchObject({ tool: "shell" });
+
+    await instance.adapter.respondToRequest("t-elicit", opened.requestId!, { behavior: "allow" });
+    const resolved = await recorder.until((e) => e.type === "request.resolved");
+    expect(resolved).toMatchObject({ behavior: "allow", source: "user" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.decision).toEqual({ action: "accept" });
+    expect(seen.decision).not.toHaveProperty("decision");
+  });
+
+  it("replies to MCP elicitation Decline with {action: decline}", async () => {
+    await create({ mode: "elicitation" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-elicit-deny", text: "call list_bots" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    await instance.adapter.respondToRequest("t-elicit-deny", opened.requestId!, { behavior: "deny" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ action: "decline" });
+  });
+
+  it("sends elicitation _meta.persist=always when Always-allow is set", async () => {
+    await create({ mode: "elicitation" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-elicit-always", text: "call list_bots" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    await instance.adapter.respondToRequest("t-elicit-always", opened.requestId!, { behavior: "allow", always: true });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({
+      action: "accept",
+      _meta: { persist: "always" },
+    });
+  });
+
+  it("uses the elicitation {action} shape when a stored rule auto-resolves", async () => {
+    // Harness Always-allow writes a local rule, then later asks call
+    // respondToRequest({ behavior, source: "rule" }) — same finish() as a
+    // carded click. Rules are not a workaround; they must not send {decision}.
+    await create({ mode: "elicitation" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-elicit-rule", text: "call list_bots" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "permission", tool: "list_bots" });
+    await instance.adapter.respondToRequest("t-elicit-rule", opened.requestId!, {
+      behavior: "allow",
+      source: "rule",
+    });
+    const resolved = await recorder.until((e) => e.type === "request.resolved");
+    expect(resolved).toMatchObject({ behavior: "allow", source: "rule" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.decision).toEqual({ action: "accept" });
+    expect(seen.decision).not.toHaveProperty("decision");
+  });
+
+  it("auto-accepts MCP elicitation in fullAuto with {action: accept}", async () => {
+    // fullAuto sets approvalPolicy "never", which usually stops Codex from
+    // eliciting. If a request still arrives, the reply must still be {action}.
+    await create({ mode: "elicitation", fullAuto: true });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-elicit-auto", text: "call list_bots" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(recorder.events.some((e) => e.type === "request.opened")).toBe(false);
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.decision).toEqual({ action: "accept" });
+    expect(seen.decision).not.toHaveProperty("decision");
+  });
+
+  it("requireApproval under fullAuto still replies {action: accept} for elicitation", async () => {
+    await create({ mode: "elicitation", fullAuto: true });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-elicit-require",
+      text: "call list_bots",
+      requireApproval: true,
+    });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "permission", tool: "list_bots" });
+    await instance.adapter.respondToRequest("t-elicit-require", opened.requestId!, { behavior: "allow" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ action: "accept" });
+  });
+
+  it("grants requested permissions on Allow and an empty profile on Decline", async () => {
+    await create({ mode: "permissions" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-perms", text: "need network" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({
+      requestType: "permission",
+      tool: "permissions",
+      summary: "Need network to fetch docs",
+    });
+    await instance.adapter.respondToRequest("t-perms", opened.requestId!, { behavior: "allow" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({
+      permissions: { network: { enabled: true } },
+      scope: "turn",
+    });
+  });
+
+  it("declines a permissions request with an empty granted profile", async () => {
+    await create({ mode: "permissions" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-perms-deny", text: "need network" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    await instance.adapter.respondToRequest("t-perms-deny", opened.requestId!, { behavior: "deny" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ permissions: {}, scope: "turn" });
+  });
+
+  it("replies to v2 command approval with {decision: accept}, not {action}", async () => {
+    await create({ mode: "command-approval" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-cmd", text: "clean up" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "permission", tool: "shell", summary: "rm -rf scratch" });
+    await instance.adapter.respondToRequest("t-cmd", opened.requestId!, { behavior: "allow" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ decision: "accept" });
+  });
+
+  it("rejects unknown server methods with -32601 instead of a command-approval payload", async () => {
+    await create({ mode: "unknown-method" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-unknown", text: "go" });
+    const error = await recorder.until((e) => e.type === "runtime.error");
+    expect(error).toMatchObject({ type: "runtime.error", message: expect.stringMatching(/item\/tool\/call/) });
+    expect(recorder.events.some((e) => e.type === "request.opened")).toBe(false);
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.decision).toEqual({ error: { code: -32601, message: "Method not found: item/tool/call" } });
+    expect(seen.decision).not.toHaveProperty("decision");
+    expect(seen.decision).not.toHaveProperty("action");
   });
 
   it("does not open OptionCards for conversational requestUserInput", async () => {

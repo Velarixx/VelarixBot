@@ -4,8 +4,25 @@
 // Completion is a real `turn/completed` notification; approval requests
 // arrive as in-process server→client JSON-RPC requests and surface as
 // canonical request.opened events (answered via respondToRequest — no MCP
-// proxy or unix socket needed, unlike claude). Verified against
-// codex-cli 0.144.4 by agentcal.
+// proxy or unix socket needed, unlike claude).
+//
+// Method → reply shape (codex-cli ≥0.144.4, verified against 0.147.0):
+//   mcpServer/elicitation/request → {action:"accept"|"decline"} (+ _meta.persist
+//     when Always-allow). This is the default MCP-tool approval path
+//     (feature tool_call_mcp_elicitation, stable + default-on).
+//   item/permissions/requestApproval → {permissions, scope}
+//   execCommandApproval / applyPatchApproval → {decision:"approved"|"denied"}
+//   item/commandExecution/requestApproval / item/fileChange/requestApproval
+//     → {decision:"accept"|"decline"|"acceptForSession"}
+//   item/tool/requestUserInput → {answers} (older-CLI MCP fallback)
+// Unknown methods get JSON-RPC -32601 — never the command-approval {decision}
+// schema. A wrong schema on elicitation is coerced by the CLI into Decline
+// ("user rejected MCP tool call") even when the user clicked Allow.
+//
+// All three allow-paths share one elicitation reply helper: carded Allow,
+// stored Always-allow rules (respondToRequest source "rule"), and fullAuto.
+// fullAuto's approvalPolicy "never" usually stops Codex from eliciting, but
+// if a request still arrives the reply must still be {action}, not {decision}.
 //
 // resumeCursor is the codex thread id; a later turn tries thread/resume
 // and falls back to a fresh thread/start. Persona is
@@ -99,7 +116,13 @@ const CONVERSATIONAL_INPUT_NOTE =
   "Continue in the chat. Do not present A/B/C or multiple-choice options; the user will type their next message. If they asked to create a bot, call the create_bot tool — never the shell.";
 
 const USER_INPUT_METHODS = new Set(["item/tool/requestUserInput", "tool/requestUserInput"]);
+const ELICITATION_METHOD = "mcpServer/elicitation/request";
+const PERMISSIONS_METHOD = "item/permissions/requestApproval";
+const COMMAND_METHODS = new Set(["execCommandApproval", "item/commandExecution/requestApproval"]);
+const EDIT_METHODS = new Set(["applyPatchApproval", "item/fileChange/requestApproval"]);
+const LEGACY_APPROVAL_METHODS = new Set(["execCommandApproval", "applyPatchApproval"]);
 const APPROVAL_OPTION = /^(accept|allow|approve|deny|decline|cancel)(\b|[A-Z\s(-]|$)/i;
+const TOOL_QUOTE = /tool\s+"([^"]+)"/i;
 
 function collectUserInputLabels(params: unknown): string[] {
   const questions = Array.isArray((params as { questions?: unknown })?.questions)
@@ -127,6 +150,48 @@ export function isCodexPermissionUserInput(params: unknown): boolean {
   return labels.length > 0 && labels.every((label) => APPROVAL_OPTION.test(label));
 }
 
+export function isCodexElicitationMethod(method: string): boolean {
+  return method === ELICITATION_METHOD;
+}
+
+export function isCodexPermissionsMethod(method: string): boolean {
+  return method === PERMISSIONS_METHOD;
+}
+
+/** Card copy for an MCP elicitation: tool name from _meta / quoted message /
+ * serverName, summary from the CLI's message. Never "shell". */
+export function codexElicitationCard(params: unknown): { tool: string; summary: string } {
+  const p = (params ?? {}) as Record<string, unknown>;
+  const server = typeof p.serverName === "string" ? p.serverName.trim() : "";
+  const meta = p._meta && typeof p._meta === "object" ? (p._meta as Record<string, unknown>) : {};
+  const titled = typeof meta.tool_title === "string" ? meta.tool_title.trim() : "";
+  const message = typeof p.message === "string" ? p.message.trim() : "";
+  const quoted = message.match(TOOL_QUOTE)?.[1]?.trim() ?? "";
+  const tool = titled || quoted || server || "mcp";
+  const summary = (message || [server, tool].filter(Boolean).join(" ")).slice(0, 200) || tool;
+  return { tool, summary };
+}
+
+type AskFinish = (behavior: string, message?: string, source?: string, always?: boolean) => void;
+
+function elicitationReply(allow: boolean, always?: boolean): Record<string, unknown> {
+  if (!allow) return { action: "decline" };
+  return always === true ? { action: "accept", _meta: { persist: "always" } } : { action: "accept" };
+}
+
+function permissionsReply(params: unknown, allow: boolean, always?: boolean): Record<string, unknown> {
+  if (!allow) return { permissions: {}, scope: "turn" };
+  const requested = (params as { permissions?: unknown })?.permissions;
+  const permissions = requested && typeof requested === "object" ? requested : {};
+  return { permissions, scope: always === true ? "session" : "turn" };
+}
+
+function commandReply(method: string, allow: boolean, always?: boolean): Record<string, unknown> {
+  if (LEGACY_APPROVAL_METHODS.has(method)) return { decision: allow ? "approved" : "denied" };
+  if (allow && always === true) return { decision: "acceptForSession" };
+  return { decision: allow ? "accept" : "decline" };
+}
+
 export const CodexDriver: ProviderDriver<CodexConfig> = {
   driverKind: DRIVER_KIND,
   metadata: { displayName: "Codex", supportsMultipleInstances: true },
@@ -142,7 +207,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     interface Turn {
       stop: () => void;
       turnId: string;
-      asks: Map<string, (behavior: string, message?: string, source?: string) => void>;
+      asks: Map<string, AskFinish>;
     }
     const active = new Map<string, Turn>();
 
@@ -179,7 +244,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       });
 
       const state = { settled: false, lastText: "", sawStreamDelta: false };
-      const asks = new Map<string, (behavior: string, message?: string, source?: string) => void>();
+      const asks = new Map<string, AskFinish>();
       let nextId = 1;
       const rpcPending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 
@@ -212,25 +277,50 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // server→client approval request → canonical request.opened.
       // Conversational requestUserInput (A/B/C "what next") is not a
       // permission ask — auto-answer it so it never becomes an OptionCard.
+      // Each known method has its own reply schema; unknown methods must
+      // not be answered with the command-approval {decision} payload.
       const handleServerRequest = (msg: any) => {
         const method = msg.method as string;
         const params = msg.params ?? {};
-        const legacy = method === "execCommandApproval" || method === "applyPatchApproval";
         const isUserInput = isCodexUserInputMethod(method);
-        const tool =
-          method === "item/fileChange/requestApproval" || method === "applyPatchApproval"
-            ? "edit"
-            : isUserInput
-              ? "ask_user"
-              : "shell";
+        const isElicitation = isCodexElicitationMethod(method);
+        const isPermissions = isCodexPermissionsMethod(method);
+        const isCommand = COMMAND_METHODS.has(method);
+        const isEdit = EDIT_METHODS.has(method);
+        if (!isUserInput && !isElicitation && !isPermissions && !isCommand && !isEdit) {
+          send({
+            jsonrpc: "2.0",
+            id: msg.id,
+            error: { code: -32601, message: `Method not found: ${method}` },
+          });
+          emit({
+            ...base(threadId, turnId),
+            type: "runtime.error",
+            message: `codex requested unsupported method ${method}`,
+          });
+          return;
+        }
+
+        const elicitation = isElicitation ? codexElicitationCard(params) : null;
+        const tool = isEdit
+          ? "edit"
+          : isUserInput
+            ? "ask_user"
+            : isElicitation
+              ? elicitation!.tool
+              : isPermissions
+                ? "permissions"
+                : "shell";
         const summaryPreview =
           typeof params.command === "string"
             ? params.command.slice(0, 200)
-            : Array.isArray(params.questions)
-              ? params.questions.map((q: any) => q.question ?? q.header).filter(Boolean).join(" · ")
-              : typeof params.reason === "string"
-                ? params.reason
-                : tool;
+            : isElicitation
+              ? elicitation!.summary
+              : Array.isArray(params.questions)
+                ? params.questions.map((q: any) => q.question ?? q.header).filter(Boolean).join(" · ")
+                : typeof params.reason === "string"
+                  ? params.reason
+                  : tool;
         const credential = isCredentialAsk(isUserInput ? "question" : "permission", tool, summaryPreview);
         const permissionUserInput = isUserInput && isCodexPermissionUserInput(params);
         const conversational = isUserInput && !permissionUserInput && !credential;
@@ -240,6 +330,17 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             if (q?.id) answers[q.id] = { answers: [message] };
           }
           send({ jsonrpc: "2.0", id: msg.id, result: { answers } });
+        };
+        const reply = (allow: boolean, always?: boolean) => {
+          // Shared by carded Allow/Decline, Always-allow rule auto-resolve
+          // (respondToRequest source "rule"), and fullAuto. Do not special-case
+          // those callers onto the command-approval {decision} schema.
+          const result = isElicitation
+            ? elicitationReply(allow, always)
+            : isPermissions
+              ? permissionsReply(params, allow, always)
+              : commandReply(method, allow, always);
+          send({ jsonrpc: "2.0", id: msg.id, result });
         };
 
         if (conversational) {
@@ -253,7 +354,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             answerUserInput(first || "Accept");
             return;
           }
-          return send({ jsonrpc: "2.0", id: msg.id, result: { decision: legacy ? "approved" : "accept" } });
+          reply(true);
+          return;
         }
         const requestId = newId();
         const summary = summaryPreview;
@@ -266,7 +368,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           summary,
           choices,
         );
-        const finish = (behavior: string, message?: string, source = "user") => {
+        const finish: AskFinish = (behavior, message, source = "user", always) => {
           if (!asks.delete(requestId)) return;
           clearTimeout(timer);
           if (isUserInput) {
@@ -280,11 +382,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                   : QUESTION_TIMEOUT_NOTE;
             answerUserInput(message || fallback);
           } else {
-            send({
-              jsonrpc: "2.0",
-              id: msg.id,
-              result: { decision: behavior === "allow" ? (legacy ? "approved" : "accept") : legacy ? "denied" : "decline" },
-            });
+            reply(behavior === "allow", always === true);
           }
           emit({ ...base(threadId, turnId), type: "request.resolved", requestId, behavior, source });
         };
@@ -539,7 +637,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           const turn = active.get(threadId);
           const finish = turn?.asks.get(requestId);
           if (!finish) throw new Error("no such pending request");
-          finish(decision.behavior, decision.message, decision.source ?? "user");
+          finish(decision.behavior, decision.message, decision.source ?? "user", decision.always);
         },
         hasSession: (threadId) => active.has(threadId),
         stopAll: async () => {
