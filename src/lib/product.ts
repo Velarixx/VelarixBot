@@ -22,11 +22,12 @@ export function formatUsageCost(cost: number | null): string {
   return `$${cost.toFixed(3)}`;
 }
 
-export const ONBOARDING_KEY = "openmausbot:onboarding-complete:v1";
+export const ONBOARDING_KEY = "velarixbot:onboarding-complete:v1";
+const LEGACY_ONBOARDING_KEY = "openmausbot:onboarding-complete:v1";
 
 export function onboardingComplete(): boolean {
   try {
-    return localStorage.getItem(ONBOARDING_KEY) === "true";
+    return localStorage.getItem(ONBOARDING_KEY) === "true" || localStorage.getItem(LEGACY_ONBOARDING_KEY) === "true";
   } catch {
     return false;
   }

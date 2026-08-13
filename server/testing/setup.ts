@@ -1,5 +1,5 @@
 // Vitest setup — every test file gets a throwaway home directory so
-// DATA_DIR (~/.openmausbot) never touches the real one. os.homedir()
+// DATA_DIR (~/.velarixbot) never touches the real one. os.homedir()
 // reads HOME (POSIX) / USERPROFILE (Windows) at call time, and this file
 // runs before any test module imports server/config.ts.
 import { mkdtempSync, rmSync } from "node:fs";
