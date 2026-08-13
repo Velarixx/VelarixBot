@@ -3,7 +3,8 @@
 // invariants on every PR: turn.completed, state transitions, option cards,
 // usage totals, rule auto-resolve, peer-queue drain, memory after a turn
 // (including Codex via another instance's generateText), group-thread fold,
-// and create_bot round trip.
+// and create_bot round trip. The Hermes leg re-runs the availability, full
+// turn, permission-rule, memory, and create_bot invariants on hermesAgent.
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -24,6 +25,13 @@ const grokPeer = { instanceId: "grok-peer", model: "fake-model" };
 const grokCreate = { instanceId: "grok-create", model: "fake-model" };
 const claudeSel = { instanceId: "claude", model: "claude-fake" };
 const codexSel = { instanceId: "codex", model: "fake-codex-model" };
+const hermesSel = { instanceId: "hermes", model: "gpt-5.6-sol" };
+const hermesPerm = { instanceId: "hermes-perm", model: "gpt-5.6-sol" };
+const hermesCreate = { instanceId: "hermes-create", model: "gpt-5.6-sol" };
+
+// Hermes speaks ACP with a chatgpt-oauth-only login — the same fake CLI,
+// advertising the method hermes picks.
+const hermesEnv = { FAKE_ACP_AUTH_IDS: "chatgpt-oauth" };
 
 let h: BootedHarness;
 
@@ -98,11 +106,28 @@ beforeAll(async () => {
         driver: "codex",
         config: { cli: FAKE_CODEX_CLI, fullAuto: true },
       },
+      hermes: {
+        driver: "hermesAgent",
+        environment: { FAKE_ACP_MODE: "happy", ...hermesEnv },
+        config: { cli: FAKE_ACP_CLI, fullAuto: true },
+      },
+      "hermes-perm": {
+        driver: "hermesAgent",
+        // edit-kind asks so the grok leg's workspace-global "shell" Allow
+        // rule (#60) can never pre-resolve this leg's first permission card
+        environment: { FAKE_ACP_MODE: "permission", FAKE_ACP_PERMISSION_KIND: "edit", ...hermesEnv },
+        config: { cli: FAKE_ACP_CLI, fullAuto: false },
+      },
+      "hermes-create": {
+        driver: "hermesAgent",
+        environment: { FAKE_ACP_MODE: "create-bot", FAKE_ACP_CREATE_NAME: "Scribe", ...hermesEnv },
+        config: { cli: FAKE_ACP_CLI, fullAuto: true },
+      },
     },
   });
   const fleet = await h.api("GET", "/api/instances");
   expect(fleet.status).toBe(200);
-  for (const id of ["grok", "grok-perm", "grok-peer", "grok-create", "claude", "codex"]) {
+  for (const id of ["grok", "grok-perm", "grok-peer", "grok-create", "claude", "codex", "hermes", "hermes-perm", "hermes-create"]) {
     const inst = fleet.body.instances.find((i: { instanceId: string }) => i.instanceId === id);
     expect(inst?.snapshot?.state, `${id} should be available via fake CLI`).toBe("available");
   }
@@ -275,6 +300,78 @@ describe("harness HTTP/SSE scenarios (fake CLIs)", () => {
     expect(askerBot.threadParticipants).toEqual(expect.arrayContaining([asker.id, helper.id]));
     const note = askerBot.messages.find((m: { kind: string; tool?: { name?: string } }) => m.kind === "activity" && m.tool?.name?.startsWith("asked @Helper"));
     expect(note).toBeTruthy();
+  }, 40_000);
+
+  it("hermes turn: completed over HTTP/SSE, states, and a memory file after the turn", async () => {
+    const bot = await addBot("Hermes Scout", hermesSel);
+    await send(bot.id, "remember I like short answers");
+
+    const done = await h.sse.until(turnDone(bot.threadId));
+    expect(done.event).toMatchObject({ type: "turn.completed", ok: true });
+    await h.sse.until(botState(bot.id, "RUNNING"));
+    await h.sse.until(botState(bot.id, "DONE"));
+
+    const after = await publicBot(bot.id);
+    expect(after.state).toBe("DONE");
+    expect(after.busy).toBeFalsy();
+    const reply = after.messages.findLast((m: { kind: string; role: string }) => m.kind === "text" && m.role === "bot");
+    expect(reply.text).toContain("hello from fake acp");
+
+    const memory = await untilFile(join(h.home, ".velarixbot", "memory", `${bot.id}.md`), (text) =>
+      text.includes(DISTILL_MARKER) && /concise replies/i.test(text),
+    );
+    expect(memory).toContain(DISTILL_MARKER);
+  }, 40_000);
+
+  it("hermes permission card, then always-allow auto-resolves the second ask as source:rule", async () => {
+    const bot = await addBot("Hermes Perm", hermesPerm);
+    await send(bot.id, "run a command");
+    const opened = await h.sse.until(
+      (f) => f.kind === "runtime" && f.event?.type === "request.opened" && f.event.threadId === bot.threadId,
+    );
+    await h.sse.until(botState(bot.id, "NEEDS_INPUT"));
+    const requestId = opened.event?.requestId;
+    expect(requestId).toBeTruthy();
+    const allow = await h.api("POST", `/api/bots/${bot.id}/respond`, {
+      requestId,
+      behavior: "allow",
+      always: true,
+    });
+    expect(allow.status).toBe(200);
+    const firstDone = await h.sse.until(turnDone(bot.threadId));
+
+    await send(bot.id, "run it again");
+    const resolved = await h.sse.untilAfter(
+      firstDone,
+      (f) =>
+        f.kind === "runtime" &&
+        f.event?.type === "request.resolved" &&
+        f.event.threadId === bot.threadId &&
+        f.event.source === "rule",
+    );
+    expect(resolved.event).toMatchObject({ source: "rule" });
+    await h.sse.untilAfter(resolved, turnDone(bot.threadId));
+    const after = await publicBot(bot.id);
+    const permissionCards = after.messages.filter(
+      (m: { kind: string; card?: { requestId?: string } }) => m.kind === "options" && m.card?.requestId,
+    );
+    expect(permissionCards).toHaveLength(1);
+    expect(permissionCards[0].card.answered).toBe("allow");
+    expect(after.state).toBe("DONE");
+  }, 40_000);
+
+  it("hermes create_bot round-trips through agents MCP onto the sidebar (bot.added)", async () => {
+    const maker = await addBot("Hermes Maker", hermesCreate);
+    await send(maker.id, "please create a scribe bot");
+    const added = await h.sse.until((f) => f.kind === "bot.added" && f.bot?.name === "Scribe");
+    expect(added.bot).toMatchObject({ name: "Scribe", title: "Scribe specialist" });
+    await h.sse.until(turnDone(maker.threadId));
+
+    const makerBot = await publicBot(maker.id);
+    expect(makerBot.messages.some((m: { text?: string }) => String(m.text ?? "").includes("created:"))).toBe(true);
+
+    const roster = (await h.api("GET", "/api/bots")).body.bots as Array<{ name: string; title: string }>;
+    expect(roster.some((b) => b.name === "Scribe" && b.title === "Scribe specialist")).toBe(true);
   }, 40_000);
 
   it("create_bot round-trips through agents MCP onto the sidebar", async () => {

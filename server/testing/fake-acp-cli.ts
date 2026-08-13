@@ -24,6 +24,10 @@
 //                   run both the happy and the fail-closed path against the
 //                   same fake
 //   FAKE_ACP_CREATE_NAME  bot name for create-bot mode (default "Ops")
+//   FAKE_ACP_PERMISSION_KIND  toolCall.kind for permission/credential asks
+//                   (default "execute") — a scenario leg can pick "edit" so
+//                   its always-allow rule never collides with another leg's
+//                   workspace-global "shell" rule in the same harness home
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { spawn } from "node:child_process";
@@ -259,7 +263,7 @@ function handle(msg: any) {
           method: "session/request_permission",
           params: {
             toolCall: {
-              kind: "execute",
+              kind: process.env.FAKE_ACP_PERMISSION_KIND ?? "execute",
               rawInput: { command: signIn ? "Sign in to GitHub. password: hunter2-never-leak" : "echo hi" },
               title: signIn ? "Sign in to GitHub" : "echo hi",
             },

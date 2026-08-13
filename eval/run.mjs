@@ -57,6 +57,7 @@ function seedHome(home, found, env) {
     gemini: { driver: "geminiAgent" },
     computer: { driver: "boxAgent" },
     grok: { driver: found.grok ? "grok" : "grokAgent" },
+    hermes: { driver: "hermesAgent" },
   };
   const cfg = { instances };
   // xAI is optional. Only write the key when it is already present — never required.
@@ -67,6 +68,13 @@ function seedHome(home, found, env) {
     const codexHome = join(home, ".codex");
     mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     writeFileSync(join(codexHome, "auth.json"), env[SECRET_NAMES.codex], { mode: 0o600 });
+  }
+  // Hermes is optional and seeded exactly like Codex: the secret is the full
+  // auth.json contents, written to disk only — never forwarded as env or argv.
+  if (found.hermes) {
+    const hermesHome = join(home, ".hermes");
+    mkdirSync(hermesHome, { recursive: true, mode: 0o700 });
+    writeFileSync(join(hermesHome, "auth.json"), env[SECRET_NAMES.hermes], { mode: 0o600 });
   }
 }
 
@@ -143,6 +151,7 @@ async function main() {
     onboardingCompleted: false,
     botsCreated: [],
     grokSkipped: !found.grok,
+    hermesSkipped: !found.hermes,
     mcpSkipped: !found.codex,
     allowClicked: false,
     allowShown: false,
@@ -161,6 +170,7 @@ async function main() {
       baseUrl: BASE,
       artifactsDir,
       includeGrok: found.grok,
+      includeHermes: found.hermes,
       includeCodexMcp: found.codex,
       maxTurns: cap,
     });
@@ -209,7 +219,7 @@ async function main() {
   }));
   const missing = failMechanical(mechanical, transcripts);
   const report = {
-    secrets: { claude: found.claude, codex: found.codex, grok: found.grok, grokOptional: true },
+    secrets: { claude: found.claude, codex: found.codex, grok: found.grok, grokOptional: true, hermes: found.hermes, hermesOptional: true },
     mechanical,
     judge,
     fail: missing,
