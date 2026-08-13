@@ -162,14 +162,22 @@ describe("harness HTTP API", () => {
   it("describes the configured fleet, shadows included", async () => {
     const { status, body } = await api("GET", "/api/instances");
     expect(status).toBe(200);
-    expect(body.instances).toHaveLength(1);
-    expect(body.instances[0]).toMatchObject({
+    const ghost = body.instances.find((i: { instanceId: string }) => i.instanceId === "ghost");
+    expect(ghost).toMatchObject({
       instanceId: "ghost",
       driverKind: "not-a-real-driver",
       displayName: "Ghost",
       snapshot: { state: "unavailable" },
     });
-    expect(body.instances[0].snapshot.reason).toContain("not-a-real-driver");
+    expect(ghost.snapshot.reason).toContain("not-a-real-driver");
+    const openrouter = body.instances.find((i: { instanceId: string }) => i.instanceId === "openrouter");
+    expect(openrouter?.driverKind).toBe("openrouter");
+    expect(openrouter?.snapshot.state).toBe("unavailable");
+    expect(openrouter?.snapshot.reason).toMatch(/OpenRouter API key/);
+    const omnirouter = body.instances.find((i: { instanceId: string }) => i.instanceId === "omnirouter");
+    expect(omnirouter?.snapshot.state).toBe("unavailable");
+    expect(omnirouter?.snapshot.reason).toMatch(/OmniRouter API key/);
+    expect(JSON.stringify(body)).not.toContain("sk-or-v1-");
   });
 
   it("creates, patches, and deletes a bot", async () => {
@@ -233,6 +241,19 @@ describe("harness HTTP API", () => {
     const githubGet = await api("GET", "/api/config");
     expect(githubGet.body.github).toEqual({ configured: true });
     expect(JSON.stringify(githubGet.body)).not.toContain("ghp_test_secret_token");
+
+    const or = await api("PUT", "/api/config", { openrouter: { key: "sk-or-v1-secret-openrouter" } });
+    expect(or.status).toBe(200);
+    expect(or.body.openrouter).toEqual({ configured: true });
+    expect(JSON.stringify(or.body)).not.toContain("sk-or-v1-secret-openrouter");
+    const afterOr = await api("GET", "/api/instances");
+    const liveOr = afterOr.body.instances.find((i: { instanceId: string }) => i.instanceId === "openrouter");
+    expect(liveOr?.snapshot.state).toBe("available");
+    expect(JSON.stringify(afterOr.body)).not.toContain("sk-or-v1-secret-openrouter");
+    const omni = await api("PUT", "/api/config", { omnirouter: { key: "omni_secret_token" } });
+    expect(omni.status).toBe(200);
+    expect(omni.body.omnirouter).toEqual({ configured: true });
+    expect(JSON.stringify(omni.body)).not.toContain("omni_secret_token");
 
     const nothing = await api("PUT", "/api/config", {});
     expect(nothing.status).toBe(400);

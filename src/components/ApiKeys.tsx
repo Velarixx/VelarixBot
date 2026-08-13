@@ -6,7 +6,7 @@ import { Check, Loader2 } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 
-export type ConfigSection = "composio" | "composioApi" | "box" | "github";
+export type ConfigSection = "composio" | "composioApi" | "box" | "github" | "openrouter" | "omnirouter";
 
 const SECTIONS: Record<
   ConfigSection,
@@ -19,6 +19,8 @@ const SECTIONS: Record<
   },
   box: { body: (v) => ({ box: { token: v } }), flag: (c) => c.box.configured },
   github: { body: (v) => ({ github: { token: v } }), flag: (c) => c.github?.configured ?? false },
+  openrouter: { body: (v) => ({ openrouter: { key: v } }), flag: (c) => c.openrouter?.configured ?? false },
+  omnirouter: { body: (v) => ({ omnirouter: { key: v } }), flag: (c) => c.omnirouter?.configured ?? false },
 };
 
 export function ApiKeyRow({
