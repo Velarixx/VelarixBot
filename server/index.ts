@@ -16,7 +16,7 @@ import type { RuntimeEvent } from "./contracts.ts";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
-import { mentionedBots, Store, type Message } from "./store.ts";
+import { mentionedBots, nextRunAt, Store, type Message, type Usage } from "./store.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const STATIC_DIR = process.env.OMB_STATIC_DIR || null;
@@ -112,6 +112,37 @@ let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
 const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
+const routineByThread = new Map<string, string>();
+
+async function runRoutine(id: string) {
+  const routine = store.routine(id);
+  if (!routine || !routine.enabled || routine.running) return;
+  const bot = store.bot(routine.botId);
+  if (!bot) {
+    store.patchRoutine(id, { enabled: false });
+    store.markRoutine(id, { running: false, lastRunAt: Date.now(), lastResult: "blocked: no such bot" });
+    return;
+  }
+  if (bot.busy) {
+    store.markRoutine(id, { lastRunAt: Date.now(), lastResult: "skipped: bot busy", nextRunAt: nextRunAt(routine.schedule) });
+    return;
+  }
+  store.markRoutine(id, { running: true, lastRunAt: Date.now(), lastResult: "running", nextRunAt: nextRunAt(routine.schedule) });
+  routineByThread.set(bot.threadId, id);
+  try {
+    await startTurn(routine.botId, routine.prompt);
+  } catch (e) {
+    routineByThread.delete(bot.threadId);
+    store.markRoutine(id, { running: false, lastResult: `blocked: ${e instanceof Error ? e.message : String(e)}` });
+  }
+}
+function schedulerTick(now = Date.now()) {
+  for (const routine of store.routines) {
+    if (routine.enabled && !routine.running && routine.nextRunAt <= now) void runRoutine(routine.id);
+  }
+}
+setTimeout(schedulerTick, 25).unref?.();
+setInterval(schedulerTick, 15_000).unref?.();
 
 // ── SSE fan-out to clients ─────────────────────────────────────────────
 const sseClients = new Set<ServerResponse>();
@@ -131,6 +162,7 @@ function broadcast(payload: unknown) {
 // and every client view are projections of it.
 const toolMessageByItem = new Map<string, string>(); // itemId -> messageId
 const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
+const turnUsage = new Map<string, Usage>();
 
 bus.subscribe((event: RuntimeEvent) => {
   broadcast({ kind: "runtime", event });
@@ -148,6 +180,14 @@ bus.subscribe((event: RuntimeEvent) => {
       if (event.sessionId && event.providerInstanceId) {
         store.setResumeCursor(bot.id, event.providerInstanceId, event.sessionId);
       }
+      break;
+    case "turn.started":
+      if (event.turnId) turnUsage.delete(event.turnId);
+      store.patchBot(bot.id, { busy: true, state: "RUNNING", stateDetail: undefined });
+      broadcast({ kind: "bot", bot: store.bot(bot.id) });
+      break;
+    case "thread.token-usage.updated":
+      if (event.turnId) turnUsage.set(event.turnId, { input: event.input, output: event.output, cost: null });
       break;
     case "item.completed":
       if (event.itemType === "assistant_text") {
@@ -184,6 +224,8 @@ bus.subscribe((event: RuntimeEvent) => {
         },
       });
       if (event.requestId) askMessageByRequest.set(event.requestId, message.id);
+      store.patchBot(bot.id, { state: "NEEDS_INPUT" });
+      broadcast({ kind: "bot", bot: store.bot(bot.id) });
       break;
     }
     case "request.resolved": {
@@ -198,17 +240,29 @@ bus.subscribe((event: RuntimeEvent) => {
         }
         if (event.requestId) askMessageByRequest.delete(event.requestId);
       }
+      store.patchBot(bot.id, { state: "RUNNING" });
+      broadcast({ kind: "bot", bot: store.bot(bot.id) });
       break;
     }
     case "runtime.error":
       pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
+      store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
+      broadcast({ kind: "bot", bot: store.bot(bot.id) });
       break;
     case "turn.completed": {
       // the last live frame becomes a settled inline screen message —
       // the screenshot-in-chat moment
       const frame = stopScreenPoller(bot.id);
       if (frame) pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
-      store.patchBot(bot.id, { busy: false, unread: true });
+      const tokens = (event.turnId ? turnUsage.get(event.turnId) : undefined) ?? { input: 0, output: 0, cost: null };
+      store.recordTurnUsage(bot.id, { ...tokens, cost: event.cost ?? null });
+      if (event.turnId) turnUsage.delete(event.turnId);
+      store.patchBot(bot.id, { busy: false, unread: true, state: event.ok ? "DONE" : "BLOCKED", stateDetail: event.stopReason ?? undefined });
+      const routineId = routineByThread.get(event.threadId);
+      if (routineId) {
+        store.markRoutine(routineId, { running: false, lastResult: event.ok ? "DONE" : `BLOCKED: ${event.stopReason ?? "failed"}` });
+        routineByThread.delete(event.threadId);
+      }
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
       break;
     }
@@ -295,6 +349,19 @@ async function startTurn(botId: string, text: string, opts?: { commsDepth?: numb
       { status: 409 },
     );
   }
+  if (bot.computer === "cloud") {
+    const competing = store.bots.find((candidate) => candidate.id !== bot.id && candidate.computer === "cloud" && candidate.busy);
+    if (competing) throw Object.assign(new Error(`shared cloud computer is busy with ${competing.name}`), { status: 409 });
+  }
+  if (bot.computer === "local" && instance.adapter.capabilities.localComputerMcp !== true) {
+    throw Object.assign(new Error("selected provider does not support guarded local computer control"), { status: 409 });
+  }
+  const configured = cfg.instances?.[bot.modelSelection.instanceId];
+  const fullAuto = configured?.config && typeof configured.config === "object" && (configured.config as { fullAuto?: unknown }).fullAuto === true;
+  if (bot.computer === "local" && fullAuto) {
+    store.patchBot(bot.id, { state: "BLOCKED", stateDetail: "local computer cannot be combined with provider full-auto" });
+    throw Object.assign(new Error("unsafe configuration: local computer cannot be combined with provider full-auto"), { status: 409 });
+  }
 
   const userMessage = store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
   broadcast({ kind: "message", threadId: bot.threadId, message: userMessage });
@@ -317,15 +384,15 @@ async function startTurn(botId: string, text: string, opts?: { commsDepth?: numb
   // busy flips immediately so the composer locks; the dispatch itself runs
   // in the background — box provisioning can take ~90s and must never
   // hang the HTTP request
-  store.patchBot(bot.id, { busy: true, unread: false });
+  store.patchBot(bot.id, { busy: true, unread: false, state: "RUNNING", stateDetail: undefined });
   broadcast({ kind: "bot", bot: store.bot(bot.id) });
 
   void (async () => {
     try {
       const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
       if (cfg.composio?.key) integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
-      const wants = bot.computer; // 'cloud' | 'local' | 'off' | undefined(auto)
-      if (wants !== "off" && wants !== "local" && box.boxConfigured(cfg)) {
+      const wants = bot.computer;
+      if (wants === "cloud" && box.boxConfigured(cfg)) {
         let b = await box.findBox(cfg, bot.id).catch(() => null);
         // the Computer driver runs ON the box — provision it on first use
         if (!b && instance.driverKind === "boxAgent") {
@@ -338,7 +405,7 @@ async function startTurn(botId: string, text: string, opts?: { commsDepth?: numb
       // local computer (this Mac) via the Electron-hosted cua-driver: the
       // Electron main process owns the daemon (TCC attribution) and writes
       // its spawn contract to cua-connection.json; the harness only reads it
-      if (!integrations.computer && wants !== "off" && wants !== "cloud") {
+      if (wants === "local") {
         const cua = readCuaConnection();
         if (cua) integrations.localComputer = cua;
       }
@@ -398,7 +465,7 @@ async function startTurn(botId: string, text: string, opts?: { commsDepth?: numb
         tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
       });
       broadcast({ kind: "message", threadId: bot.threadId, message: failure });
-      store.patchBot(bot.id, { busy: false });
+      store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: message.slice(0, 160) });
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
     }
   })();
@@ -410,8 +477,7 @@ function configStatus() {
     xai: { configured: Boolean(cfg.xai?.key) },
     composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
     box: { configured: Boolean(cfg.box?.token) },
-    // not a secret — the sidebar shows it
-    profile: { name: cfg.profile?.name ?? "", email: cfg.profile?.email ?? "" },
+
   };
 }
 
@@ -520,6 +586,22 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // ── persistent routines ──
+    if (method === "GET" && path === "/api/routines") return json(res, 200, { routines: store.routines });
+    if (method === "POST" && path === "/api/routines") {
+      const body = await readBody(req);
+      return json(res, 201, { routine: store.createRoutine({ botId: String(body.botId ?? ""), name: String(body.name ?? ""), prompt: String(body.prompt ?? ""), schedule: body.schedule }) });
+    }
+    let routineMatch = path.match(/^\/api\/routines\/([\w-]+)$/);
+    if (routineMatch && method === "PATCH") {
+      const body = await readBody(req);
+      const routine = store.patchRoutine(routineMatch[1], { name: body.name, prompt: body.prompt, schedule: body.schedule, enabled: body.enabled });
+      return routine ? json(res, 200, { routine }) : json(res, 404, { error: "no such routine" });
+    }
+    if (routineMatch && method === "DELETE") return store.deleteRoutine(routineMatch[1]) ? json(res, 200, { ok: true }) : json(res, 404, { error: "no such routine" });
+    routineMatch = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
+    if (routineMatch && method === "POST") { await runRoutine(routineMatch[1]); return json(res, 202, { ok: true }); }
+
     // ── bots ──
     if (method === "GET" && path === "/api/bots") {
       return json(res, 200, {
@@ -537,6 +619,14 @@ const server = createServer(async (req, res) => {
       const patch: Record<string, unknown> = {};
       for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotExpression", "pinned", "hidden"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
+      }
+      if (patch.computer === "local" || (patch.modelSelection && store.bot(m[1])?.computer === "local")) {
+        const current = store.bot(m[1]);
+        const selected = (patch.modelSelection ?? current?.modelSelection) as { instanceId?: string } | undefined;
+        const configured = selected?.instanceId ? cfg.instances?.[selected.instanceId] : undefined;
+        if (configured?.config && typeof configured.config === "object" && (configured.config as { fullAuto?: unknown }).fullAuto === true) return json(res, 409, { error: "unsafe configuration: local computer cannot be combined with provider full-auto" });
+        const selectedInstance = selected?.instanceId ? registry.get(selected.instanceId) : undefined;
+        if (selectedInstance && selectedInstance.adapter.capabilities.localComputerMcp !== true) return json(res, 409, { error: "selected provider does not support guarded local computer control" });
       }
       const bot = store.patchBot(m[1], patch);
       if (!bot) return json(res, 404, { error: "no such bot" });
@@ -605,6 +695,8 @@ const server = createServer(async (req, res) => {
       if (!bot) return json(res, 404, { error: "no such bot" });
       const instance = registry.get(bot.modelSelection.instanceId);
       await instance?.adapter.interruptTurn(bot.threadId);
+      store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
+      broadcast({ kind: "bot", bot: store.bot(bot.id) });
       return json(res, 200, { ok: true });
     }
 
@@ -627,15 +719,13 @@ const server = createServer(async (req, res) => {
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch: Record<string, object> = {};
-      for (const key of ["xai", "composio", "box", "profile"] as const) {
+      for (const key of ["xai", "composio", "box"] as const) {
         if (body[key] && typeof body[key] === "object") patch[key] = body[key];
       }
       if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to save" });
       saveConfig(patch);
       Object.assign(cfg, loadConfig());
-      // provider keys change the fleet; a profile edit must not kill
-      // in-flight turns with a pointless reload
-      if (Object.keys(patch).some((k) => k !== "profile")) await reloadProviders();
+      await reloadProviders();
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);

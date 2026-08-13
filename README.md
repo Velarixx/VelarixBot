@@ -42,10 +42,12 @@ it keeps the idea (AI as a *messaging app*: a roster of bots you chat with, each
 memory of its thread, model, computer, and apps) and rebuilds it open, local-first, and on the agents you
 already have:
 
-- **Bring your own agents.** Bots run on the `claude`, `codex`, and `grok` CLIs installed on your Mac — your
-  existing logins and subscriptions, no new accounts, no proxy in the middle.
+- **Bring your own agents.** Bots run directly on the `claude`, `codex`, and `grok` CLIs installed on your Mac — your
+  existing CLI login or OAuth session and subscription, no OpenMausBot account and no model proxy in the middle.
 - **Local first.** One small harness server on `127.0.0.1` owns every agent process. Transcripts, keys, and
   events live in `~/.openmausbot`, not a cloud.
+- **Explicit routing.** You choose the provider and model for each bot. If that engine is unavailable, the bot
+  reports a blocked state; OpenMausBot does not silently fail over to another provider or model.
 - **Agents with hands.** Each bot can get a real computer — a cloud Linux desktop it drives while you watch
   live, or your own Mac — plus 500+ apps through Composio Connect.
 
@@ -122,7 +124,17 @@ Secrets are write-only: the UI only ever sees "configured" flags.
 
 **Also in the box:** streaming replies with tool-run activity chips · native macOS dictation from the
 composer mic (on-device Apple speech recognition — desktop app) · SupaMaus cursor mascots with role-aware
-expressions · screenshots of the bot's work folded into the transcript.
+expressions · screenshots of the bot's work folded into the transcript · persistent scheduled routines.
+
+### Bot states, usage, and routines
+
+Every bot shows an explicit runtime state: **Idle**, **Running**, **Done**, **Blocked**, or **Needs input**.
+State details explain blocked or interrupted turns. The sidebar and chat header also show compact provider-reported
+input/output token totals and cost when the provider supplies it; unknown cost is shown as unavailable, never guessed.
+
+Open **Routines** from the sidebar to create a persistent scheduled prompt for a bot, enable or pause it, inspect its
+next/last run, or delete it. Routines are stored locally and run while the harness server is running. A busy bot will
+not start overlapping routine work.
 
 ## How it works
 
@@ -187,6 +199,17 @@ Optional, pasted once in **App Settings** (gear in the sidebar footer):
 | Composio API key (`ak_…`) | The full 500+ app catalog with official logos |
 | Box token ([box.ascii.dev](https://box.ascii.dev)) | Cloud computers for your bots |
 
+## Privacy and shared computers
+
+OpenMausBot includes **no product analytics or telemetry** and does not ask for or collect your name or email.
+First-run completion is only a local browser-profile flag. Engine detection is local, and microphone permission is
+optional and requested only for on-device dictation.
+
+Bot definitions, transcripts, routines, configuration, and credentials are stored under `~/.openmausbot`. This is
+local-first, not per-user encryption: anyone who can use the same macOS account or read that directory can access the
+data. On a shared computer, use a separate OS account and do not configure credentials you are unwilling to share.
+Provider prompts still go directly to the explicitly selected CLI/provider under that provider's own privacy terms.
+
 ```sh
 pnpm typecheck     # app + server
 pnpm build         # typecheck + production build
@@ -194,9 +217,9 @@ pnpm build         # typecheck + production build
 
 ## Status
 
-Early but real — the loop works end to end: message → agent → streamed reply → tools → approvals →
-computer use. Rough edges to expect: routines (scheduled tasks) are a placeholder, sidebar sections aren't
-built yet, and Windows/Linux shells haven't been attempted (the harness itself is portable Node).
+Early but real — the loop works end to end: message → explicitly selected agent/model → streamed reply → tools →
+approvals → computer use, with persistent scheduled routines and visible runtime/usage state. Windows/Linux shells
+haven't been attempted (the harness itself is portable Node).
 
 Contributions welcome — the driver SPI in [`server/contracts.ts`](server/contracts.ts) is deliberately
 small; adding a provider is one file in [`server/drivers/`](server/drivers/) plus a one-line registration.

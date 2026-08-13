@@ -8,6 +8,9 @@ import { OptionCard } from "./OptionCard";
 import { Composer } from "./Composer";
 import { ModelPicker } from "./ModelPicker";
 import { cn } from "@/lib/cn";
+import { formatCompactTokens, formatUsageCost, stateLabel, type BotState } from "@/lib/product";
+
+const stateTone: Record<BotState, string> = { IDLE: "bg-raised text-ink-secondary", RUNNING: "bg-accent/15 text-accent", DONE: "bg-success/15 text-success", BLOCKED: "bg-danger/15 text-danger", NEEDS_INPUT: "bg-warning/15 text-warning" };
 
 /** Long user messages collapse behind a fade so pasted walls of text don't
  * bury the conversation; bots get full markdown. */
@@ -163,8 +166,10 @@ export function ChatView({ bot }: { bot: Bot }) {
           />
           <span className="text-[15px] font-semibold text-ink">{bot.name}</span>
           {bot.busy && <Loader2 size={14} className="animate-spin text-ink-secondary" />}
+          <span title={bot.stateDetail} className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide", stateTone[bot.state ?? "IDLE"])}>{stateLabel(bot.state ?? "IDLE")}</span>
         </button>
         <div className="flex items-center gap-2">
+          <span title="Lifetime provider-reported usage" className="hidden text-[11px] text-ink-secondary xl:inline">{formatCompactTokens((bot.usage?.input ?? 0) + (bot.usage?.output ?? 0))} tokens · {formatUsageCost(bot.usage?.cost ?? null)}</span>
           {bot.busy && (
             <button
               onClick={() => dispatch({ type: "interrupt", botId: bot.id })}

@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import type { MausColor, MausMotion } from "@/lib/mascot";
+import type { BotState, Usage } from "@/lib/product";
 
 export type { MausColor } from "@/lib/mascot";
 
@@ -55,6 +56,10 @@ export interface Bot {
   mascotExpression?: string | null;
   unread: boolean;
   busy?: boolean;
+  state: BotState;
+  stateDetail?: string;
+  usage: Usage;
+  currentTurnUsage?: Usage;
   modelSelection: ModelSelection;
   /** Where this bot's computer runs; unset = auto (cloud box if one exists, else local). */
   computer?: "cloud" | "local" | "off";
@@ -68,8 +73,13 @@ export interface ConfigStatus {
   xai?: { configured: boolean };
   composio: { configured: boolean; apiKeyConfigured?: boolean };
   box: { configured: boolean };
-  /** who's using the app — collected in onboarding, shown in the sidebar */
-  profile?: { name: string; email: string };
+}
+
+export type RoutineSchedule = { kind: "interval"; everyMinutes: number } | { kind: "daily"; time: string };
+export interface Routine {
+  id: string; botId: string; name: string; prompt: string; schedule: RoutineSchedule;
+  enabled: boolean; running: boolean; nextRunAt: number; lastRunAt: number | null;
+  lastResult: string | null; createdAt: number;
 }
 
 /** One row of GET /api/instances — the model picker's data. */
@@ -95,6 +105,8 @@ interface AppState {
   pluginsOpen: boolean;
   computerOpen: boolean;
   appSettingsOpen: boolean;
+  routinesOpen: boolean;
+  routines: Routine[];
   /** in-flight assistant text per threadId (content.delta fold) */
   streaming: Record<string, string>;
   /** latest live frame of a bot's computer, per botId */
@@ -138,6 +150,10 @@ type Action =
   | { type: "togglePlugins"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
   | { type: "toggleAppSettings"; open?: boolean }
+  | { type: "toggleRoutines"; open?: boolean }
+  | { type: "routinesLoaded"; routines: Routine[] }
+  | { type: "routineSaved"; routine: Routine }
+  | { type: "routineDeleted"; routineId: string }
   | {
       type: "updateBot";
       botId: string;
@@ -190,6 +206,12 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, instances: action.instances };
     case "configStatus":
       return { ...state, config: action.config };
+    case "routinesLoaded":
+      return { ...state, routines: action.routines };
+    case "routineSaved":
+      return { ...state, routines: state.routines.some((routine) => routine.id === action.routine.id) ? state.routines.map((routine) => routine.id === action.routine.id ? action.routine : routine) : [action.routine, ...state.routines] };
+    case "routineDeleted":
+      return { ...state, routines: state.routines.filter((routine) => routine.id !== action.routineId) };
     case "select":
       return updateBot(
         withMascotMotion({ ...state, selectedId: action.id }, action.id, "switch"),
@@ -319,10 +341,11 @@ function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open,
         computerOpen: open ? false : state.computerOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
+        routinesOpen: open ? false : state.routinesOpen,
       };
     }
     case "togglePlugins":
-      return { ...state, pluginsOpen: action.open ?? !state.pluginsOpen };
+      return { ...state, pluginsOpen: action.open ?? !state.pluginsOpen, routinesOpen: false };
     case "toggleComputer": {
       const open = action.open ?? !state.computerOpen;
       return {
@@ -330,6 +353,7 @@ function reducer(state: AppState, action: Action): AppState {
         computerOpen: open,
         settingsOpen: open ? false : state.settingsOpen,
         appSettingsOpen: open ? false : state.appSettingsOpen,
+        routinesOpen: open ? false : state.routinesOpen,
       };
     }
     case "toggleAppSettings": {
@@ -340,7 +364,12 @@ function reducer(state: AppState, action: Action): AppState {
         settingsOpen: open ? false : state.settingsOpen,
         computerOpen: open ? false : state.computerOpen,
         pluginsOpen: open ? false : state.pluginsOpen,
+        routinesOpen: open ? false : state.routinesOpen,
       };
+    }
+    case "toggleRoutines": {
+      const open = action.open ?? !state.routinesOpen;
+      return { ...state, routinesOpen: open, settingsOpen: open ? false : state.settingsOpen, computerOpen: open ? false : state.computerOpen, appSettingsOpen: open ? false : state.appSettingsOpen, pluginsOpen: open ? false : state.pluginsOpen };
     }
     case "updateBot": {
       const mascotChanged =
@@ -370,6 +399,8 @@ const initialState: AppState = {
   pluginsOpen: false,
   computerOpen: false,
   appSettingsOpen: false,
+  routinesOpen: false,
+  routines: [],
   streaming: {},
   screens: {},
   provisioning: {},
@@ -546,6 +577,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       api("/api/config")
         .then((config) => alive && rawDispatch({ type: "configStatus", config }))
         .catch(() => {});
+      api("/api/routines")
+        .then(({ routines }) => alive && rawDispatch({ type: "routinesLoaded", routines }))
+        .catch(() => {});
     };
     loadAll();
 
@@ -601,12 +635,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "bot.deleted":
           rawDispatch({ type: "deleteBot", botId: frame.botId });
           break;
+        case "routine":
+          rawDispatch({ type: "routineSaved", routine: frame.routine });
+          break;
+        case "routine.deleted":
+          rawDispatch({ type: "routineDeleted", routineId: frame.routineId });
+          break;
         // a key changed and the fleet hot-reloaded — refresh the picker so
         // newly available providers un-dim immediately
         case "config":
           rawDispatch({
             type: "configStatus",
-            config: { xai: frame.xai, composio: frame.composio, box: frame.box, profile: frame.profile },
+            config: { xai: frame.xai, composio: frame.composio, box: frame.box },
           });
           api("/api/instances")
             .then(({ instances }) => rawDispatch({ type: "instances", instances }))

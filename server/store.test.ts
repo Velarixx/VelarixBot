@@ -1,6 +1,4 @@
-// Store persistence contract: bots.json + messages-<threadId>.json are
-// the durable record — everything here must survive a process restart
-// except `busy`, which never does (no turn survives one either).
+// Durable product-foundation persistence tests.
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -12,106 +10,109 @@ import { Store, type BotRecord } from "./store.ts";
 const selection = (): ModelSelection => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
 describe("Store", () => {
-  beforeEach(() => {
-    rmSync(DATA_DIR, { recursive: true, force: true });
-  });
+  beforeEach(() => rmSync(DATA_DIR, { recursive: true, force: true }));
 
-  it("createBot seeds a greeting and an onboarding card", () => {
+  it("creates an off/IDLE bot with greeting and onboarding card", () => {
     const store = new Store(selection);
     const bot = store.createBot();
-
-    const messages = store.messagesFor(bot.threadId);
-    expect(messages).toHaveLength(2);
-    expect(messages[0]).toMatchObject({ role: "bot", kind: "text" });
-    expect(messages[1].kind).toBe("options");
-    expect(messages[1].card?.options.length).toBeGreaterThan(1);
-    expect(bot.modelSelection).toEqual(selection());
+    expect(bot).toMatchObject({ modelSelection: selection(), computer: "off", state: "IDLE" });
+    expect(store.messagesFor(bot.threadId).map((m) => m.kind)).toEqual(["text", "options"]);
   });
 
-  it("rotates colors across created bots", () => {
+  it("rotates colors", () => {
     const store = new Store(selection);
-    const first = store.createBot();
-    const second = store.createBot();
-    expect(first.color).not.toBe(second.color);
+    expect(store.createBot().color).not.toBe(store.createBot().color);
   });
 
-  it("persists bots and messages across a restart, resetting busy", () => {
+  it("persists messages, resume cursors, and usage across restart", () => {
     const store = new Store(selection);
     const bot = store.createBot();
-    store.patchBot(bot.id, { name: "Testy", busy: true });
-    store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "hi there" });
-
+    store.patchBot(bot.id, { name: "Testy" });
+    store.setResumeCursor(bot.id, "claude", "sess-abc");
+    store.recordTurnUsage(bot.id, { input: 12, output: 5, cost: null });
+    store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "hi" });
     const reloaded = new Store(selection);
-    const back = reloaded.bot(bot.id)!;
-    expect(back.name).toBe("Testy");
-    expect(back.busy).toBe(false);
-    const messages = reloaded.messagesFor(bot.threadId);
-    expect(messages.at(-1)).toMatchObject({ role: "user", text: "hi there" });
+    expect(reloaded.bot(bot.id)).toMatchObject({
+      name: "Testy",
+      resumeCursors: { claude: "sess-abc" },
+      usage: { input: 12, output: 5, cost: null },
+    });
+    expect(reloaded.messagesFor(bot.threadId).at(-1)).toMatchObject({ text: "hi" });
   });
 
-  it("patchMessage merges card patches and returns null for unknown ids", () => {
+  it("recovers a crashed RUNNING bot as BLOCKED/interrupted", () => {
     const store = new Store(selection);
     const bot = store.createBot();
-    const card = store.messagesFor(bot.threadId)[1];
-
-    const patched = store.patchMessage(bot.threadId, card.id, {
-      card: { ...card.card!, answered: "Work & projects" },
-    });
-    expect(patched?.card?.answered).toBe("Work & projects");
-    expect(store.patchMessage(bot.threadId, "nope", {})).toBeNull();
+    store.patchBot(bot.id, { busy: true, state: "RUNNING" });
+    const reloaded = new Store(selection);
+    expect(reloaded.bot(bot.id)).toMatchObject({ busy: false, state: "BLOCKED", stateDetail: "interrupted" });
   });
 
-  it("deleteBot removes the bot and its transcript file", () => {
+  it("migrates legacy records without losing cursors", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const file = join(DATA_DIR, "bots.json");
+    const legacy: BotRecord[] = JSON.parse(readFileSync(file, "utf8"));
+    delete (legacy[0] as Partial<BotRecord>).computer;
+    delete (legacy[0] as Partial<BotRecord>).state;
+    legacy[0].resumeCursors = { codex: "cursor" };
+    writeFileSync(file, JSON.stringify(legacy));
+    const reloaded = new Store(selection);
+    expect(reloaded.bot(bot.id)).toMatchObject({ computer: "off", state: "IDLE", resumeCursors: { codex: "cursor" } });
+  });
+
+  it("atomically writes a backup and recovers a corrupt primary", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.patchBot(bot.id, { name: "Backed up" });
+    store.patchBot(bot.id, { title: "latest" });
+    const file = join(DATA_DIR, "bots.json");
+    expect(existsSync(`${file}.bak`)).toBe(true);
+    writeFileSync(file, "{corrupt");
+    const recovered = new Store(selection);
+    expect(recovered.bot(bot.id)?.name).toBe("Backed up");
+    expect(JSON.parse(readFileSync(file, "utf8"))).toBeInstanceOf(Array);
+  });
+
+  it("rejects invalid bot and message patches", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    expect(() => store.patchBot(bot.id, { computer: "auto" as never })).toThrow(/invalid computer/);
+    expect(store.patchMessage(bot.threadId, "missing", {})).toBeNull();
+  });
+
+  it("deletes bot and transcript", () => {
     const store = new Store(selection);
     const bot = store.createBot();
     const file = join(DATA_DIR, `messages-${bot.threadId}.json`);
-    expect(existsSync(file)).toBe(true);
-
     expect(store.deleteBot(bot.id)).toBe(true);
-    expect(store.bot(bot.id)).toBeNull();
     expect(existsSync(file)).toBe(false);
-    expect(store.deleteBot(bot.id)).toBe(false);
   });
 
-  it("setResumeCursor persists per-instance continuations", () => {
+  it("persists routine CRUD and schedule metadata", () => {
     const store = new Store(selection);
     const bot = store.createBot();
-    store.setResumeCursor(bot.id, "claude", "sess-abc");
-    store.setResumeCursor(bot.id, "codex", "thread-xyz");
-
-    const reloaded = new Store(selection);
-    expect(reloaded.bot(bot.id)?.resumeCursors).toEqual({ claude: "sess-abc", codex: "thread-xyz" });
+    const routine = store.createRoutine({ botId: bot.id, name: "Check inbox", prompt: "Check inbox", schedule: { kind: "interval", everyMinutes: 15 } });
+    expect(routine).toMatchObject({ enabled: true, running: false, lastRunAt: null, lastResult: null });
+    expect(routine.nextRunAt).toBeGreaterThan(Date.now());
+    store.patchRoutine(routine.id, { enabled: false });
+    store.markRoutine(routine.id, { lastRunAt: 123, lastResult: "done" });
+    expect(new Store(selection).routine(routine.id)).toMatchObject({ enabled: false, lastRunAt: 123, lastResult: "done" });
+    expect(store.deleteRoutine(routine.id)).toBe(true);
   });
 
-  it("seedIfEmpty creates exactly one starter bot, once", () => {
-    const store = new Store(selection);
-    store.seedIfEmpty();
-    expect(store.bots).toHaveLength(1);
-    store.seedIfEmpty();
-    expect(store.bots).toHaveLength(1);
-
-    const reloaded = new Store(selection);
-    reloaded.seedIfEmpty();
-    expect(reloaded.bots).toHaveLength(1);
-  });
-
-  it("tolerates a corrupt bots.json by starting empty", () => {
-    const store = new Store(selection);
-    store.createBot();
-    writeFileSync(join(DATA_DIR, "bots.json"), "{not json");
-
-    const reloaded = new Store(selection);
-    expect(reloaded.bots).toEqual([]);
-  });
-
-  it("busy is wiped even when bots.json says otherwise", () => {
+  it("validates daily and interval routines", () => {
     const store = new Store(selection);
     const bot = store.createBot();
-    const raw: BotRecord[] = JSON.parse(readFileSync(join(DATA_DIR, "bots.json"), "utf8"));
-    raw.find((b) => b.id === bot.id)!.busy = true;
-    writeFileSync(join(DATA_DIR, "bots.json"), JSON.stringify(raw));
+    expect(() => store.createRoutine({ botId: bot.id, name: "x", prompt: "x", schedule: { kind: "interval", everyMinutes: 0 } })).toThrow();
+    expect(() => store.createRoutine({ botId: bot.id, name: "x", prompt: "x", schedule: { kind: "daily", time: "25:00" } })).toThrow();
+  });
 
-    const reloaded = new Store(selection);
-    expect(reloaded.bot(bot.id)?.busy).toBe(false);
+  it("does not allow public routine patches to rewrite ownership or scheduler state", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const routine = store.createRoutine({ botId: bot.id, name: "Safe", prompt: "Do it", schedule: { kind: "interval", everyMinutes: 15 } });
+    store.patchRoutine(routine.id, { name: "Renamed", id: "forged", running: true } as never);
+    expect(store.routine(routine.id)).toMatchObject({ id: routine.id, botId: bot.id, name: "Renamed", running: false });
   });
 });

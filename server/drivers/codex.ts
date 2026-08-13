@@ -259,7 +259,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             break;
           }
           case "thread/tokenUsage/updated": {
-            const t = p.tokenUsage?.total;
+            const t = p.tokenUsage?.last ?? p.tokenUsage?.total;
             if (t) {
               emit({
                 ...base(threadId, turnId),

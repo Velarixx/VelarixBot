@@ -160,13 +160,12 @@ describe("harness HTTP API", () => {
     expect(nothing.status).toBe(400);
   });
 
-  it("stores and echoes the user profile (not write-only, unlike keys)", async () => {
+  it("does not accept or echo identity/profile data", async () => {
     const put = await api("PUT", "/api/config", { profile: { name: "Ada Lovelace", email: "Ada@Example.com" } });
-    expect(put.status).toBe(200);
-    expect(put.body.profile).toEqual({ name: "Ada Lovelace", email: "Ada@Example.com" });
-
+    expect(put.status).toBe(400);
     const after = await api("GET", "/api/config");
-    expect(after.body.profile).toEqual({ name: "Ada Lovelace", email: "Ada@Example.com" });
+    expect(after.body.profile).toBeUndefined();
+    expect(JSON.stringify(after.body)).not.toContain("Ada@Example.com");
   });
 
   it("404s unknown routes with the route in the error", async () => {
