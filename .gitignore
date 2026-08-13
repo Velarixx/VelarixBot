@@ -13,3 +13,4 @@ electron/resources/libcua_driver_sdk.dylib
 electron/resources/cua-sdk/
 build/generated-cua-sdk/
 release
+eval-artifacts

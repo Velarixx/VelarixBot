@@ -33,6 +33,7 @@ pnpm dev:desktop   # Electron shell (macOS)
 pnpm typecheck     # app + server
 pnpm test          # vitest suite (server unit + driver contract + API smoke)
 pnpm test:watch    # same, in watch mode
+pnpm eval          # Playwright + judge against :8799 (skips without secrets)
 ```
 
 ## Repo map
