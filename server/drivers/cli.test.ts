@@ -90,11 +90,39 @@ describe("Windows shim parsing", () => {
 });
 
 describe("Windows hidden process contract", () => {
-  it("always hides the PowerShell launcher window", () => {
+  it("hides short-lived harness helpers with windowsHide / CREATE_NO_WINDOW", () => {
     expect(_internal.windowsSpawnOptions({ stdio: ["pipe", "pipe", "pipe"], detached: true })).toMatchObject({
       windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
     });
     expect(_internal.windowsSpawnOptions({ detached: true })).not.toHaveProperty("detached");
+    expect(_internal.windowsSpawnOptions({ windowsHide: false, detached: true })).toMatchObject({ windowsHide: true });
+  });
+
+  it("does not CREATE_NO_WINDOW the CLI tree root so grandchildren inherit a hidden console", () => {
+    const tree = _internal.windowsCliTreeSpawnOptions({
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
+      windowsHide: true,
+    });
+    expect(tree).toMatchObject({ windowsHide: false, stdio: ["pipe", "pipe", "pipe"] });
+    expect(tree).not.toHaveProperty("detached");
+  });
+
+  it("hides the pwsh wrapper via argv, not a shell command string", () => {
+    const { args, cleanup } = _internal.pwshWrapperArgs("C:\\\\codex.exe", ["app-server", "--model", "gpt-5.6-sol"]);
+    try {
+      expect(args).toEqual(
+        expect.arrayContaining(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-File", "-Cli", "-ArgsFile"]),
+      );
+      expect(args.join(" ")).not.toMatch(/cmd\.exe|shell:true/i);
+      const fileIdx = args.indexOf("-File");
+      const argsIdx = args.indexOf("-ArgsFile");
+      expect(args[fileIdx + 1]).toMatch(/wrap\.ps1$/);
+      expect(args[argsIdx + 1]).toMatch(/args\.json$/);
+    } finally {
+      cleanup();
+    }
   });
 });
 
