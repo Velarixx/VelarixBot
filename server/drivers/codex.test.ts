@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { FALLBACK_CODEX_MODELS } from "./codex-models.ts";
-import { CodexDriver } from "./codex.ts";
+import { CodexDriver, isCodexPermissionUserInput, isCodexUserInputMethod } from "./codex.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-codex-app-server.ts");
 const posixOnly = describe.skipIf(process.platform === "win32");
@@ -26,6 +26,47 @@ describe("CodexDriver.decodeConfig", () => {
     expect(CodexDriver.decodeConfig({ fullAuto: true }).fullAuto).toBe(true);
     // anything non-true is off — a truthy string must not enable full auto
     expect(CodexDriver.decodeConfig({ fullAuto: "yes" }).fullAuto).toBe(false);
+  });
+});
+
+describe("Codex requestUserInput classification", () => {
+  it("treats item/tool/requestUserInput as the conversational user-input method", () => {
+    expect(isCodexUserInputMethod("item/tool/requestUserInput")).toBe(true);
+    expect(isCodexUserInputMethod("tool/requestUserInput")).toBe(true);
+    expect(isCodexUserInputMethod("execCommandApproval")).toBe(false);
+    expect(isCodexUserInputMethod("item/fileChange/requestApproval")).toBe(false);
+  });
+
+  it("does not treat A/B/C what-next questions as permission asks", () => {
+    expect(
+      isCodexPermissionUserInput({
+        questions: [
+          {
+            id: "next",
+            question: "What would you like to do?",
+            options: [
+              { label: "Create a Chief of Staff" },
+              { label: "Explore the workspace" },
+              { label: "Something else" },
+            ],
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(isCodexPermissionUserInput({ questions: [{ id: "q", question: "Free form?" }] })).toBe(false);
+  });
+
+  it("still treats Accept/Decline/Cancel user-input as a permission ask", () => {
+    expect(
+      isCodexPermissionUserInput({
+        questions: [
+          {
+            id: "mcp_approve",
+            options: [{ label: "Accept" }, { label: "Decline" }, { label: "Cancel" }],
+          },
+        ],
+      }),
+    ).toBe(true);
   });
 });
 
@@ -252,6 +293,42 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     await recorder.until((e) => e.type === "turn.completed");
   });
 
+  it("does not open OptionCards for conversational requestUserInput", async () => {
+    await create({ mode: "user-input" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-abc", text: "what next" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    expect(recorder.events.some((e) => e.type === "request.opened")).toBe(false);
+    expect(recorder.events.some((e) => e.type === "request.resolved")).toBe(false);
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.decision.answers.next.answers[0]).toMatch(/create_bot|chat/i);
+    expect(JSON.stringify(seen.decision)).not.toMatch(/Create a Chief of Staff/);
+  });
+
+  it("still cards requestUserInput when every option is an approval verb", async () => {
+    await create({ mode: "user-input-approval" });
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({ threadId: "t-mcp-ask", text: "create a bot" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({
+      requestType: "permission",
+      tool: "ask_user",
+      summary: "Allow the agents create_bot tool?",
+      choices: ["Accept", "Decline", "Cancel"],
+    });
+
+    await instance.adapter.respondToRequest("t-mcp-ask", opened.requestId!, { behavior: "allow" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({
+      answers: { mcp_approve: { answers: ["Accept"] } },
+    });
+  });
+
   it("rejects a second turn while one is in flight", async () => {
     await create({ mode: "approval" }); // approval mode parks the turn open
     await instance.adapter.sendTurn({ threadId: "t-busy", text: "one" });
@@ -301,10 +378,14 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     const mcp = seen.threadStartConfig?.mcp_servers;
     expect(mcp).toBeDefined();
+    expect(mcp).toHaveProperty("agents");
+    expect(mcp.agents).toBeDefined();
     expect(mcp.agents).toMatchObject({
+      command: process.execPath,
       args: ["/fake/agents-proxy.js"],
       env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "tok" },
     });
+    expect(mcp.agents.args.at(-1)).toMatch(/agents-proxy\.(ts|js)$/);
     expect(mcp.composio).toEqual({
       url: "https://test.composio.dev/mcp",
       bearer_token_env_var: "CODEX_MCP_COMPOSIO_KEY",
@@ -379,7 +460,14 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     expect(methods).not.toContain("thread/start");
     expect(seen.threadStartConfig).toBeNull();
     const mcp = seen.threadResumeConfig?.mcp_servers;
-    expect(mcp.agents).toMatchObject({ args: ["/fake/agents-proxy.js"] });
+    expect(mcp).toBeDefined();
+    expect(mcp).toHaveProperty("agents");
+    expect(mcp.agents).toBeDefined();
+    expect(mcp.agents).toMatchObject({
+      command: process.execPath,
+      args: ["/fake/agents-proxy.js"],
+    });
+    expect(mcp.agents.args.at(-1)).toMatch(/agents-proxy\.(ts|js)$/);
     expect(mcp.composio).toEqual({
       url: "https://test.composio.dev/mcp",
       bearer_token_env_var: "CODEX_MCP_COMPOSIO_KEY",

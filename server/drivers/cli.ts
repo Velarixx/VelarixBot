@@ -30,13 +30,26 @@ const CMD_META = /[&|<>^%!]/;
 const whereCache = new Map<string, { path: string; at: number }>();
 const WHERE_TTL = 60_000;
 
-/** Windows child-process options shared by every long-running CLI launch.
- * `windowsHide` must be set on the launcher itself: PowerShell's
- * `-WindowStyle Hidden` is processed only after the process starts, which
- * otherwise allows a console window to flash first. */
+/** Windows options for short-lived harness helpers (`where`, `taskkill`,
+ * `cliExec`, the no-pwsh CLI fallback). `windowsHide` maps to
+ * CREATE_NO_WINDOW — the child itself must not flash a console. `detached`
+ * is stripped: on Windows it is DETACHED_PROCESS and the child gets no
+ * console its own descendants can inherit. */
 function windowsSpawnOptions(opts: SpawnOptions): SpawnOptions {
   const { detached: _detached, ...rest } = opts;
   return { ...rest, windowsHide: true };
+}
+
+/** Windows options for the long-lived CLI tree (pwsh wrapper → Codex/Claude
+ * → rust app-server → MCP / command-safety pwsh). CREATE_NO_WINDOW on this
+ * root is a regression: the wrapper stays hidden, but every console-subsystem
+ * grandchild (codex.exe, node MCP, powershell) allocates its own visible
+ * console for the whole turn. `-WindowStyle Hidden` gives the tree one
+ * hidden console to inherit instead. Do not attach to, or hide, the user's
+ * own terminal — this is a new hidden console, not AttachConsole. */
+function windowsCliTreeSpawnOptions(opts: SpawnOptions): SpawnOptions {
+  const { detached: _detached, windowsHide: _hide, ...rest } = opts;
+  return { ...rest, windowsHide: false };
 }
 
 function whereAll(name: string): string[] {
@@ -297,7 +310,7 @@ export function spawnCliHidden(
   // console, and pwsh then exits 0 immediately without running the script
   // or writing a byte, which surfaces as "cli exited 0 before result".
   // Windows reaps the tree with taskkill /T /F, so drop the flag.
-  const winOpts = windowsSpawnOptions(opts);
+  const helperOpts = windowsSpawnOptions(opts);
   const env = { ...(opts.env ?? process.env), ...runEnv };
   const pwsh = resolvePwsh();
   if (!pwsh) {
@@ -307,9 +320,9 @@ export function spawnCliHidden(
           `Install pwsh (winget install Microsoft.PowerShell) or reinstall the CLI natively.`,
       );
     }
-    // no pwsh: plain spawn with the direct child hidden (grandchildren may
-    // flash their own consoles — acceptable degradation)
-    return spawn(command, [...prefix, ...args], { ...winOpts, env }) as ChildProcessWithoutNullStreams;
+    // no pwsh: hide the direct child (CREATE_NO_WINDOW). Grandchildren may
+    // flash their own consoles — acceptable degradation without a wrapper.
+    return spawn(command, [...prefix, ...args], { ...helperOpts, env }) as ChildProcessWithoutNullStreams;
   }
   // pwsh passes argv to native .exe/.js targets verbatim, but a .cmd target
   // re-enters cmd.exe where %VAR% expands even inside quotes — refuse to
@@ -319,14 +332,15 @@ export function spawnCliHidden(
       `refusing to pass cmd.exe metacharacters to the ${command} shim — reinstall the CLI natively or via an installer that ships an .exe`,
     );
   }
-  // Hide the PowerShell process at creation time as well as requesting its
-  // own hidden window style. This prevents the startup flash reported by
-  // installed Windows users while retaining one wrapper for the CLI tree.
+  // Do not set windowsHide/CREATE_NO_WINDOW on this spawn. The wrapper is
+  // hidden via -WindowStyle Hidden so Codex, its rust app-server, MCP
+  // proxies, and command-safety pwsh inherit one hidden console instead of
+  // each opening a visible cmd window for the turn.
   const { args: psArgs, cleanup } = pwshWrapperArgs(command, [...prefix, ...args]);
-  const child = spawn(pwsh, psArgs, { ...winOpts, env }) as ChildProcessWithoutNullStreams;
+  const child = spawn(pwsh, psArgs, { ...windowsCliTreeSpawnOptions(opts), env }) as ChildProcessWithoutNullStreams;
   child.once("close", cleanup);
   return child;
 }
 
 // exposed for tests only
-export const _internal = { shimScriptTarget, whereCache, windowsSpawnOptions };
+export const _internal = { shimScriptTarget, whereCache, windowsSpawnOptions, windowsCliTreeSpawnOptions, pwshWrapperArgs };

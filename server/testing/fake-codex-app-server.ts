@@ -9,6 +9,8 @@
 // real CLI: `{ models: [{ slug, display_name, visibility }] }`.
 //
 //   FAKE_CODEX_MODE   happy (default) | approval | resume | stream | no-models
+//                     | user-input (conversational A/B/C requestUserInput)
+//                     | user-input-approval (requestUserInput Accept/Decline)
 //                     | exit-zero (assistant text, then process.exit(0)
 //                       without turn/completed)
 //                     | exit-early (crash with code 3 before a turn)
@@ -133,6 +135,46 @@ process.stdin.on("data", (chunk) => {
         if (mode === "approval") {
           out({ jsonrpc: "2.0", id: 100, method: "execCommandApproval", params: { command: "rm -rf scratch" } });
           // turn continues from the approval response handler above
+        } else if (mode === "user-input") {
+          out({
+            jsonrpc: "2.0",
+            id: 100,
+            method: "item/tool/requestUserInput",
+            params: {
+              questions: [
+                {
+                  id: "next",
+                  header: "Next",
+                  question: "What would you like to do?",
+                  options: [
+                    { value: "a", label: "Create a Chief of Staff" },
+                    { value: "b", label: "Explore the workspace" },
+                    { value: "c", label: "Something else" },
+                  ],
+                },
+              ],
+            },
+          });
+        } else if (mode === "user-input-approval") {
+          out({
+            jsonrpc: "2.0",
+            id: 100,
+            method: "item/tool/requestUserInput",
+            params: {
+              questions: [
+                {
+                  id: "mcp_approve",
+                  header: "Approve",
+                  question: "Allow the agents create_bot tool?",
+                  options: [
+                    { value: "accept", label: "Accept" },
+                    { value: "decline", label: "Decline" },
+                    { value: "cancel", label: "Cancel" },
+                  ],
+                },
+              ],
+            },
+          });
         } else if (mode === "exit-zero") {
           notify("item/completed", { item: { id: "i1", type: "commandExecution", status: "completed" } });
           notify("item/completed", { item: { id: "m1", type: "agentMessage", text: "done from fake codex" } });

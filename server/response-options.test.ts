@@ -3,6 +3,7 @@ import {
   appendStreamingResponseText,
   parseResponseOptions,
   responseOptionsPrompt,
+  shouldAttachResponseOptions,
   visibleStreamingResponseText,
 } from "./response-options.ts";
 
@@ -67,6 +68,12 @@ describe("response options", () => {
   it("instructs providers to return a few user-selectable choices", () => {
     expect(responseOptionsPrompt).toContain("2 to 4");
     expect(responseOptionsPrompt).toContain("<velarix_options>");
+  });
+
+  it("does not attach post-turn A/B/C cards for Codex", () => {
+    expect(shouldAttachResponseOptions("codex")).toBe(false);
+    expect(shouldAttachResponseOptions("claudeAgent")).toBe(true);
+    expect(shouldAttachResponseOptions("boxAgent")).toBe(true);
   });
 
   it("hides partial and complete option markers from streamed text", () => {

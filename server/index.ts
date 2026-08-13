@@ -20,7 +20,7 @@ import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { deleteBotMemory, distillMemory, memoryPrompt, turnTextFromMessages } from "./memory.ts";
 import { createProactive } from "./proactive.ts";
-import { parseResponseOptions, responseOptionsPrompt } from "./response-options.ts";
+import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "./response-options.ts";
 import { mentionedBots, nextRunAt, Store, type Message, type Usage } from "./store.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
@@ -253,7 +253,9 @@ bus.subscribe((event: RuntimeEvent) => {
       if (event.itemType === "assistant_text") {
         const reply = parseResponseOptions(event.text);
         if (reply.text) pushMessage({ role: "bot", kind: "text", text: reply.text });
-        if (event.turnId) responseOptionsByTurn.set(event.turnId, reply.options);
+        if (event.turnId && shouldAttachResponseOptions(event.provider)) {
+          responseOptionsByTurn.set(event.turnId, reply.options);
+        }
       } else if (event.itemType === "tool" && event.itemId) {
         const messageId = toolMessageByItem.get(event.itemId);
         if (messageId) {
@@ -568,14 +570,14 @@ async function startTurn(
         system:
           persona +
           memoryPrompt(bot.id) +
-          responseOptionsPrompt +
+          (shouldAttachResponseOptions(instance.driverKind) ? responseOptionsPrompt : "") +
           (integrations.computer && instance.driverKind !== "boxAgent"
             ? " You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps."
             : integrations.localComputer
               ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
               : "") +
           (integrations.agents
-            ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar."
+            ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar. Never create bots with the shell, PowerShell, or by writing scripts — only create_bot."
             : "") +
           (tagged.length
             ? ` The user tagged ${tagged
