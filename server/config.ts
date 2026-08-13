@@ -1,11 +1,12 @@
 // Config + data dirs. One file, ~/.velarixbot/config.json, env fallbacks:
 //   { "xai": {"key":"xai-…"}, "composio": {"key":"ck_…"}, "box": {"token":"…"},
+//     "openrouter": {"key":"sk-or-…"}, "omnirouter": {"key":"…"},
 //     "instances": { "<instanceId>": {"driver":"grok", …} } }
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { InstanceConfigMap } from "./contracts.ts";
+import type { InstanceConfig, InstanceConfigMap } from "./contracts.ts";
 
 export interface AppConfig {
   xai?: { key?: string; url?: string };
@@ -16,6 +17,10 @@ export interface AppConfig {
   box?: { token?: string; url?: string };
   /** Personal GitHub token for private VelarixBot Releases (updater). Write-only. */
   github?: { token?: string };
+  /** OpenRouter BYO key (sk-or-…). Write-only. */
+  openrouter?: { key?: string; url?: string };
+  /** OmniRouter BYO key. Write-only. Optional url for a self-hosted gateway. */
+  omnirouter?: { key?: string; url?: string };
 
   instances?: InstanceConfigMap;
 }
@@ -52,6 +57,8 @@ export function loadConfig(): AppConfig {
   cfg.composio = { key: process.env.COMPOSIO_KEY, ...cfg.composio };
   cfg.box = { token: process.env.BOX_TOKEN, ...cfg.box };
   cfg.github = { token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN, ...cfg.github };
+  cfg.openrouter = { key: process.env.OPENROUTER_API_KEY, url: process.env.OPENROUTER_BASE_URL, ...cfg.openrouter };
+  cfg.omnirouter = { key: process.env.OMNIROUTER_API_KEY, url: process.env.OMNIROUTER_BASE_URL, ...cfg.omnirouter };
   return cfg;
 }
 
@@ -65,7 +72,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   } catch {
     /* first write */
   }
-  for (const key of ["xai", "composio", "box", "github"] as const) {
+  for (const key of ["xai", "composio", "box", "github", "openrouter", "omnirouter"] as const) {
     if (patch[key] && typeof patch[key] === "object") {
       disk[key] = { ...(disk[key] as object), ...patch[key] };
     }
@@ -87,20 +94,38 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // it back anytime.
   const map: InstanceConfigMap =
     cfg.instances && Object.keys(cfg.instances).length
-      ? cfg.instances
+      ? { ...cfg.instances }
       : {
           grok: { driver: "grokAgent" },
           gemini: { driver: "geminiAgent" },
           claude: { driver: "claudeAgent" },
           codex: { driver: "codex" },
           computer: { driver: "boxAgent" },
+          openrouter: { driver: "openrouter" },
+          omnirouter: { driver: "omnirouter" },
         };
+  if (!map.openrouter) map.openrouter = { driver: "openrouter" };
+  if (!map.omnirouter) map.omnirouter = { driver: "omnirouter" };
+  map.openrouter = withOptionalUrl(map.openrouter, cfg.openrouter?.url);
+  map.omnirouter = withOptionalUrl(map.omnirouter, cfg.omnirouter?.url);
   for (const entry of Object.values(map)) {
     entry.environment = {
       ...(cfg.xai?.key ? { XAI_API_KEY: cfg.xai.key } : {}),
       ...(cfg.box?.token ? { BOX_TOKEN: cfg.box.token } : {}),
+      ...(cfg.openrouter?.key ? { OPENROUTER_API_KEY: cfg.openrouter.key } : {}),
+      ...(cfg.omnirouter?.key ? { OMNIROUTER_API_KEY: cfg.omnirouter.key } : {}),
       ...entry.environment,
     };
   }
   return map;
+}
+
+function withOptionalUrl(entry: InstanceConfig, url: string | undefined): InstanceConfig {
+  if (!url) return entry;
+  const existing =
+    entry.config && typeof entry.config === "object" && !Array.isArray(entry.config)
+      ? (entry.config as Record<string, unknown>)
+      : {};
+  if (typeof existing.url === "string") return entry;
+  return { ...entry, config: { ...existing, url } };
 }

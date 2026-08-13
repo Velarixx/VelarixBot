@@ -86,6 +86,8 @@ export interface ConfigStatus {
   composio: { configured: boolean; apiKeyConfigured?: boolean };
   box: { configured: boolean };
   github?: { configured: boolean };
+  openrouter?: { configured: boolean };
+  omnirouter?: { configured: boolean };
 }
 
 export type RoutineSchedule = { kind: "interval"; everyMinutes: number } | { kind: "daily"; time: string };
@@ -756,7 +758,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "config":
           rawDispatch({
             type: "configStatus",
-            config: { xai: frame.xai, composio: frame.composio, box: frame.box, github: frame.github },
+            config: {
+              xai: frame.xai,
+              composio: frame.composio,
+              box: frame.box,
+              github: frame.github,
+              openrouter: frame.openrouter,
+              omnirouter: frame.omnirouter,
+            },
           });
           api("/api/instances")
             .then(({ instances }) => rawDispatch({ type: "instances", instances }))

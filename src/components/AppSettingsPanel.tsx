@@ -131,6 +131,8 @@ export function AppSettingsPanel() {
               label="GitHub token (private releases)"
               placeholder="ghp_…  write-only, used only to check VelarixBot releases"
             />
+            <ApiKeyRow section="openrouter" label="OpenRouter key" placeholder="sk-or-…" />
+            <ApiKeyRow section="omnirouter" label="OmniRouter key" placeholder="Paste key — never shown again" />
           </div>
         </div>
 
