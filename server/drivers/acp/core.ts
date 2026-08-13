@@ -139,6 +139,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             env: Object.entries(agents.env).map(([name, value]) => ({ name, value: String(value) })),
           });
         }
+        const composio = turn.integrations?.composio;
+        if (composio) {
+          servers.push({
+            name: "composio",
+            command: composio.command,
+            args: composio.args,
+            env: Object.entries(composio.env).map(([name, value]) => ({ name, value: String(value) })),
+          });
+        }
         return servers;
       };
 

@@ -200,11 +200,11 @@ describe("harness HTTP API", () => {
     const hop = await api(
       "POST",
       "/api/internal/create-bot",
-      { name: "Ops", title: "Ops specialist", description: "Handles ops", depth: 1 },
+      { name: "Ops", title: "Ops specialist", description: "Handles ops", depth: 2 },
       { authorization: `Bearer ${COMMS_TOKEN}` },
     );
     expect(hop.status).toBe(200);
-    expect(hop.body.error).toContain("one hop");
+    expect(hop.body.error).toContain("two hops");
 
     const created = await api(
       "POST",
@@ -262,6 +262,51 @@ describe("harness HTTP API", () => {
     });
     expect(created.status).toBe(201);
     expect(created.body.routine.thenStartTurn).toEqual({ botId: bot.id, prompt: "Follow up." });
+  });
+
+  it("saves a taught skill and attaches it to a routine payload", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const skill = await api("POST", "/api/skills", {
+      botId: bot.id,
+      name: "File a report",
+      markdown: "# File a report\n\n1. Open Chrome\n2. Submit\n",
+    });
+    expect(skill.status).toBe(201);
+    expect(skill.body.skill.markdown).toMatch(/1\. Open Chrome/);
+    const created = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "Taught routine",
+      prompt: "Run the skill",
+      schedule: { kind: "interval", everyMinutes: 30 },
+      skillId: skill.body.skill.id,
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.routine.skillId).toBe(skill.body.skill.id);
+    const listed = await api("GET", "/api/skills");
+    expect(listed.body.skills.some((s: { id: string }) => s.id === skill.body.skill.id)).toBe(true);
+  });
+
+  it("records a teach session into a reviewable skill without a live box", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const start = await api("POST", `/api/bots/${bot.id}/teach/start`);
+    expect(start.status).toBe(200);
+    expect(start.body.recording).toBe(true);
+    const stop = await api("POST", `/api/bots/${bot.id}/teach/stop`, { name: "Empty session" });
+    expect(stop.status).toBe(200);
+    expect(stop.body.skill.markdown).toMatch(/1\./);
+    expect(stop.body.skill.name).toBe("Empty session");
+  });
+
+  it("stores per-bot enabledApps toggles", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const patched = await api("PATCH", `/api/bots/${bot.id}`, { enabledApps: ["googledrive"] });
+    expect(patched.status).toBe(200);
+    expect(patched.body.bot.enabledApps).toEqual(["googledrive"]);
+    const other = await api("POST", "/api/bots");
+    expect(other.body.bot.enabledApps ?? []).toEqual([]);
   });
 
   it("404s unknown routes with the route in the error", async () => {

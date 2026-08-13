@@ -5,7 +5,8 @@
 // continues across turns via --resume <sessionId> (the resumeCursor).
 //
 // Integrations become MCP servers on the CLI:
-//   - Composio Connect (connected apps → tools) over streamable HTTP
+//   - Composio Connect (connected apps → tools) via server/composio-proxy.ts
+//     — per-bot allowed toolkits, key in env not argv
 //   - the bot's cloud computer (box.ascii.dev) via server/computer-proxy.ts
 //     — screenshot/exec/open_url, the CUA-on-the-box bridge
 
@@ -255,12 +256,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // acceptEdits run silently denies anything unlisted)
       const mcpServers: Record<string, unknown> = {};
       const allowed: string[] = [];
-      if (turn.integrations?.composio?.key) {
-        mcpServers.composio = {
-          type: "http",
-          url: turn.integrations.composio.url || "https://connect.composio.dev/mcp",
-          headers: { "x-consumer-api-key": turn.integrations.composio.key },
-        };
+      if (turn.integrations?.composio) {
+        mcpServers.composio = { ...turn.integrations.composio, env: { ...NODE_ENV_FLAG, ...turn.integrations.composio.env } };
         allowed.push("mcp__composio");
       }
       if (turn.integrations?.computer) {

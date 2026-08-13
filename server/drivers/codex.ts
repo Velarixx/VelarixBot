@@ -43,18 +43,16 @@ const PROXY_PATH = proxyPath("computer-proxy");
 // in the packaged app process.execPath is the Electron binary — this env
 // makes it behave as plain node for the spawned MCP proxies (harmless in dev)
 const NODE_ENV_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
-// Composio's HTTP MCP takes a bearer token from this env var name — the
-// raw key stays in the child env, never argv, never the overlay JSON.
-const COMPOSIO_TOKEN_ENV = "CODEX_MCP_COMPOSIO_KEY";
 
 /** Per-turn MCP overlay for thread/start and thread/resume `config`. Empty
  * when the turn has no integrations — callers must not send a config key. */
 function mcpServersFromIntegrations(integrations: SendTurnInput["integrations"]): Record<string, unknown> {
   const mcpServers: Record<string, unknown> = {};
-  if (integrations?.composio?.key) {
+  if (integrations?.composio) {
     mcpServers.composio = {
-      url: integrations.composio.url || "https://connect.composio.dev/mcp",
-      bearer_token_env_var: COMPOSIO_TOKEN_ENV,
+      command: integrations.composio.command,
+      args: integrations.composio.args,
+      env: { ...NODE_ENV_FLAG, ...integrations.composio.env },
     };
   }
   if (integrations?.computer) {
@@ -166,10 +164,6 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // the CLI owns its own ChatGPT login; a leaked API key silently flips
       // billing to pay-as-you-go (agentcal)
       delete env.OPENAI_API_KEY;
-      // inject Composio key as env var that mcp_servers config references
-      if (turn.integrations?.composio?.key) {
-        env[COMPOSIO_TOKEN_ENV] = turn.integrations.composio.key;
-      }
 
       const child = spawnCliHidden(config.cli, ["app-server"], {
         cwd: turn.cwd ?? homedir(),

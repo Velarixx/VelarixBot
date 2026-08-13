@@ -12,16 +12,38 @@ import { attachmentPathRefs, expandAttachmentPaths } from "./attachments.ts";
 import { alwaysAllow, resolveOpenedRequest } from "./approvals.ts";
 import * as box from "./box.ts";
 import * as composio from "./composio.ts";
+import { parseAllowedToolkits } from "./composio-filter.ts";
+import {
+  ASK_BUDGET_MS,
+  COMMS_DEPTH_ERROR,
+  MAX_COMMS_DEPTH,
+  commsGuard,
+  parseVisited,
+  uniqueIds,
+} from "./comms.ts";
 import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
+import { HANDOFF_CONTINUE, HANDOFF_SUBTITLE, HANDOFF_TITLE, sanitizeHandoffSummary } from "./handoff.ts";
 import { deleteBotMemory, distillMemory, memoryPrompt, turnTextFromMessages } from "./memory.ts";
+import { createPeerQueue } from "./peer-queue.ts";
 import { createProactive } from "./proactive.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "./response-options.ts";
 import { mentionedBots, nextRunAt, Store, type Message, type Usage } from "./store.ts";
+import {
+  deleteSkillsForBot,
+  distillSkill,
+  getSkill,
+  loadSkills,
+  saveSkill,
+  deleteSkill,
+  skillPrompt,
+  type TeachEvent,
+  type TeachFrame,
+} from "./teach.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const STATIC_DIR = process.env.OMB_STATIC_DIR || null;
@@ -49,18 +71,21 @@ bus.attach(registry.instances());
 // agents-proxy calls; regenerated each boot (the proxy gets it via env).
 const COMMS_TOKEN = process.env.OMB_COMMS_TOKEN || randomBytes(24).toString("hex");
 // Cap message chains: depth 0 = a user-initiated turn (may ask a peer);
-// a peer invoked via ask_bot runs at depth 1 and gets NO agents tool, so
-// A→B is allowed but B→C (and A→B→A loops) never start.
-const MAX_COMMS_DEPTH = 1;
-// proxy entry: .ts in dev (node type-strips), .js in the packaged dist-server
+// a peer invoked via ask_bot runs at depth 1 and may ask once more;
+// depth 2 gets NO agents tool. A visited-set blocks A→B→A loops.
+// MAX_COMMS_DEPTH lives in comms.ts so tests can pin it without the server.
 const agentsProxyPath = (() => {
   const ts = join(dirname(fileURLToPath(import.meta.url)), "drivers", "agents-proxy.ts");
+  return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
+})();
+const composioProxyPath = (() => {
+  const ts = join(dirname(fileURLToPath(import.meta.url)), "composio-proxy.ts");
   return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
 })();
 // in the packaged app process.execPath is Electron — run the proxy as node
 const AGENTS_NODE_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
 
-function agentsIntegration(botId: string, depth: number) {
+function agentsIntegration(botId: string, depth: number, visited: string[] = [], groupThreadId?: string) {
   return {
     command: process.execPath,
     args: [agentsProxyPath],
@@ -70,6 +95,21 @@ function agentsIntegration(botId: string, depth: number) {
       OMB_BOT_ID: botId,
       OMB_COMMS_TOKEN: COMMS_TOKEN,
       OMB_TURN_DEPTH: String(depth),
+      OMB_VISITED: visited.join(","),
+      ...(groupThreadId ? { OMB_GROUP_THREAD_ID: groupThreadId } : {}),
+    },
+  };
+}
+
+function composioIntegration(allowedApps: string[]) {
+  return {
+    command: process.execPath,
+    args: [composioProxyPath],
+    env: {
+      ...AGENTS_NODE_FLAG,
+      OMB_COMPOSIO_URL: cfg.composio?.url || "",
+      OMB_COMPOSIO_KEY: cfg.composio!.key!,
+      OMB_ALLOWED_TOOLKITS: allowedApps.join(","),
     },
   };
 }
@@ -77,10 +117,16 @@ function agentsIntegration(botId: string, depth: number) {
 /** Run a turn on `targetBotId` and resolve with its assistant text — the
  * synchronous half of ask_bot. Subscribes to the bus, folds assistant_text
  * for that thread, resolves on turn.completed (or a 4-min ceiling). */
-function askBotAndWait(targetBotId: string, message: string, depth: number): Promise<string> {
+function askBotAndWait(
+  targetBotId: string,
+  message: string,
+  depth: number,
+  opts?: { visited?: string[]; groupThreadId?: string },
+): Promise<string> {
   const target = store.bot(targetBotId);
   if (!target) return Promise.resolve("(no such bot)");
   const threadId = target.threadId;
+  const groupThreadId = opts?.groupThreadId;
   return new Promise((resolve) => {
     let text = "";
     let done = false;
@@ -89,6 +135,14 @@ function askBotAndWait(targetBotId: string, message: string, depth: number): Pro
       done = true;
       clearTimeout(timer);
       unsub();
+      if (groupThreadId && out && !out.startsWith("(couldn't start") && !out.startsWith("(timed out") && !out.startsWith("(no such")) {
+        const note = store.appendMessage(groupThreadId, {
+          role: "bot",
+          kind: "text",
+          text: `@${target.name}: ${out}`,
+        });
+        broadcast({ kind: "message", threadId: groupThreadId, message: note });
+      }
       resolve(out);
     };
     const unsub = bus.subscribe((e: RuntimeEvent) => {
@@ -100,8 +154,12 @@ function askBotAndWait(targetBotId: string, message: string, depth: number): Pro
         finish(text || "(the bot finished without a text reply)");
       }
     });
-    const timer = setTimeout(() => finish(text || "(timed out waiting for the bot to reply)"), 4 * 60_000);
-    startTurn(targetBotId, message, { commsDepth: depth + 1 }).catch((err) =>
+    const timer = setTimeout(() => finish(text || "(timed out waiting for the bot to reply)"), ASK_BUDGET_MS);
+    startTurn(targetBotId, message, {
+      commsDepth: depth + 1,
+      visited: uniqueIds([...(opts?.visited ?? []), targetBotId]),
+      groupThreadId,
+    }).catch((err) =>
       finish(`(couldn't start that bot: ${err instanceof Error ? err.message : String(err)})`),
     );
   });
@@ -157,6 +215,61 @@ store.seedIfEmpty();
 const routineByThread = new Map<string, string>();
 const pendingAskByRequest = new Map<string, { botId: string; tool: string; summary: string; requestType: string }>();
 
+const idleListeners = new Set<(botId: string) => void>();
+function notifyIdle(botId: string) {
+  for (const listener of [...idleListeners]) listener(botId);
+}
+const peerQueue = createPeerQueue({
+  isBusy: (botId) => store.bot(botId)?.busy === true,
+  onIdle: (listener) => {
+    idleListeners.add(listener);
+    return () => idleListeners.delete(listener);
+  },
+  budgetMs: ASK_BUDGET_MS,
+});
+
+type TeachSession = { botId: string; events: TeachEvent[]; frames: TeachFrame[]; unsub: () => void };
+const teachSessions = new Map<string, TeachSession>();
+function startTeachSession(botId: string) {
+  const bot = store.bot(botId);
+  if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
+  teachSessions.get(botId)?.unsub();
+  const events: TeachEvent[] = [];
+  const frames: TeachFrame[] = [];
+  const unsub = bus.subscribe((event: RuntimeEvent) => {
+    if (event.threadId !== bot.threadId) return;
+    const itemType = "itemType" in event ? event.itemType : undefined;
+    const title = "title" in event ? event.title : undefined;
+    const text = "text" in event ? event.text : undefined;
+    const tool = "tool" in event ? event.tool : undefined;
+    events.push({
+      type: event.type,
+      ...(typeof itemType === "string" ? { itemType } : {}),
+      ...(typeof title === "string" ? { title } : {}),
+      ...(typeof text === "string" ? { text } : {}),
+      ...(typeof tool === "string" ? { tool } : {}),
+      createdAt: event.createdAt,
+    });
+  });
+  teachSessions.set(botId, { botId, events, frames, unsub });
+  return { ok: true, recording: true };
+}
+async function stopTeachSession(botId: string, name?: string) {
+  const session = teachSessions.get(botId);
+  if (!session) throw Object.assign(new Error("no teach session in progress"), { status: 404 });
+  session.unsub();
+  teachSessions.delete(botId);
+  const instance = registry.get(store.bot(botId)?.modelSelection.instanceId ?? "");
+  const markdown = await distillSkill({
+    name: name?.trim() || "Taught skill",
+    events: session.events,
+    frames: session.frames,
+    generateText: instance?.generateText?.bind(instance),
+  });
+  const skill = saveSkill({ name: name?.trim() || "Taught skill", botId, markdown });
+  return { skill };
+}
+
 const proactive = createProactive({
   now: () => Date.now(),
   onNudge: (botId) => {
@@ -187,7 +300,8 @@ async function runRoutine(id: string) {
   store.markRoutine(id, { running: true, lastRunAt: Date.now(), lastResult: "running", nextRunAt: nextRunAt(routine.schedule) });
   routineByThread.set(bot.threadId, id);
   try {
-    await startTurn(routine.botId, routine.prompt);
+    const skill = routine.skillId ? getSkill(routine.skillId) : null;
+    await startTurn(routine.botId, skillPrompt(skill, routine.prompt));
   } catch (e) {
     routineByThread.delete(bot.threadId);
     store.markRoutine(id, { running: false, lastResult: `blocked: ${e instanceof Error ? e.message : String(e)}` });
@@ -297,13 +411,22 @@ bus.subscribe((event: RuntimeEvent) => {
         }
       }
       const permission = event.requestType === "permission";
+      const credential = event.requestType === "credential";
       const message = pushMessage({
         role: "bot",
         kind: "options",
         card: {
-          title: permission ? "Approval needed" : "Your bot has a question",
-          subtitle: event.summary,
-          options: event.choices?.length ? event.choices : permission ? ["Allow", "Deny"] : [],
+          title: credential ? HANDOFF_TITLE : permission ? "Approval needed" : "Your bot has a question",
+          subtitle: credential
+            ? sanitizeHandoffSummary(event.summary) || HANDOFF_SUBTITLE
+            : event.summary,
+          options: event.choices?.length
+            ? event.choices
+            : credential
+              ? [HANDOFF_CONTINUE]
+              : permission
+                ? ["Allow", "Deny"]
+                : [],
           requestId: event.requestId,
           requestType: event.requestType,
         },
@@ -337,6 +460,7 @@ bus.subscribe((event: RuntimeEvent) => {
       pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
       store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
       proactive.noteState(bot.id, "BLOCKED");
+      notifyIdle(bot.id);
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
       break;
     case "turn.completed": {
@@ -362,6 +486,7 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       store.patchBot(bot.id, { busy: false, unread: true, state: event.ok ? "DONE" : "BLOCKED", stateDetail: event.stopReason ?? undefined });
       proactive.noteState(bot.id, event.ok ? "DONE" : "BLOCKED");
+      notifyIdle(bot.id);
       const routineId = routineByThread.get(event.threadId);
       if (routineId) {
         const routine = store.routine(routineId);
@@ -402,6 +527,7 @@ function startScreenPoller(botId: string) {
       const { png, format } = await box.screenshotBox(cfg, botId);
       const frame = { png, mime: format === "jpeg" ? "image/jpeg" : "image/png" };
       entry.last = frame;
+      teachSessions.get(botId)?.frames.push({ at: Date.now() });
       broadcast({ kind: "screen", botId, ...frame });
     } catch {
       /* box asleep or mid-command — try again next tick */
@@ -464,13 +590,20 @@ function readCuaConnection(): { command: string; args: string[]; env: Record<str
 async function startTurn(
   botId: string,
   text: string,
-  opts?: { commsDepth?: number; attachments?: Array<{ path: string; mime?: string }> },
+  opts?: {
+    commsDepth?: number;
+    attachments?: Array<{ path: string; mime?: string }>;
+    visited?: string[];
+    groupThreadId?: string;
+  },
 ) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
   if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
   proactive.reset(botId);
   const commsDepth = opts?.commsDepth ?? 0;
+  const visited = uniqueIds([...(opts?.visited ?? []), bot.id]);
+  const groupThreadId = opts?.groupThreadId ?? (commsDepth === 0 ? bot.threadId : undefined);
 
   const instance = registry.get(bot.modelSelection.instanceId);
   if (!instance) {
@@ -478,10 +611,6 @@ async function startTurn(
       new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`),
       { status: 409 },
     );
-  }
-  if (bot.computer === "cloud") {
-    const competing = store.bots.find((candidate) => candidate.id !== bot.id && candidate.computer === "cloud" && candidate.busy);
-    if (competing) throw Object.assign(new Error(`shared cloud computer is busy with ${competing.name}`), { status: 409 });
   }
   if (bot.computer === "local" && instance.adapter.capabilities.localComputerMcp !== true) {
     throw Object.assign(new Error("selected provider does not support guarded local computer control"), { status: 409 });
@@ -523,7 +652,9 @@ async function startTurn(
   void (async () => {
     try {
       const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
-      if (cfg.composio?.key) integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
+      if (cfg.composio?.key && bot.enabledApps?.length) {
+        integrations.composio = composioIntegration(bot.enabledApps);
+      }
       const wants = bot.computer;
       if (wants === "cloud" && box.boxConfigured(cfg)) {
         let b = await box.findBox(cfg, bot.id).catch(() => null);
@@ -548,7 +679,7 @@ async function startTurn(
       // recursion stop. Only drivers that mount the tools get the integration
       // (and the prompt hint). Any bot can still be the TARGET of ask_bot.
       if (commsDepth < MAX_COMMS_DEPTH && instance.adapter.capabilities.agentsMcp === true) {
-        integrations.agents = agentsIntegration(bot.id, commsDepth);
+        integrations.agents = agentsIntegration(bot.id, commsDepth, visited, groupThreadId);
       }
       // @mentions in the user's message (the composer's tagging UI) become
       // an explicit delegation nudge — the agent still does the ask_bot call
@@ -559,6 +690,11 @@ async function startTurn(
             store.bots.filter((b) => b.id !== bot.id),
           )
         : [];
+      if (tagged.length) {
+        store.patchBot(bot.id, {
+          threadParticipants: uniqueIds([bot.id, ...(bot.threadParticipants ?? []), ...tagged.map((t) => t.id)]),
+        });
+      }
 
       await instance.adapter.sendTurn({
         threadId: bot.threadId,
@@ -577,12 +713,12 @@ async function startTurn(
               ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
               : "") +
           (integrations.agents
-            ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar. Never create bots with the shell, PowerShell, or by writing scripts — only create_bot."
+            ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply — the reply stays in this transcript, do not ask the user to relay it. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar. Never create bots with the shell, PowerShell, or by writing scripts — only create_bot."
             : "") +
           (tagged.length
             ? ` The user tagged ${tagged
                 .map((t) => `@${t.name} (ask_bot bot_id ${t.id})`)
-                .join(" and ")} in their message — bring them in with ask_bot and fold their reply into your answer.`
+                .join(" and ")} in their message — bring them into this group thread with ask_bot. Their replies belong in this transcript; do not route handoffs through the user.`
             : ""),
         integrations,
         requireApproval: bot.requireApproval === true,
@@ -598,6 +734,7 @@ async function startTurn(
       broadcast({ kind: "message", threadId: bot.threadId, message: failure });
       store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: message.slice(0, 160) });
       proactive.noteState(bot.id, "BLOCKED");
+      notifyIdle(bot.id);
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
     }
   })();
@@ -672,26 +809,32 @@ const server = createServer(async (req, res) => {
         const toBotId = String(body.toBotId ?? "");
         const message = String(body.message ?? "").trim();
         const depth = Number(body.depth ?? 0) || 0;
+        const visited = parseVisited(body.visited ?? body.visitedIds);
         if (!toBotId || !message) return json(res, 400, { error: "toBotId and message required" });
-        if (toBotId === fromBotId) return json(res, 400, { error: "a bot cannot message itself" });
-        if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: "message chains are limited to one hop" });
+        const guard = commsGuard(fromBotId, toBotId, depth, visited);
+        if (!guard.ok) return json(res, 200, { error: guard.error });
         const target = store.bot(toBotId);
         if (!target) return json(res, 404, { error: "no such bot" });
-        if (target.busy) return json(res, 200, { busy: true });
-        // visibility: surface the cross-talk on the caller's own thread so
-        // bot-to-bot turns are never invisible (they cost the user tokens)
         const from = store.bot(fromBotId);
         const fromName = from?.name ?? "another bot";
-        if (from) {
-          const note = store.appendMessage(from.threadId, {
+        const groupThreadId =
+          (typeof body.groupThreadId === "string" && body.groupThreadId.trim()) || from?.threadId || undefined;
+        if (from && groupThreadId) {
+          store.patchBot(from.id, {
+            threadParticipants: uniqueIds([from.id, ...(from.threadParticipants ?? []), toBotId]),
+          });
+          const note = store.appendMessage(groupThreadId, {
             role: "bot",
             kind: "activity",
             tool: { name: `asked @${target.name}: ${message.slice(0, 80)}` },
           });
-          broadcast({ kind: "message", threadId: from.threadId, message: note });
+          broadcast({ kind: "message", threadId: groupThreadId, message: note });
+          broadcast({ kind: "bot", bot: store.bot(from.id) });
         }
         const prefixed = `[Message from @${fromName}, another bot in this VelarixBot workspace. Reply to them.]\n\n${message}`;
-        const reply = await askBotAndWait(toBotId, prefixed, depth);
+        const reply = await peerQueue.enqueue(toBotId, () =>
+          askBotAndWait(toBotId, prefixed, depth, { visited: guard.chain, groupThreadId }),
+        );
         return json(res, 200, { botName: target.name, text: reply });
       }
       if (method === "POST" && path === "/api/internal/create-bot") {
@@ -703,7 +846,7 @@ const server = createServer(async (req, res) => {
         const model = String(body.model ?? "").trim();
         const depth = Number(body.depth ?? 0) || 0;
         if (!name || !title || !description) return json(res, 400, { error: "name, title, and description required" });
-        if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: "message chains are limited to one hop" });
+        if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: COMMS_DEPTH_ERROR });
         const created = await createSidebarBot({ name, title, description, ...(model ? { model } : {}) });
         const from = store.bot(fromBotId);
         if (from) {
@@ -746,17 +889,55 @@ const server = createServer(async (req, res) => {
     if (method === "GET" && path === "/api/routines") return json(res, 200, { routines: store.routines });
     if (method === "POST" && path === "/api/routines") {
       const body = await readBody(req);
-      return json(res, 201, { routine: store.createRoutine({ botId: String(body.botId ?? ""), name: String(body.name ?? ""), prompt: String(body.prompt ?? ""), schedule: body.schedule, thenStartTurn: body.thenStartTurn }) });
+      return json(res, 201, { routine: store.createRoutine({ botId: String(body.botId ?? ""), name: String(body.name ?? ""), prompt: String(body.prompt ?? ""), schedule: body.schedule, thenStartTurn: body.thenStartTurn, skillId: body.skillId }) });
     }
     let routineMatch = path.match(/^\/api\/routines\/([\w-]+)$/);
     if (routineMatch && method === "PATCH") {
       const body = await readBody(req);
-      const routine = store.patchRoutine(routineMatch[1], { name: body.name, prompt: body.prompt, schedule: body.schedule, enabled: body.enabled, thenStartTurn: body.thenStartTurn });
+      const routine = store.patchRoutine(routineMatch[1], { name: body.name, prompt: body.prompt, schedule: body.schedule, enabled: body.enabled, thenStartTurn: body.thenStartTurn, skillId: body.skillId });
       return routine ? json(res, 200, { routine }) : json(res, 404, { error: "no such routine" });
     }
     if (routineMatch && method === "DELETE") return store.deleteRoutine(routineMatch[1]) ? json(res, 200, { ok: true }) : json(res, 404, { error: "no such routine" });
     routineMatch = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
     if (routineMatch && method === "POST") { await runRoutine(routineMatch[1]); return json(res, 202, { ok: true }); }
+
+    // ── taught skills ──
+    if (method === "GET" && path === "/api/skills") return json(res, 200, { skills: loadSkills() });
+    if (method === "POST" && path === "/api/skills") {
+      const body = await readBody(req);
+      const skill = saveSkill({
+        name: String(body.name ?? ""),
+        botId: String(body.botId ?? ""),
+        markdown: String(body.markdown ?? ""),
+        id: typeof body.id === "string" ? body.id : undefined,
+      });
+      return json(res, 201, { skill });
+    }
+    let skillMatch = path.match(/^\/api\/skills\/([\w-]+)$/);
+    if (skillMatch && method === "GET") {
+      const skill = getSkill(skillMatch[1]);
+      return skill ? json(res, 200, { skill }) : json(res, 404, { error: "no such skill" });
+    }
+    if (skillMatch && method === "PATCH") {
+      const existing = getSkill(skillMatch[1]);
+      if (!existing) return json(res, 404, { error: "no such skill" });
+      const body = await readBody(req);
+      const skill = saveSkill({
+        id: existing.id,
+        name: String(body.name ?? existing.name),
+        botId: String(body.botId ?? existing.botId),
+        markdown: String(body.markdown ?? existing.markdown),
+      });
+      return json(res, 200, { skill });
+    }
+    if (skillMatch && method === "DELETE") return deleteSkill(skillMatch[1]) ? json(res, 200, { ok: true }) : json(res, 404, { error: "no such skill" });
+
+    let teachMatch = path.match(/^\/api\/bots\/([\w-]+)\/teach\/(start|stop)$/);
+    if (teachMatch && method === "POST") {
+      if (teachMatch[2] === "start") return json(res, 200, startTeachSession(teachMatch[1]));
+      const body = await readBody(req).catch(() => ({}));
+      return json(res, 200, await stopTeachSession(teachMatch[1], typeof body.name === "string" ? body.name : undefined));
+    }
 
     // ── bots ──
     if (method === "GET" && path === "/api/bots") {
@@ -772,9 +953,10 @@ const server = createServer(async (req, res) => {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: Record<string, unknown> = {};
-      for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotExpression", "pinned", "hidden", "requireApproval"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotExpression", "pinned", "hidden", "requireApproval", "enabledApps", "threadParticipants"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
+      if (patch.enabledApps !== undefined) patch.enabledApps = parseAllowedToolkits(patch.enabledApps);
       if (patch.computer === "local" && process.env.OMB_LOCAL_CUA_SUPPORTED === "0") {
         return json(res, 409, { error: "local computer control is not available on Windows; choose Cloud box or Off" });
       }
@@ -798,7 +980,10 @@ const server = createServer(async (req, res) => {
       // a running turn dies with its bot
       await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
       stopScreenPoller(bot.id);
+      teachSessions.get(bot.id)?.unsub();
+      teachSessions.delete(bot.id);
       deleteBotMemory(bot.id);
+      deleteSkillsForBot(bot.id);
       store.deleteBot(bot.id);
       for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
         try {
@@ -873,6 +1058,7 @@ const server = createServer(async (req, res) => {
       await instance?.adapter.interruptTurn(bot.threadId);
       store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
       proactive.noteState(bot.id, "BLOCKED");
+      notifyIdle(bot.id);
       broadcast({ kind: "bot", bot: store.bot(bot.id) });
       return json(res, 200, { ok: true });
     }

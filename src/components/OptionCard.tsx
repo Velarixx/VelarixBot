@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { X } from "lucide-react";
-import { useStore, type Message } from "@/state/store";
+import { useEffect, useRef, useState } from "react";
+import { ExternalLink, X } from "lucide-react";
+import { api, useStore, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 
 const LETTERS = ["A", "B", "C", "D", "E", "F"];
@@ -14,9 +14,29 @@ export function OptionCard({
 }) {
   const { dispatch } = useStore();
   const [custom, setCustom] = useState("");
+  const [joining, setJoining] = useState(false);
+  const openedDesktop = useRef(false);
   const card = message.card;
+  const permission = card?.requestType === "permission" || (!card?.requestType && !!card?.requestId && card.title === "Approval needed");
+  const credential = card?.requestType === "credential";
+
+  const openDesktop = () => {
+    setJoining(true);
+    api(`/api/bots/${botId}/computer/join`, { method: "POST" })
+      .then((result) => {
+        if (result.joinUrl) window.open(result.joinUrl);
+      })
+      .catch(() => {})
+      .finally(() => setJoining(false));
+  };
+
+  useEffect(() => {
+    if (!credential || !card || card.answered || card.dismissed || openedDesktop.current) return;
+    openedDesktop.current = true;
+    openDesktop();
+  }, [credential, card?.answered, card?.dismissed, botId]);
+
   if (!card || card.dismissed) return null;
-  const permission = card.requestType === "permission" || (!card.requestType && !!card.requestId && card.title === "Approval needed");
 
   const answer = (text: string) => {
     if (!text.trim()) return;
@@ -42,6 +62,17 @@ export function OptionCard({
         </button>
       </div>
 
+      {credential && !card.answered && (
+        <button
+          onClick={openDesktop}
+          disabled={joining}
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-raised py-2.5 text-[14px] text-ink hover:bg-raised-hover disabled:opacity-50"
+        >
+          <ExternalLink size={14} />
+          {joining ? "Opening desktop…" : "Open desktop"}
+        </button>
+      )}
+
       <div className="mt-3 overflow-hidden rounded-lg border border-hairline/40">
         {card.options.map((opt, i) => (
           <button
@@ -64,7 +95,7 @@ export function OptionCard({
         ))}
       </div>
 
-      {!card.answered && (
+      {!card.answered && !credential && (
         <input
           value={custom}
           onChange={(e) => setCustom(e.target.value)}

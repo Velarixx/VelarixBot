@@ -14,17 +14,26 @@
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_ACP_MODE ?? "happy";
 const argv = process.argv.slice(2);
+const dumpPath = process.env.FAKE_ACP_DUMP;
+function writeDump(patch: Record<string, unknown>) {
+  if (!dumpPath) return;
+  let existing: Record<string, unknown> = {};
+  try {
+    existing = JSON.parse(readFileSync(dumpPath, "utf8"));
+  } catch {
+    existing = { argv, env: process.env };
+  }
+  writeFileSync(dumpPath, JSON.stringify({ ...existing, argv, env: process.env, ...patch }, null, 2));
+}
 if (argv.includes("--version")) {
   console.log("fake-acp 1.0.0");
   process.exit(0);
 }
-if (process.env.FAKE_ACP_DUMP) {
-  writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify({ argv, env: process.env }, null, 2));
-}
+if (dumpPath) writeDump({});
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
 const result = (id: unknown, res: unknown) => out({ jsonrpc: "2.0", id, result: res });
@@ -136,12 +145,17 @@ function handle(msg: any) {
     case "session/new": {
       const servers: McpEntry[] = Array.isArray(msg.params?.mcpServers) ? msg.params.mcpServers : [];
       agentsMcp = servers.find((s: any) => s?.name === "agents") ?? null;
+      writeDump({ sessionNew: msg.params });
       result(msg.id, { sessionId: "fake-acp-session" });
       break;
     }
-    case "session/load":
+    case "session/load": {
+      const servers: McpEntry[] = Array.isArray(msg.params?.mcpServers) ? msg.params.mcpServers : [];
+      agentsMcp = servers.find((s: any) => s?.name === "agents") ?? agentsMcp;
+      writeDump({ sessionLoad: msg.params });
       result(msg.id, {});
       break;
+    }
     case "session/prompt": {
       if (mode === "hang") {
         // never resolve the prompt — lets tests exercise interrupt
@@ -151,25 +165,28 @@ function handle(msg: any) {
       const complete = () =>
         result(msg.id, { stopReason: "end_turn", _meta: { inputTokens: 10, outputTokens: 5 } });
       if (mode === "ask-peer" && agentsMcp) {
-        // the comms e2e: reach a peer bot through the injected agents proxy
-        // and reply with whatever it said (the peer's fake runs plain happy
-        // — its depth-1 turn gets no agents server, so no recursion)
-        void driveMcp(agentsMcp, [
-          { name: "list_bots", args: () => ({}) },
-          {
-            name: "ask_bot",
-            args: (list) => ({ bot_id: /id: ([\w-]+)/.exec(list)?.[1] ?? "", message: "ping from fake" }),
-          },
-        ])
-          .then((reply) => {
-            out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `peer says: ${reply}` } } } });
-            complete();
-          })
-          .catch((e) => {
-            out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `peer error: ${(e as Error).message}` } } } });
-            complete();
-          });
-        return;
+        const depth = Number(agentsMcp.env?.find((e) => e.name === "OMB_TURN_DEPTH")?.value ?? "0") || 0;
+        // Originator (depth 0) asks a peer. A comms-invoked turn still has
+        // agents MCP at depth 1 (MAX_COMMS_DEPTH=2) — don't recurse here;
+        // play the happy-path reply so the e2e can assert the peer's text.
+        if (depth === 0) {
+          void driveMcp(agentsMcp, [
+            { name: "list_bots", args: () => ({}) },
+            {
+              name: "ask_bot",
+              args: (list) => ({ bot_id: /id: ([\w-]+)/.exec(list)?.[1] ?? "", message: "ping from fake" }),
+            },
+          ])
+            .then((reply) => {
+              out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `peer says: ${reply}` } } } });
+              complete();
+            })
+            .catch((e) => {
+              out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `peer error: ${(e as Error).message}` } } } });
+              complete();
+            });
+          return;
+        }
       }
       playTurn();
       if (mode === "permission") {

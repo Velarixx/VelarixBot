@@ -21,6 +21,8 @@ const HARNESS = process.env.OMB_HARNESS_URL ?? "http://127.0.0.1:8799";
 const BOT_ID = process.env.OMB_BOT_ID ?? "";
 const TOKEN = process.env.OMB_COMMS_TOKEN ?? "";
 const DEPTH = Number(process.env.OMB_TURN_DEPTH ?? "0") || 0;
+const VISITED = process.env.OMB_VISITED ?? "";
+const GROUP_THREAD_ID = process.env.OMB_GROUP_THREAD_ID ?? "";
 
 const TOOLS = [
   {
@@ -32,7 +34,7 @@ const TOOLS = [
   {
     name: "ask_bot",
     description:
-      "Send a message to another bot in this workspace and wait for its reply. Use it to delegate a subtask to a specialist bot or ask a peer a question. The other bot runs a full turn under its own model and permissions; the reply is returned to you as text. Returns promptly with a note if that bot is busy.",
+      "Send a message to another bot in this workspace and wait for its reply. Use it to delegate a subtask to a specialist bot or ask a peer a question. The other bot runs a full turn under its own model and permissions; the reply is returned to you as text and stays in this transcript — do not ask the user to relay it. If that bot is busy, the ask is queued until it finishes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -90,9 +92,16 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     if (!toBotId || !message) return { text: "ask_bot needs bot_id and message.", isError: true };
     const r = await api(`/api/internal/ask-bot`, {
       method: "POST",
-      body: JSON.stringify({ fromBotId: BOT_ID, toBotId, message, depth: DEPTH }),
+      body: JSON.stringify({
+        fromBotId: BOT_ID,
+        toBotId,
+        message,
+        depth: DEPTH,
+        visited: VISITED,
+        ...(GROUP_THREAD_ID ? { groupThreadId: GROUP_THREAD_ID } : {}),
+      }),
     });
-    if (r.busy) return { text: `That bot is busy right now — try again after it finishes.` };
+    if (r.busy) return { text: `That bot is busy — waiting in line, then I'll deliver the ask.` };
     if (r.error) return { text: `Couldn't reach that bot: ${r.error}`, isError: true };
     return { text: `${r.botName ?? "Bot"} replied:\n${r.text ?? "(no reply)"}` };
   }

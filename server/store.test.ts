@@ -132,6 +132,22 @@ describe("Store", () => {
     expect(reloaded.routine(routine.id)?.thenStartTurn).toEqual({ botId: other.id, prompt: "Follow up." });
   });
 
+  it("persists enabledApps and a routine skillId", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.patchBot(bot.id, { enabledApps: ["googledrive"] });
+    const routine = store.createRoutine({
+      botId: bot.id,
+      name: "Taught",
+      prompt: "Do it",
+      schedule: { kind: "interval", everyMinutes: 20 },
+      skillId: "skill-1",
+    });
+    const reloaded = new Store(selection);
+    expect(reloaded.bot(bot.id)?.enabledApps).toEqual(["googledrive"]);
+    expect(reloaded.routine(routine.id)?.skillId).toBe("skill-1");
+  });
+
   it("validates daily and interval routines", () => {
     const store = new Store(selection);
     const bot = store.createBot();

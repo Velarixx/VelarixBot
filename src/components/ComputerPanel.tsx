@@ -13,9 +13,10 @@ import {
   Moon,
   Power,
   Settings,
+  Square,
   X,
 } from "lucide-react";
-import { useStore, type Bot } from "@/state/store";
+import { useStore, type Bot, type Skill } from "@/state/store";
 import { ApiKeyRow } from "./ApiKeys";
 import { cn } from "@/lib/cn";
 
@@ -46,6 +47,9 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [error, setError] = useState<string | null>(null);
   // bumped when a Box token is saved inline, to re-run the spin-up flow
   const [retry, setRetry] = useState(0);
+  const [teaching, setTeaching] = useState(false);
+  const [teachBusy, setTeachBusy] = useState(false);
+  const [taught, setTaught] = useState<Skill | null>(null);
   const localSupported = window.ogb?.platform !== "win32";
 
   // resolve the mode on open; box endpoints are only ever hit on the
@@ -330,6 +334,53 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           >
             Create Routine
           </button>
+        </div>
+
+        {/* Teach-a-task: record this Box session into a reviewable skill */}
+        <div className="mt-4 rounded-xl bg-card p-4">
+          <div className="text-[15px] font-medium text-ink">Teach a task</div>
+          <div className="mt-0.5 text-[13px] text-ink-secondary">
+            Record this computer session into an ordered skill you can attach to a routine. Frames are counted, not replayed.
+          </div>
+          <button
+            onClick={() => {
+              setTeachBusy(true);
+              setError(null);
+              const path = teaching ? `/api/bots/${bot.id}/teach/stop` : `/api/bots/${bot.id}/teach/start`;
+              api(path, {
+                method: "POST",
+                body: teaching ? JSON.stringify({ name: `${bot.name} skill` }) : undefined,
+              })
+                .then((result) => {
+                  setTeaching(!teaching);
+                  if (result.skill) setTaught(result.skill);
+                })
+                .catch((e) => setError(e.message))
+                .finally(() => setTeachBusy(false));
+            }}
+            disabled={teachBusy}
+            className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-raised py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
+          >
+            {teachBusy ? <Loader2 size={14} className="animate-spin" /> : teaching ? <Square size={14} /> : null}
+            {teaching ? "Stop and save skill" : "Start recording"}
+          </button>
+          {taught && (
+            <div className="mt-3">
+              <div className="text-[12px] text-ink-secondary">{taught.name} — review the steps, then attach it on a routine.</div>
+              <textarea
+                value={taught.markdown}
+                onChange={(e) => setTaught({ ...taught, markdown: e.target.value })}
+                onBlur={() => {
+                  void api(`/api/skills/${taught.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({ markdown: taught.markdown, name: taught.name }),
+                  }).catch((e) => setError(e.message));
+                }}
+                rows={8}
+                className="mt-2 w-full resize-y rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12px] text-ink"
+              />
+            </div>
+          )}
         </div>
       </div>
     </aside>

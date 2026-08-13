@@ -13,7 +13,7 @@ export interface AppConfig {
    * apiKey = ak_… project API key — optional, unlocks the full toolkit
    * catalog with official logos in the plugins marketplace. */
   composio?: { key?: string; apiKey?: string; url?: string };
-  box?: { token?: string };
+  box?: { token?: string; url?: string };
   /** Personal GitHub token for private VelarixBot Releases (updater). Write-only. */
   github?: { token?: string };
 
