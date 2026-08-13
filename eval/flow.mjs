@@ -41,6 +41,21 @@ const GROK_BOT = {
   optional: true,
 };
 
+// Codex on-request MCP: Require approval is already ON in createBot. The
+// prompt forces list_bots exactly once so Allow must approve the MCP tool
+// (mcpServer/elicitation/request / tool_call_mcp_elicitation). Missing that
+// protocol is the rc.10 "user rejected MCP tool call" bug.
+const MCP_BOT = {
+  name: "Roster",
+  title: "MCP on-request canary",
+  description:
+    "You have VelarixBot agents tools. When asked to list bots, call list_bots exactly once and report what the tool returned. Do not invent a roster. Do not call any other tool.",
+  prompt:
+    "Call the list_bots tool exactly once. Then reply with the roster the tool returned. Do not call any other tool. Do not claim you listed bots unless the tool actually ran.",
+  prefer: "codex",
+  mcpOnce: true,
+};
+
 const TURN_MS = 180_000;
 
 async function shot(page, dir, name) {
@@ -198,7 +213,7 @@ async function assignInstance(baseUrl, botName, prefer, instances) {
   });
 }
 
-export async function runFlow({ baseUrl, artifactsDir, includeGrok = false }) {
+export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, includeCodexMcp = false, maxTurns = 40 }) {
   const shots = [];
   shots.dir = join(artifactsDir, "screenshots");
   mkdirSync(shots.dir, { recursive: true });
@@ -211,6 +226,7 @@ export async function runFlow({ baseUrl, artifactsDir, includeGrok = false }) {
     onboardingCompleted: false,
     botsCreated: [],
     grokSkipped: !includeGrok,
+    mcpSkipped: true,
     allowClicked: false,
     allowShown: false,
     streamObserved: {},
@@ -226,10 +242,20 @@ export async function runFlow({ baseUrl, artifactsDir, includeGrok = false }) {
     mechanical.onboardingCompleted = true;
 
     const instances = await fetch(`${baseUrl}/api/instances`).then((r) => r.json()).then((d) => d.instances ?? []);
-    const roster = includeGrok ? [...BOTS, GROK_BOT] : BOTS;
-    if (!includeGrok) console.log("Skipping optional Grok scenario (no xAI secret).");
+    const roster = [...BOTS];
+    if (includeCodexMcp) roster.push(MCP_BOT);
+    else console.log("Skipping Codex MCP on-request scenario (no Codex secret).");
+    if (includeGrok) roster.push(GROK_BOT);
+    else console.log("Skipping optional Grok scenario (no xAI secret).");
 
-    for (const spec of roster) {
+    const capped = roster.slice(0, maxTurns);
+    if (capped.length < roster.length) {
+      console.log(`TIER_B_MAX_TURNS=${maxTurns}: running ${capped.map((s) => s.name).join(", ")} (skipped ${roster.length - capped.length}).`);
+    }
+    mechanical.mcpSkipped = !capped.some((s) => s.mcpOnce);
+    mechanical.grokSkipped = !capped.some((s) => s.optional);
+
+    for (const spec of capped) {
       await createBot(page, baseUrl, spec, shots);
       await assignInstance(baseUrl, spec.name, spec.prefer, instances);
       mechanical.botsCreated.push(spec.name);
