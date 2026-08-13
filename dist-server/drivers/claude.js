@@ -8,8 +8,6 @@
 //   - Composio Connect (connected apps → tools) over streamable HTTP
 //   - the bot's cloud computer (box.ascii.dev) via server/computer-proxy.ts
 //     — screenshot/exec/open_url, the CUA-on-the-box bridge
-import { spawn } from "node:child_process";
-import { execFile } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { homedir } from "node:os";
@@ -19,6 +17,7 @@ import { DATA_DIR } from "../config.js";
 import { augmentedPath } from "../env-path.js";
 import { newEventId, newId } from "../contracts.js";
 import { appendNative } from "./native.js";
+import { cliExec, cliVersion, killProcessTree, spawnCliHidden } from "./cli.js";
 const DRIVER_KIND = "claudeAgent";
 // model catalog ported from upstream packages/contracts/src/model.ts
 const MODELS = {
@@ -41,8 +40,8 @@ const PERM_PROXY_PATH = proxyPath("permission-proxy");
 // in the packaged app process.execPath is the Electron binary — this env
 // makes it behave as plain node for the spawned MCP proxies (harmless in dev)
 const NODE_ENV_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
-const DENY_TIMEOUT_NOTE = "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
-const QUESTION_TIMEOUT_NOTE = "OpenMausBot: nobody answered in time. Use your best judgment and continue.";
+const DENY_TIMEOUT_NOTE = "VelarixBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
+const QUESTION_TIMEOUT_NOTE = "VelarixBot: nobody answered in time. Use your best judgment and continue.";
 /** One human-readable line for an ask — what the card subtitle shows. */
 function askSummary(ask) {
     const input = ask.input ?? {};
@@ -57,15 +56,19 @@ function askSummary(ask) {
 }
 function permissionSocketPath(threadId) {
     const tag = threadId.replace(/[^\w-]/g, "").slice(0, 8);
+    if (process.platform === "win32")
+        return `\\\\.\\pipe\\velarix-perm-${tag}`;
     return join(DATA_DIR, `perm-${tag}.sock`);
 }
 function createPermissionBroker(opts) {
     const timeoutMs = opts.timeoutMs ?? 15 * 60_000;
     const pending = new Map();
-    try {
-        unlinkSync(opts.socketPath);
+    if (process.platform !== "win32") {
+        try {
+            unlinkSync(opts.socketPath);
+        }
+        catch { }
     }
-    catch { }
     const server = createNetServer((conn) => {
         conn.on("error", () => { });
         let buf = "";
@@ -122,18 +125,20 @@ function createPermissionBroker(opts) {
         close() {
             for (const p of [...pending.values()]) {
                 if (p.ask.kind === "question")
-                    p.finish("answer", "OpenMausBot: the turn is ending — wrap up.", "shutdown");
+                    p.finish("answer", "VelarixBot: the turn is ending — wrap up.", "shutdown");
                 else
-                    p.finish("deny", "OpenMausBot: the turn ended", "shutdown");
+                    p.finish("deny", "VelarixBot: the turn ended", "shutdown");
             }
             try {
                 server.close();
             }
             catch { }
-            try {
-                unlinkSync(opts.socketPath);
+            if (process.platform !== "win32") {
+                try {
+                    unlinkSync(opts.socketPath);
+                }
+                catch { }
             }
-            catch { }
         },
     };
 }
@@ -284,7 +289,7 @@ export const ClaudeDriver = {
             delete env.ANTHROPIC_API_KEY;
             delete env.CLAUDECODE;
             delete env.CLAUDE_CODE_ENTRYPOINT;
-            const child = spawn(config.cli, args, {
+            const child = spawnCliHidden(config.cli, args, {
                 cwd: turn.cwd ?? homedir(),
                 env,
                 stdio: ["pipe", "pipe", "pipe"],
@@ -408,17 +413,7 @@ export const ClaudeDriver = {
                     settle(false, "exit_before_result");
                 }
             });
-            const stop = () => {
-                try {
-                    process.kill(-child.pid, "SIGTERM");
-                }
-                catch {
-                    try {
-                        child.kill("SIGTERM");
-                    }
-                    catch { }
-                }
-            };
+            const stop = () => killProcessTree(child.pid);
             active.set(threadId, { stop, turnId, broker });
             emit({ ...base(threadId, turnId), type: "turn.started" });
             // prompt over stdin as a stream-json message — never argv (ARG_MAX)
@@ -429,9 +424,7 @@ export const ClaudeDriver = {
             return { turnId };
         };
         const snapshot = async () => {
-            const version = await new Promise((resolve) => {
-                execFile(config.cli, ["--version"], { timeout: 8000, env: { ...process.env, PATH: augmentedPath() } }, (err, stdout) => resolve(err ? null : stdout.trim()));
-            });
+            const version = await cliVersion(config.cli, 8000, { ...process.env, PATH: augmentedPath() });
             if (!version)
                 return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
             const authenticated = existsSync(join(homedir(), ".claude", ".credentials.json"));
@@ -446,7 +439,7 @@ export const ClaudeDriver = {
             snapshot,
             adapter: {
                 provider: DRIVER_KIND,
-                capabilities: { sessionModelSwitch: "in-session", agentsMcp: true },
+                capabilities: { sessionModelSwitch: "in-session", agentsMcp: true, localComputerMcp: true },
                 sendTurn,
                 interruptTurn: async (threadId) => active.get(threadId)?.stop(),
                 respondToRequest: async (threadId, requestId, decision) => {
@@ -468,9 +461,12 @@ export const ClaudeDriver = {
                     return () => listeners.delete(listener);
                 },
             },
-            generateText: (prompt) => new Promise((resolve, reject) => {
-                execFile(config.cli, ["-p", prompt, "--model", "claude-haiku-4-5", "--output-format", "text"], { timeout: 60_000, env: { ...process.env, PATH: augmentedPath() } }, (err, stdout) => (err ? reject(err) : resolve(stdout.trim())));
-            }),
+            generateText: async (prompt) => {
+                const result = await cliExec(config.cli, ["-p", prompt, "--model", "claude-haiku-4-5", "--output-format", "text"], { timeout: 60_000, env: { ...process.env, PATH: augmentedPath() } });
+                if (!result.ok)
+                    throw new Error(result.stderr || `\`${config.cli}\` failed`);
+                return result.stdout.trim();
+            },
             dispose: async () => {
                 for (const { stop } of active.values())
                     stop();

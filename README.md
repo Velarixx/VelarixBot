@@ -14,17 +14,17 @@ Talk to them like contacts. Watch them work. Approve what matters.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![Electron](https://img.shields.io/badge/Electron-macOS-2B2E3A?logo=electron&logoColor=9FEAF9)
+![Electron](https://img.shields.io/badge/Electron-macOS%20·%20Windows-2B2E3A?logo=electron&logoColor=9FEAF9)
 ![Agents](https://img.shields.io/badge/agents-Claude%20·%20Codex-d97757)
 ![PRs](https://img.shields.io/badge/PRs-welcome-38d591)
 
 <br>
 
-<a href="https://github.com/Velarixx/VelarixBot/releases/latest/download/VelarixBot.dmg">
-  <img src="https://img.shields.io/github/v/release/Velarixx/VelarixBot?style=for-the-badge&label=%E2%AC%87%EF%B8%8F%20%20Download%20for%20macOS&labelColor=070707&color=1084fe" alt="Download the latest VelarixBot for macOS (.dmg)" height="40">
+<a href="https://github.com/Velarixx/VelarixBot/releases">
+  <img src="https://img.shields.io/github/v/release/Velarixx/VelarixBot?style=for-the-badge&label=%E2%AC%87%EF%B8%8F%20%20Internal%20downloads&labelColor=070707&color=1084fe" alt="Download VelarixBot for macOS or Windows" height="40">
 </a>
 
-<sub>Apple silicon · signed & notarized · one-click .dmg, always the latest · [all releases](https://github.com/Velarixx/VelarixBot/releases)</sub>
+<sub>Private internal releases · macOS DMG + Windows installer · [installation and trust instructions](INTERNAL_INSTALL.md)</sub>
 
 <br>
 <br>
@@ -169,12 +169,13 @@ flowchart LR
 | Harness | `server/harness/` | Registry (configs → live instances) and the fan-in event bus every client folds. |
 | API | `server/index.ts` | Bots, turns, approvals, model catalog, computer lifecycle, connectors, config — HTTP + SSE. |
 | App | `src/` | The chat shell. Server-backed store, one reducer, zero client-side transports. |
-| Desktop | `electron/` | macOS shell: dictation helper (SFSpeechRecognizer), local screen capture, CUA bridge. |
+| Desktop | `electron/` | macOS and Windows shell; dictation and local CUA are macOS-only in the first Windows release. |
 
 ## Quick start
 
-**Easiest:** [download the latest .dmg](https://github.com/Velarixx/VelarixBot/releases/latest),
-drag it to Applications, open it. The harness server is embedded — no setup.
+**Easiest:** invited team members download the macOS `.dmg` or Windows `.exe` from
+[private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases) and follow
+[the one-time trust instructions](INTERNAL_INSTALL.md). The harness server is embedded — no Node, pnpm, or source checkout.
 
 **From source:**
 
@@ -187,7 +188,7 @@ pnpm dev           # app → http://127.0.0.1:5199
 pnpm dev:desktop   # or the Electron shell
 ```
 
-Requirements: **macOS**, **Node 24+**, **pnpm**, and at least one agent CLI — [`claude`](https://claude.com/claude-code),
+Source-development requirements: **macOS or Windows**, **Node 24+**, **pnpm**, and at least one agent CLI — [`claude`](https://claude.com/claude-code),
 [`codex`](https://github.com/openai/codex), or [`grok`](https://x.ai/cli) — installed and logged in. They appear
 in the model picker automatically.
 
@@ -218,8 +219,8 @@ pnpm build         # typecheck + production build
 ## Status
 
 Early but real — the loop works end to end: message → explicitly selected agent/model → streamed reply → tools →
-approvals → computer use, with persistent scheduled routines and visible runtime/usage state. Windows/Linux shells
-haven't been attempted (the harness itself is portable Node).
+approvals → computer use, with persistent scheduled routines and visible runtime/usage state. Internal macOS and
+Windows installers are built as release candidates; local computer control and dictation remain macOS-only on Windows RCs.
 
 Contributions welcome — the driver SPI in [`server/contracts.ts`](server/contracts.ts) is deliberately
 small; adding a provider is one file in [`server/drivers/`](server/drivers/) plus a one-line registration.

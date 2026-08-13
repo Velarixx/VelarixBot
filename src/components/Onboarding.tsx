@@ -11,6 +11,7 @@ type InstanceRow = {
 };
 
 const isElectron = navigator.userAgent.includes("Electron");
+const isMacDesktop = isElectron && window.ogb?.platform === "darwin";
 
 function StatusRow({ ok, title, detail }: { ok: boolean; title: string; detail: string }) {
   return (
@@ -45,10 +46,11 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
   const finish = () => { markOnboardingComplete(); onDone(); };
   const byKind = (kind: string) => instances?.find((instance) => instance.driverKind === kind);
+  const grokInstall = window.ogb?.platform === "win32" ? "See https://x.ai/cli for Windows installation" : "curl -fsSL https://x.ai/cli/install.sh | bash";
   const engines = [
     ["claudeAgent", "Claude Code", "npm i -g @anthropic-ai/claude-code"],
     ["codex", "Codex", "npm i -g @openai/codex"],
-    ["grokAgent", "Grok", "curl -fsSL https://x.ai/cli/install.sh | bash"],
+    ["grokAgent", "Grok", grokInstall],
   ] as const;
 
   return (
@@ -74,7 +76,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               return <StatusRow key={kind} ok={ok} title={`${label}${engine?.snapshot.version ? ` · ${engine.snapshot.version}` : ""}`} detail={ok ? (engine?.snapshot.authenticated === false ? `Installed; finish login in the ${label} CLI.` : "Installed and available.") : `Not found. Install with: ${install}`} />;
             })}
           </div>
-          <button onClick={() => isElectron ? setStep(2) : finish()} className="mt-5 w-full rounded-lg bg-accent py-2.5 text-[15px] font-medium text-white">{isElectron ? "Continue" : "Start using VelarixBot"}</button>
+          <button onClick={() => isMacDesktop ? setStep(2) : finish()} className="mt-5 w-full rounded-lg bg-accent py-2.5 text-[15px] font-medium text-white">{isMacDesktop ? "Continue" : "Start using VelarixBot"}</button>
           <button onClick={finish} className="mt-3 text-[12px] text-ink-secondary hover:text-ink">Skip for now</button>
         </div>}
 

@@ -11,6 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEV_URL = process.env.ELECTRON_START_URL ?? "http://127.0.0.1:5199";
 let SERVER_PORT = 8799;
 const APP_ICON = path.join(__dirname, "resources/app-icon.png");
+const IS_MAC = process.platform === "darwin";
 
 // Packaged: the harness server ships in Resources (compiled JS, zero deps)
 // and runs on Electron's own Node via utilityProcess. It serves the built
@@ -27,6 +28,8 @@ async function startServerOn(port) {
       ...process.env,
       OMB_STATIC_DIR: path.join(process.resourcesPath, "ui"),
       OMB_PORT: String(port),
+      OMB_USER_DATA: app.getPath("userData"),
+      OMB_LOCAL_CUA_SUPPORTED: IS_MAC ? "1" : "0",
     },
     stdio: "inherit",
   });
@@ -78,7 +81,7 @@ async function startServerPackaged() {
 const ERROR_PAGE =
   "data:text/html;charset=utf-8," +
   encodeURIComponent(
-    `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><div style="font-size:40px">🐭</div><h2 style="font-weight:600;margin:12px 0 6px">Couldn't start the bot server</h2><p style="color:#fcfcfc99;line-height:1.5">Something else is using its ports. Quit and reopen VelarixBot — if it keeps happening, restart your Mac.</p></div></body>`,
+    `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><div style="font-size:40px">🐭</div><h2 style="font-weight:600;margin:12px 0 6px">Couldn't start the bot server</h2><p style="color:#fcfcfc99;line-height:1.5">Something else is using its ports. Quit and reopen VelarixBot — if it keeps happening, restart your computer.</p></div></body>`,
   );
 
 function createWindow() {
@@ -89,8 +92,7 @@ function createWindow() {
     minHeight: 600,
     icon: APP_ICON,
     backgroundColor: "#070707",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 16 },
+    ...(IS_MAC ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 16 } } : {}),
     webPreferences: {
       contextIsolation: true,
       preload: path.join(__dirname, "preload.cjs"),
@@ -135,9 +137,10 @@ ipcMain.handle("screen:frame", async () => {
 // prompts then, attributed correctly, at the moment of actual use. The
 // perm:open-settings deep link stays as the repair path for denials.
 ipcMain.handle("perm:status", () => ({
-  mic: systemPreferences.getMediaAccessStatus?.("microphone") ?? "unknown",
+  mic: IS_MAC ? (systemPreferences.getMediaAccessStatus?.("microphone") ?? "unknown") : "unavailable",
 }));
 ipcMain.handle("perm:request-mic", async () => {
+  if (!IS_MAC) return false;
   try {
     return await systemPreferences.askForMediaAccess("microphone");
   } catch {
@@ -148,6 +151,7 @@ ipcMain.handle("perm:request-mic", async () => {
 // macOS never re-prompts a denied permission — the only path is System
 // Settings; deep-link straight to the right privacy pane.
 ipcMain.handle("perm:open-settings", (_event, pane) => {
+  if (!IS_MAC) return;
   const panes = {
     mic: "Privacy_Microphone",
     screen: "Privacy_ScreenCapture",
@@ -159,13 +163,16 @@ ipcMain.handle("perm:open-settings", (_event, pane) => {
 });
 
 ipcMain.handle("speech:start", (event) => {
+  if (!IS_MAC) return;
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win) startSpeech(win);
 });
-ipcMain.handle("speech:stop", () => stopSpeech());
+ipcMain.handle("speech:stop", () => {
+  if (IS_MAC) stopSpeech();
+});
 
 app.whenReady().then(async () => {
-  if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
+  if (IS_MAC) app.dock.setIcon(APP_ICON);
   // getDisplayMedia in the renderer → this handler → ScreenCaptureKit, all
   // inside the app's own processes — the one capture path macOS reliably
   // attributes to the app (registers it in the Screen Recording pane and
@@ -187,8 +194,7 @@ app.whenReady().then(async () => {
   startCua().catch((e) => console.error("[cua] start failed:", e));
   if (app.isPackaged) serverReady = await startServerPackaged();
   const win = createWindow();
-  // in-app auto-update (packaged only) — checks GitHub releases, downloads on
-  // the user's click, installs on "Restart to update"
+  // Internal releases update manually from the private GitHub repository.
   startUpdater(win);
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

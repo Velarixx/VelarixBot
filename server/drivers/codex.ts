@@ -9,7 +9,6 @@
 //
 // resumeCursor is the codex thread id; a later turn tries thread/resume
 // and falls back to a fresh thread/start.
-import { spawn, execFile } from "node:child_process";
 import { homedir } from "node:os";
 
 import type {
@@ -23,6 +22,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
+import { cliVersion, killProcessTree, spawnCliHidden } from "./cli.ts";
 import { appendNative } from "./native.ts";
 
 const DRIVER_KIND = "codex";
@@ -92,7 +92,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // billing to pay-as-you-go (agentcal)
       delete env.OPENAI_API_KEY;
 
-      const child = spawn(config.cli, ["app-server"], {
+      const child = spawnCliHidden(config.cli, ["app-server"], {
         cwd: turn.cwd ?? homedir(),
         env,
         stdio: ["pipe", "pipe", "pipe"],
@@ -117,15 +117,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           send({ jsonrpc: "2.0", id, method, params });
         });
 
-      const stop = () => {
-        try {
-          process.kill(-child.pid!, "SIGTERM");
-        } catch {
-          try {
-            child.kill("SIGTERM");
-          } catch {}
-        }
-      };
+      const stop = () => killProcessTree(child.pid);
 
       const settle = (ok: boolean, stopReason: string | null) => {
         if (state.settled) return;
@@ -377,11 +369,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     };
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
-      const version = await new Promise<string | null>((resolve) => {
-        execFile(config.cli, ["--version"], { timeout: 8000, env: { ...process.env, PATH: augmentedPath() } }, (err, stdout) =>
-          resolve(err ? null : stdout.trim()),
-        );
-      });
+      const version = await cliVersion(config.cli, 8000, { ...process.env, PATH: augmentedPath() });
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
       return { state: "available", version };
     };

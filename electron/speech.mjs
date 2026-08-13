@@ -27,6 +27,7 @@ function ensureBuilt() {
 }
 
 export function startSpeech(win) {
+  if (process.platform !== "darwin") return;
   stopSpeech();
   ensureBuilt();
   const proc = spawn(BIN, [], { stdio: ["ignore", "pipe", "pipe"] });

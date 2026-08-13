@@ -18,9 +18,11 @@
     "test:watch": "vitest",
     "preview": "vite preview",
     "build:server": "tsc -p tsconfig.server.build.json",
-    "build:speech": "swiftc -O electron/resources/speech-helper.swift -o electron/resources/speech-helper",
-    "build:updater": "node scripts/bundle-updater.mjs",
-    "package": "pnpm build && pnpm build:server && pnpm build:speech && pnpm build:updater && electron-builder --mac --publish never"
+    "build:speech": "node scripts/build-speech-helper.mjs",
+    "fetch:cua": "node scripts/fetch-cua-driver.mjs",
+    "stage:cua-sdk": "node scripts/stage-cua-sdk.mjs",
+    "package:mac": "pnpm build && pnpm build:server && pnpm build:speech && pnpm fetch:cua && pnpm stage:cua-sdk && electron-builder --mac --publish never",
+    "package:win": "pnpm build && pnpm build:server && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@trycua/cua-driver": "^0.19.3",
@@ -41,8 +43,6 @@
     "@vitejs/plugin-react": "^4.7.0",
     "electron": "^43.4.0",
     "electron-builder": "^26.15.3",
-    "electron-updater": "^6.8.9",
-    "esbuild": "^0.28.2",
     "tailwindcss": "^4.1.11",
     "typescript": "^5.8.3",
     "vite": "^7.1.0",

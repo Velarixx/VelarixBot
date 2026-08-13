@@ -22,6 +22,7 @@ export function Composer({ bot }: { bot: Bot }) {
   const [text, setText] = useState("");
   const [recording, setRecording] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
+  const showMic = !window.ogb || window.ogb.platform === "darwin";
   const [caret, setCaret] = useState(0);
   const [highlight, setHighlight] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null); // Esc'd this @
@@ -185,7 +186,7 @@ export function Composer({ bot }: { bot: Bot }) {
           >
             <Square size={14} className="fill-current" />
           </button>
-        ) : (
+        ) : showMic && (
           <button
             onClick={toggleMic}
             className={cn(

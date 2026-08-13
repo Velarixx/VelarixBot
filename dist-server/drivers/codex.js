@@ -9,10 +9,10 @@
 //
 // resumeCursor is the codex thread id; a later turn tries thread/resume
 // and falls back to a fresh thread/start.
-import { spawn, execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { newEventId, newId } from "../contracts.js";
 import { augmentedPath } from "../env-path.js";
+import { cliVersion, killProcessTree, spawnCliHidden } from "./cli.js";
 import { appendNative } from "./native.js";
 const DRIVER_KIND = "codex";
 // catalog ported from upstream packages/contracts/src/model.ts
@@ -32,7 +32,7 @@ function decodeConfig(raw) {
     };
 }
 const QUESTION_TIMEOUT_NOTE = "No answer was given — use your best judgment.";
-const DENY_TIMEOUT_NOTE = "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
+const DENY_TIMEOUT_NOTE = "VelarixBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
 export const CodexDriver = {
     driverKind: DRIVER_KIND,
     metadata: { displayName: "Codex", supportsMultipleInstances: true },
@@ -63,7 +63,7 @@ export const CodexDriver = {
             // the CLI owns its own ChatGPT login; a leaked API key silently flips
             // billing to pay-as-you-go (agentcal)
             delete env.OPENAI_API_KEY;
-            const child = spawn(config.cli, ["app-server"], {
+            const child = spawnCliHidden(config.cli, ["app-server"], {
                 cwd: turn.cwd ?? homedir(),
                 env,
                 stdio: ["pipe", "pipe", "pipe"],
@@ -85,23 +85,13 @@ export const CodexDriver = {
                 rpcPending.set(id, { resolve, reject });
                 send({ jsonrpc: "2.0", id, method, params });
             });
-            const stop = () => {
-                try {
-                    process.kill(-child.pid, "SIGTERM");
-                }
-                catch {
-                    try {
-                        child.kill("SIGTERM");
-                    }
-                    catch { }
-                }
-            };
+            const stop = () => killProcessTree(child.pid);
             const settle = (ok, stopReason) => {
                 if (state.settled)
                     return;
                 state.settled = true;
                 for (const finish of [...asks.values()])
-                    finish("deny", "OpenMausBot: the turn ended");
+                    finish("deny", "VelarixBot: the turn ended");
                 for (const p of rpcPending.values())
                     p.reject(new Error("turn settled"));
                 rpcPending.clear();
@@ -229,7 +219,7 @@ export const CodexDriver = {
                         break;
                     }
                     case "thread/tokenUsage/updated": {
-                        const t = p.tokenUsage?.total;
+                        const t = p.tokenUsage?.last ?? p.tokenUsage?.total;
                         if (t) {
                             emit({
                                 ...base(threadId, turnId),
@@ -308,7 +298,7 @@ export const CodexDriver = {
             // handshake + kickoff; any refusal surfaces as failure, not a hang
             (async () => {
                 try {
-                    await request("initialize", { clientInfo: { name: "openmausbot", version: "1" } });
+                    await request("initialize", { clientInfo: { name: "velarixbot", version: "1" } });
                     send({ jsonrpc: "2.0", method: "initialized", params: {} });
                     const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
                     let codexThreadId = null;
@@ -349,9 +339,7 @@ export const CodexDriver = {
             return { turnId };
         };
         const snapshot = async () => {
-            const version = await new Promise((resolve) => {
-                execFile(config.cli, ["--version"], { timeout: 8000, env: { ...process.env, PATH: augmentedPath() } }, (err, stdout) => resolve(err ? null : stdout.trim()));
-            });
+            const version = await cliVersion(config.cli, 8000, { ...process.env, PATH: augmentedPath() });
             if (!version)
                 return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
             return { state: "available", version };

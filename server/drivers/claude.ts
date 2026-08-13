@@ -8,8 +8,7 @@
 //   - Composio Connect (connected apps → tools) over streamable HTTP
 //   - the bot's cloud computer (box.ascii.dev) via server/computer-proxy.ts
 //     — screenshot/exec/open_url, the CUA-on-the-box bridge
-import { spawn } from "node:child_process";
-import { execFile } from "node:child_process";
+
 import { existsSync, unlinkSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
 import { homedir } from "node:os";
@@ -30,6 +29,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
+import { cliExec, cliVersion, killProcessTree, spawnCliHidden } from "./cli.ts";
 
 const DRIVER_KIND = "claudeAgent";
 
@@ -92,6 +92,7 @@ function askSummary(ask: Ask): string {
 
 function permissionSocketPath(threadId: string) {
   const tag = threadId.replace(/[^\w-]/g, "").slice(0, 8);
+  if (process.platform === "win32") return `\\\\.\\pipe\\velarix-perm-${tag}`;
   return join(DATA_DIR, `perm-${tag}.sock`);
 }
 
@@ -103,9 +104,11 @@ function createPermissionBroker(opts: {
 }) {
   const timeoutMs = opts.timeoutMs ?? 15 * 60_000;
   const pending = new Map<string, { ask: Ask; finish: (behavior: string, message: string | undefined, source: string) => void }>();
-  try {
-    unlinkSync(opts.socketPath);
-  } catch {}
+  if (process.platform !== "win32") {
+    try {
+      unlinkSync(opts.socketPath);
+    } catch {}
+  }
   const server = createNetServer((conn) => {
     conn.on("error", () => {});
     let buf = "";
@@ -165,9 +168,11 @@ function createPermissionBroker(opts: {
       try {
         server.close();
       } catch {}
-      try {
-        unlinkSync(opts.socketPath);
-      } catch {}
+      if (process.platform !== "win32") {
+        try {
+          unlinkSync(opts.socketPath);
+        } catch {}
+      }
     },
   };
 }
@@ -322,7 +327,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       delete env.CLAUDECODE;
       delete env.CLAUDE_CODE_ENTRYPOINT;
 
-      const child = spawn(config.cli, args, {
+      const child = spawnCliHidden(config.cli, args, {
         cwd: turn.cwd ?? homedir(),
         env,
         stdio: ["pipe", "pipe", "pipe"],
@@ -446,15 +451,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         }
       });
 
-      const stop = () => {
-        try {
-          process.kill(-child.pid!, "SIGTERM");
-        } catch {
-          try {
-            child.kill("SIGTERM");
-          } catch {}
-        }
-      };
+      const stop = () => killProcessTree(child.pid);
       active.set(threadId, { stop, turnId, broker });
       emit({ ...base(threadId, turnId), type: "turn.started" });
 
@@ -468,11 +465,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     };
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
-      const version = await new Promise<string | null>((resolve) => {
-        execFile(config.cli, ["--version"], { timeout: 8000, env: { ...process.env, PATH: augmentedPath() } }, (err, stdout) =>
-          resolve(err ? null : stdout.trim()),
-        );
-      });
+      const version = await cliVersion(config.cli, 8000, { ...process.env, PATH: augmentedPath() });
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
       const authenticated = existsSync(join(homedir(), ".claude", ".credentials.json"));
       return { state: "available", version, authenticated };
@@ -507,15 +500,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           return () => listeners.delete(listener);
         },
       },
-      generateText: (prompt: string) =>
-        new Promise((resolve, reject) => {
-          execFile(
-            config.cli,
-            ["-p", prompt, "--model", "claude-haiku-4-5", "--output-format", "text"],
-            { timeout: 60_000, env: { ...process.env, PATH: augmentedPath() } },
-            (err, stdout) => (err ? reject(err) : resolve(stdout.trim())),
-          );
-        }),
+      generateText: async (prompt: string) => {
+        const result = await cliExec(
+          config.cli,
+          ["-p", prompt, "--model", "claude-haiku-4-5", "--output-format", "text"],
+          { timeout: 60_000, env: { ...process.env, PATH: augmentedPath() } },
+        );
+        if (!result.ok) throw new Error(result.stderr || `\`${config.cli}\` failed`);
+        return result.stdout.trim();
+      },
       dispose: async () => {
         for (const { stop } of active.values()) stop();
         listeners.clear();

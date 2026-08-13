@@ -5,4 +5,11 @@ dist-electron
 .DS_Store
 *.tsbuildinfo
 electron/resources/speech-helper
+electron/resources/cua-driver
+electron/resources/cua-cursor-theme
+electron/resources/cua_driver_abi.h
+electron/resources/cua_driver_node_runtime.node
+electron/resources/libcua_driver_sdk.dylib
+electron/resources/cua-sdk/
+build/generated-cua-sdk/
 release

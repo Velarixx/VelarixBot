@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const INSTALLED_DRIVER = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver";
 const STANDALONE_SOCKET = path.join(
@@ -29,6 +30,15 @@ const HOST_BUNDLE_ID = "com.velarix.bot";
 
 let embeddedHost = null; // EmbeddedCuaDriverHost | null
 let connection = null; // descriptor exposed to harness + renderer
+
+function saveConnection() {
+  fs.mkdirSync(app.getPath("userData"), { recursive: true });
+  fs.writeFileSync(
+    path.join(app.getPath("userData"), "cua-connection.json"),
+    JSON.stringify(connection, null, 2),
+  );
+  return connection;
+}
 
 export function resolveDriverBinary() {
   if (process.env.CUA_DRIVER_PATH) return process.env.CUA_DRIVER_PATH;
@@ -57,7 +67,10 @@ function socketAlive(sockPath) {
 async function startEmbedded(binary) {
   // Dynamic import: the SDK ships a native FFI lib; keep dev startup
   // resilient if it fails to load on this machine.
-  const { EmbeddedCuaDriverHost } = await import("@trycua/cua-driver/embedded");
+  const sdkEntry = app.isPackaged
+    ? pathToFileURL(path.join(process.resourcesPath, "cua-sdk", "node_modules", "@trycua", "cua-driver", "dist", "embedded.js")).href
+    : "@trycua/cua-driver/embedded";
+  const { EmbeddedCuaDriverHost } = await import(sdkEntry);
   embeddedHost = new EmbeddedCuaDriverHost(binary, HOST_BUNDLE_ID);
   const conn = await embeddedHost.start();
   return {
@@ -70,12 +83,18 @@ async function startEmbedded(binary) {
 }
 
 export async function startCua() {
+  if (process.platform === "win32") {
+    connection = {
+      mode: "unavailable",
+      reason: "local computer control is not available in the first Windows release; use Off or Cloud",
+    };
+    return saveConnection();
+  }
   const binary = resolveDriverBinary();
   if (!binary) {
     connection = { mode: "unavailable", reason: "cua-driver binary not found" };
-    return connection;
+    return saveConnection();
   }
-
   const wantEmbedded =
     app.isPackaged || process.env.OPENMAUSBOT_CUA_EMBEDDED === "1";
 
@@ -105,11 +124,7 @@ export async function startCua() {
     };
   }
 
-  fs.writeFileSync(
-    path.join(app.getPath("userData"), "cua-connection.json"),
-    JSON.stringify(connection, null, 2),
-  );
-  return connection;
+  return saveConnection();
 }
 
 export function cuaPermissionsStatus() {

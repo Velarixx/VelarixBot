@@ -21,7 +21,7 @@ const DEPTH = Number(process.env.OMB_TURN_DEPTH ?? "0") || 0;
 const TOOLS = [
     {
         name: "list_bots",
-        description: "List the other bots (agents) in this OpenMausBot workspace you can message, with their model and whether they're busy. Call this before ask_bot to discover who's available.",
+        description: "List the other bots (agents) in this VelarixBot workspace you can message, with their model and whether they're busy. Call this before ask_bot to discover who's available.",
         inputSchema: { type: "object", properties: {} },
     },
     {

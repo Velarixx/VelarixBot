@@ -13,11 +13,11 @@
 // is never a security contract). session/load REPLAYS history as ordinary
 // session/update notifications, so updates are double-gated: nothing emits
 // before the prompt is sent, and `_meta.isReplay` updates are dropped.
-import { spawn, execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { newEventId, newId } from "../../contracts.js";
 import { augmentedPath } from "../../env-path.js";
 import { appendNative } from "../native.js";
+import { cliVersion, killProcessTree, spawnCliHidden } from "../cli.js";
 const INIT_TIMEOUT = 20_000;
 const NEW_SESSION_TIMEOUT = 30_000;
 const LOAD_SESSION_TIMEOUT = 120_000; // history replay on a long thread is slow
@@ -35,7 +35,7 @@ export function createAcpDriver(support) {
     const DRIVER_KIND = support.driverKind;
     const SOURCE = support.nativeSource;
     const decodeConfig = decodeAcpConfig(support.defaultCli);
-    const DENY_TIMEOUT_NOTE = "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
+    const DENY_TIMEOUT_NOTE = "VelarixBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
     return {
         driverKind: DRIVER_KIND,
         metadata: { displayName: support.displayName, supportsMultipleInstances: true },
@@ -91,7 +91,7 @@ export function createAcpDriver(support) {
                 const cwd = turn.cwd ?? config.workspace ?? homedir();
                 const env = childEnv();
                 const mcpServers = acpMcpServers(turn);
-                const child = spawn(config.cli, support.spawnArgs(config, turn), {
+                const child = spawnCliHidden(config.cli, support.spawnArgs(config, turn), {
                     cwd,
                     env,
                     stdio: ["pipe", "pipe", "pipe"],
@@ -123,17 +123,7 @@ export function createAcpDriver(support) {
                     rpcPending.set(id, { resolve, reject, timer });
                     send({ jsonrpc: "2.0", id, method, params });
                 });
-                const stop = () => {
-                    try {
-                        process.kill(-child.pid, "SIGTERM");
-                    }
-                    catch {
-                        try {
-                            child.kill("SIGTERM");
-                        }
-                        catch { }
-                    }
-                };
+                const stop = () => killProcessTree(child.pid);
                 const settle = (ok, stopReason) => {
                     if (state.settled)
                         return;
@@ -415,9 +405,7 @@ export function createAcpDriver(support) {
             };
             const snapshot = async () => {
                 const env = childEnv();
-                const version = await new Promise((resolve) => {
-                    execFile(config.cli, ["--version"], { timeout: 8000, env }, (err, stdout) => resolve(err ? null : stdout.trim()));
-                });
+                const version = await cliVersion(config.cli, 8000, env);
                 if (!version)
                     return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
                 return { state: "available", version, authenticated: support.isAuthenticated(env) };

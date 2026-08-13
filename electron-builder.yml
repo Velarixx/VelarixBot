@@ -2,27 +2,17 @@ appId: com.velarix.bot
 productName: VelarixBot
 artifactName: VelarixBot-${version}-${arch}.${ext}
 
-# In-app auto-update reads latest-mac.yml + the .zip from this PUBLIC releases
-# repo (separate from the source repo). Public → no token on users' machines.
-# Baked into app-update.yml; `latest-mac.yml` is emitted here even with
-# --publish never, and uploaded to the GitHub release alongside the artifacts.
-publish:
-  - provider: github
-    owner: Velarixx
-    repo: VelarixBot
-
+# Internal/manual distribution: artifacts are attached to private GitHub
+# Releases. There is deliberately no anonymous auto-update feed.
 directories:
   buildResources: build
   output: release
 
-# The app is three self-contained pieces, none needing node_modules at
-# runtime: the Electron main/preload (plain .mjs/.cjs), the built UI
-# (Vite → ui/), and the compiled harness server (tsc → server/), both
-# shipped in Resources and run on Electron's own Node via
-# ELECTRON_RUN_AS_NODE (the agentcal-hq pattern).
 files:
   - electron/**
   - "!electron/resources/speech-helper"
+  - "!electron/resources/cua-driver"
+  - "!electron/vendor/**"
   - "!**/node_modules/**"
   - package.json
 
@@ -33,28 +23,49 @@ extraResources:
     to: ui
   - from: dist-server
     to: server
-  - from: electron/resources/speech-helper
-    to: speech-helper
 
 mac:
+  identity: "-"
   target:
     - target: dmg
-      arch: arm64
-    - target: zip
-      arch: arm64
+      arch:
+        - arm64
+        - x64
+  extraResources:
+    - from: electron/resources/speech-helper
+      to: speech-helper
+    - from: electron/resources/cua-driver
+      to: cua-driver
+    - from: build/generated-cua-sdk/node_modules/@trycua
+      to: cua-sdk/node_modules/@trycua
+    - from: build/generated-cua-sdk/node_modules/@ubjs
+      to: cua-sdk/node_modules/@ubjs
   icon: build/icon.icns
   category: public.app-category.productivity
-  hardenedRuntime: true
+  hardenedRuntime: false
   gatekeeperAssess: false
-  entitlements: build/entitlements.mac.plist
-  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
   extendInfo:
     NSMicrophoneUsageDescription: VelarixBot uses the microphone for voice dictation into the composer.
     NSSpeechRecognitionUsageDescription: VelarixBot transcribes your voice on-device to type messages for you.
-  # Notarization runs manually after the build (notarytool + staple),
-  # mirroring the BlueyLite ship_release.sh flow.
-  notarize: false
 
 dmg:
-  sign: true
-  artifactName: VelarixBot-${version}.dmg
+  sign: false
+  artifactName: VelarixBot-${version}-${arch}.dmg
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: VelarixBot-Setup-${version}-${arch}.${ext}
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: VelarixBot
+  artifactName: VelarixBot-Setup-${version}-${arch}.${ext}

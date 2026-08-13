@@ -1,4 +1,4 @@
-// OpenMausBot server — the harness host. Clients hold no transports
+// VelarixBot server — the harness host. Clients hold no transports
 // (upstream rule): the React app dispatches typed commands over HTTP and
 // folds one SSE event stream; every provider process runs here.
 import { randomBytes } from "node:crypto";
@@ -13,7 +13,7 @@ import { ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.js";
 import { EventBus } from "./harness/bus.js";
 import { ProviderRegistry } from "./harness/registry.js";
-import { mentionedBots, Store } from "./store.js";
+import { mentionedBots, nextRunAt, Store } from "./store.js";
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const STATIC_DIR = process.env.OMB_STATIC_DIR || null;
 const MIME = {
@@ -104,6 +104,39 @@ let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
 const store = new Store(() => bootSelection);
 bootSelection = await defaultSelection();
 store.seedIfEmpty();
+const routineByThread = new Map();
+async function runRoutine(id) {
+    const routine = store.routine(id);
+    if (!routine || !routine.enabled || routine.running)
+        return;
+    const bot = store.bot(routine.botId);
+    if (!bot) {
+        store.patchRoutine(id, { enabled: false });
+        store.markRoutine(id, { running: false, lastRunAt: Date.now(), lastResult: "blocked: no such bot" });
+        return;
+    }
+    if (bot.busy) {
+        store.markRoutine(id, { lastRunAt: Date.now(), lastResult: "skipped: bot busy", nextRunAt: nextRunAt(routine.schedule) });
+        return;
+    }
+    store.markRoutine(id, { running: true, lastRunAt: Date.now(), lastResult: "running", nextRunAt: nextRunAt(routine.schedule) });
+    routineByThread.set(bot.threadId, id);
+    try {
+        await startTurn(routine.botId, routine.prompt);
+    }
+    catch (e) {
+        routineByThread.delete(bot.threadId);
+        store.markRoutine(id, { running: false, lastResult: `blocked: ${e instanceof Error ? e.message : String(e)}` });
+    }
+}
+function schedulerTick(now = Date.now()) {
+    for (const routine of store.routines) {
+        if (routine.enabled && !routine.running && routine.nextRunAt <= now)
+            void runRoutine(routine.id);
+    }
+}
+setTimeout(schedulerTick, 25).unref?.();
+setInterval(schedulerTick, 15_000).unref?.();
 // ── SSE fan-out to clients ─────────────────────────────────────────────
 const sseClients = new Set();
 function broadcast(payload) {
@@ -122,6 +155,7 @@ function broadcast(payload) {
 // and every client view are projections of it.
 const toolMessageByItem = new Map(); // itemId -> messageId
 const askMessageByRequest = new Map(); // requestId -> messageId
+const turnUsage = new Map();
 bus.subscribe((event) => {
     broadcast({ kind: "runtime", event });
     const bot = store.botByThread(event.threadId);
@@ -137,6 +171,16 @@ bus.subscribe((event) => {
             if (event.sessionId && event.providerInstanceId) {
                 store.setResumeCursor(bot.id, event.providerInstanceId, event.sessionId);
             }
+            break;
+        case "turn.started":
+            if (event.turnId)
+                turnUsage.delete(event.turnId);
+            store.patchBot(bot.id, { busy: true, state: "RUNNING", stateDetail: undefined });
+            broadcast({ kind: "bot", bot: store.bot(bot.id) });
+            break;
+        case "thread.token-usage.updated":
+            if (event.turnId)
+                turnUsage.set(event.turnId, { input: event.input, output: event.output, cost: null });
             break;
         case "item.completed":
             if (event.itemType === "assistant_text") {
@@ -177,6 +221,8 @@ bus.subscribe((event) => {
             });
             if (event.requestId)
                 askMessageByRequest.set(event.requestId, message.id);
+            store.patchBot(bot.id, { state: "NEEDS_INPUT" });
+            broadcast({ kind: "bot", bot: store.bot(bot.id) });
             break;
         }
         case "request.resolved": {
@@ -193,10 +239,14 @@ bus.subscribe((event) => {
                 if (event.requestId)
                     askMessageByRequest.delete(event.requestId);
             }
+            store.patchBot(bot.id, { state: "RUNNING" });
+            broadcast({ kind: "bot", bot: store.bot(bot.id) });
             break;
         }
         case "runtime.error":
             pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
+            store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
+            broadcast({ kind: "bot", bot: store.bot(bot.id) });
             break;
         case "turn.completed": {
             // the last live frame becomes a settled inline screen message —
@@ -204,7 +254,16 @@ bus.subscribe((event) => {
             const frame = stopScreenPoller(bot.id);
             if (frame)
                 pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
-            store.patchBot(bot.id, { busy: false, unread: true });
+            const tokens = (event.turnId ? turnUsage.get(event.turnId) : undefined) ?? { input: 0, output: 0, cost: null };
+            store.recordTurnUsage(bot.id, { ...tokens, cost: event.cost ?? null });
+            if (event.turnId)
+                turnUsage.delete(event.turnId);
+            store.patchBot(bot.id, { busy: false, unread: true, state: event.ok ? "DONE" : "BLOCKED", stateDetail: event.stopReason ?? undefined });
+            const routineId = routineByThread.get(event.threadId);
+            if (routineId) {
+                store.markRoutine(routineId, { running: false, lastResult: event.ok ? "DONE" : `BLOCKED: ${event.stopReason ?? "failed"}` });
+                routineByThread.delete(event.threadId);
+            }
             broadcast({ kind: "bot", bot: store.bot(bot.id) });
             break;
         }
@@ -253,13 +312,21 @@ function stopScreenPoller(botId) {
     return entry.last;
 }
 // Local computer-use contract written by Electron main on startup
-// (~/Library/Application Support/OpenMausBot/cua-connection.json). Read
-// fresh each turn — Electron may restart or permissions may change.
+// (app.getPath("userData")/cua-connection.json). Electron passes the exact
+// location because that path is OS-specific. Read fresh each turn.
+function cuaConnectionCandidates() {
+    if (process.env.OMB_USER_DATA)
+        return [join(process.env.OMB_USER_DATA, "cua-connection.json")];
+    const root = process.platform === "win32"
+        ? (process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"))
+        : process.platform === "darwin"
+            ? join(homedir(), "Library", "Application Support")
+            : (process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"));
+    return ["VelarixBot", "velarixbot", "OpenMausBot", "openmausbot", "OpenGrokBot", "opengrokbot"].map((dir) => join(root, dir, "cua-connection.json"));
+}
 function readCuaConnection() {
-    // new name first; pre-rename desktop builds used the old directory
-    for (const dir of ["OpenMausBot", "openmausbot", "OpenGrokBot", "opengrokbot"]) {
+    for (const p of cuaConnectionCandidates()) {
         try {
-            const p = join(homedir(), "Library", "Application Support", dir, "cua-connection.json");
             const conn = JSON.parse(readFileSync(p, "utf8"));
             if (!conn || conn.mode === "unavailable" || !conn.mcpCommand)
                 continue;
@@ -283,6 +350,20 @@ async function startTurn(botId, text, opts) {
     if (!instance) {
         throw Object.assign(new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`), { status: 409 });
     }
+    if (bot.computer === "cloud") {
+        const competing = store.bots.find((candidate) => candidate.id !== bot.id && candidate.computer === "cloud" && candidate.busy);
+        if (competing)
+            throw Object.assign(new Error(`shared cloud computer is busy with ${competing.name}`), { status: 409 });
+    }
+    if (bot.computer === "local" && instance.adapter.capabilities.localComputerMcp !== true) {
+        throw Object.assign(new Error("selected provider does not support guarded local computer control"), { status: 409 });
+    }
+    const configured = cfg.instances?.[bot.modelSelection.instanceId];
+    const fullAuto = configured?.config && typeof configured.config === "object" && configured.config.fullAuto === true;
+    if (bot.computer === "local" && fullAuto) {
+        store.patchBot(bot.id, { state: "BLOCKED", stateDetail: "local computer cannot be combined with provider full-auto" });
+        throw Object.assign(new Error("unsafe configuration: local computer cannot be combined with provider full-auto"), { status: 409 });
+    }
     const userMessage = store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
     broadcast({ kind: "message", threadId: bot.threadId, message: userMessage });
     // transcript for API-backed drivers: settled text turns only
@@ -292,7 +373,7 @@ async function startTurn(botId, text, opts) {
         .slice(-40)
         .map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.text }));
     const persona = [
-        `You are ${bot.name}, a personal bot in OpenMausBot.`,
+        `You are ${bot.name}, a personal bot in VelarixBot.`,
         bot.title && `Role: ${bot.title}.`,
         bot.description && `About: ${bot.description}`,
     ]
@@ -301,15 +382,15 @@ async function startTurn(botId, text, opts) {
     // busy flips immediately so the composer locks; the dispatch itself runs
     // in the background — box provisioning can take ~90s and must never
     // hang the HTTP request
-    store.patchBot(bot.id, { busy: true, unread: false });
+    store.patchBot(bot.id, { busy: true, unread: false, state: "RUNNING", stateDetail: undefined });
     broadcast({ kind: "bot", bot: store.bot(bot.id) });
     void (async () => {
         try {
             const integrations = {};
             if (cfg.composio?.key)
                 integrations.composio = { key: cfg.composio.key, url: cfg.composio.url };
-            const wants = bot.computer; // 'cloud' | 'local' | 'off' | undefined(auto)
-            if (wants !== "off" && wants !== "local" && box.boxConfigured(cfg)) {
+            const wants = bot.computer;
+            if (wants === "cloud" && box.boxConfigured(cfg)) {
                 let b = await box.findBox(cfg, bot.id).catch(() => null);
                 // the Computer driver runs ON the box — provision it on first use
                 if (!b && instance.driverKind === "boxAgent") {
@@ -323,7 +404,7 @@ async function startTurn(botId, text, opts) {
             // local computer (this Mac) via the Electron-hosted cua-driver: the
             // Electron main process owns the daemon (TCC attribution) and writes
             // its spawn contract to cua-connection.json; the harness only reads it
-            if (!integrations.computer && wants !== "off" && wants !== "cloud") {
+            if (wants === "local") {
                 const cua = readCuaConnection();
                 if (cua)
                     integrations.localComputer = cua;
@@ -379,7 +460,7 @@ async function startTurn(botId, text, opts) {
                 tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
             });
             broadcast({ kind: "message", threadId: bot.threadId, message: failure });
-            store.patchBot(bot.id, { busy: false });
+            store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: message.slice(0, 160) });
             broadcast({ kind: "bot", bot: store.bot(bot.id) });
         }
     })();
@@ -390,8 +471,6 @@ function configStatus() {
         xai: { configured: Boolean(cfg.xai?.key) },
         composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
         box: { configured: Boolean(cfg.box?.token) },
-        // not a secret — the sidebar shows it
-        profile: { name: cfg.profile?.name ?? "", email: cfg.profile?.email ?? "" },
     };
 }
 /** Rebuild the provider fleet after a config change so new keys take
@@ -475,7 +554,7 @@ const server = createServer(async (req, res) => {
                     });
                     broadcast({ kind: "message", threadId: from.threadId, message: note });
                 }
-                const prefixed = `[Message from @${fromName}, another bot in this OpenMausBot workspace. Reply to them.]\n\n${message}`;
+                const prefixed = `[Message from @${fromName}, another bot in this VelarixBot workspace. Reply to them.]\n\n${message}`;
                 const reply = await askBotAndWait(toBotId, prefixed, depth);
                 return json(res, 200, { botName: target.name, text: reply });
             }
@@ -502,6 +581,26 @@ const server = createServer(async (req, res) => {
             });
             return;
         }
+        // ── persistent routines ──
+        if (method === "GET" && path === "/api/routines")
+            return json(res, 200, { routines: store.routines });
+        if (method === "POST" && path === "/api/routines") {
+            const body = await readBody(req);
+            return json(res, 201, { routine: store.createRoutine({ botId: String(body.botId ?? ""), name: String(body.name ?? ""), prompt: String(body.prompt ?? ""), schedule: body.schedule }) });
+        }
+        let routineMatch = path.match(/^\/api\/routines\/([\w-]+)$/);
+        if (routineMatch && method === "PATCH") {
+            const body = await readBody(req);
+            const routine = store.patchRoutine(routineMatch[1], { name: body.name, prompt: body.prompt, schedule: body.schedule, enabled: body.enabled });
+            return routine ? json(res, 200, { routine }) : json(res, 404, { error: "no such routine" });
+        }
+        if (routineMatch && method === "DELETE")
+            return store.deleteRoutine(routineMatch[1]) ? json(res, 200, { ok: true }) : json(res, 404, { error: "no such routine" });
+        routineMatch = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
+        if (routineMatch && method === "POST") {
+            await runRoutine(routineMatch[1]);
+            return json(res, 202, { ok: true });
+        }
         // ── bots ──
         if (method === "GET" && path === "/api/bots") {
             return json(res, 200, {
@@ -520,6 +619,19 @@ const server = createServer(async (req, res) => {
             for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotExpression", "pinned", "hidden"]) {
                 if (body[key] !== undefined)
                     patch[key] = body[key];
+            }
+            if (patch.computer === "local" && process.env.OMB_LOCAL_CUA_SUPPORTED === "0") {
+                return json(res, 409, { error: "local computer control is not available on Windows; choose Cloud box or Off" });
+            }
+            if (patch.computer === "local" || (patch.modelSelection && store.bot(m[1])?.computer === "local")) {
+                const current = store.bot(m[1]);
+                const selected = (patch.modelSelection ?? current?.modelSelection);
+                const configured = selected?.instanceId ? cfg.instances?.[selected.instanceId] : undefined;
+                if (configured?.config && typeof configured.config === "object" && configured.config.fullAuto === true)
+                    return json(res, 409, { error: "unsafe configuration: local computer cannot be combined with provider full-auto" });
+                const selectedInstance = selected?.instanceId ? registry.get(selected.instanceId) : undefined;
+                if (selectedInstance && selectedInstance.adapter.capabilities.localComputerMcp !== true)
+                    return json(res, 409, { error: "selected provider does not support guarded local computer control" });
             }
             const bot = store.patchBot(m[1], patch);
             if (!bot)
@@ -596,13 +708,15 @@ const server = createServer(async (req, res) => {
                 return json(res, 404, { error: "no such bot" });
             const instance = registry.get(bot.modelSelection.instanceId);
             await instance?.adapter.interruptTurn(bot.threadId);
+            store.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
+            broadcast({ kind: "bot", bot: store.bot(bot.id) });
             return json(res, 200, { ok: true });
         }
         // identity handshake for the packaged app's port fallback: the forked
         // child proves it is OURS by echoing its pid (a stray dev server has
         // the same API shape but a different pid)
         if (method === "GET" && path === "/api/health") {
-            return json(res, 200, { app: "openmausbot", pid: process.pid, static: Boolean(STATIC_DIR) });
+            return json(res, 200, { app: "velarixbot", pid: process.pid, static: Boolean(STATIC_DIR) });
         }
         // ── provider instances (model picker) ──
         if (method === "GET" && path === "/api/instances") {
@@ -615,7 +729,7 @@ const server = createServer(async (req, res) => {
         if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
             const body = await readBody(req);
             const patch = {};
-            for (const key of ["xai", "composio", "box", "profile"]) {
+            for (const key of ["xai", "composio", "box"]) {
                 if (body[key] && typeof body[key] === "object")
                     patch[key] = body[key];
             }
@@ -623,10 +737,7 @@ const server = createServer(async (req, res) => {
                 return json(res, 400, { error: "nothing to save" });
             saveConfig(patch);
             Object.assign(cfg, loadConfig());
-            // provider keys change the fleet; a profile edit must not kill
-            // in-flight turns with a pointless reload
-            if (Object.keys(patch).some((k) => k !== "profile"))
-                await reloadProviders();
+            await reloadProviders();
             const status = configStatus();
             broadcast({ kind: "config", ...status });
             return json(res, 200, status);
@@ -704,7 +815,7 @@ const server = createServer(async (req, res) => {
     }
 });
 server.listen(PORT, "127.0.0.1", () => {
-    console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
+    console.log(`velarixbot server on http://127.0.0.1:${PORT}`);
 });
 for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => {

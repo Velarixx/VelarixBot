@@ -15,15 +15,9 @@ async function boxJson(cfg, path, opts = {}) {
     const body = await res.json().catch(() => null);
     return { ok: res.ok && body?.ok !== false, status: res.status, body };
 }
-// deterministic per-bot name; the hash kills truncated-uuid collisions
-async function boxNameFor(botId) {
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(botId));
-    const hash = [...new Uint8Array(digest)]
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("")
-        .slice(0, 6);
-    return `ogb-${botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "")}-${hash}`;
-}
+/** Stable identity: every bot deliberately sees the same durable workspace. */
+export const WORKSPACE_BOX_NAME = "velarixbot-workspace";
+const LEGACY_WORKSPACE_BOX_NAME = "openmausbot-workspace";
 export async function runCommand(cfg, boxId, command, { timeoutMs = 120_000 } = {}) {
     const res = await boxFetch(cfg, `/boxes/${boxId}/commands`, {
         method: "POST",
@@ -74,9 +68,9 @@ async function waitReady(cfg, boxId, budgetMs = 90_000) {
     return null;
 }
 export async function findBox(cfg, botId) {
-    const name = await boxNameFor(botId);
+    void botId; // retained for API compatibility
     const { body } = await boxJson(cfg, "/boxes");
-    return (body?.boxes ?? []).find((b) => b.name === name && b.state !== "error") ?? null;
+    return ((body?.boxes ?? []).find((b) => (b.name === WORKSPACE_BOX_NAME || b.name === LEGACY_WORKSPACE_BOX_NAME) && b.state !== "error") ?? null);
 }
 export function boxConfigured(cfg) {
     return Boolean(cfg.box?.token);
@@ -98,9 +92,9 @@ export async function boxStatus(cfg, botId) {
  */
 export async function provisionBox(cfg, botId, botName) {
     if (!boxConfigured(cfg)) {
-        throw new Error('box provider not enabled — add {"box":{"token":"…"}} to ~/.openmausbot/config.json');
+        throw new Error('box provider not enabled — add {"box":{"token":"…"}} to ~/.velarixbot/config.json');
     }
-    const vmName = await boxNameFor(botId);
+    const vmName = WORKSPACE_BOX_NAME;
     let box = await findBox(cfg, botId);
     let created = false;
     if (!box) {
@@ -145,7 +139,7 @@ export async function provisionBox(cfg, botId, botName) {
         // guard on the module name is safe here — the pattern cannot match this
         // bootstrap's own shell (agentcal's pgrep self-match trap)
         'if [ -f /opt/ogb/cua-ready ] && ! pgrep -f "computer_server" >/dev/null 2>&1; then DISPLAY=${DISPLAY:-:0} nohup /opt/ogb/venv/bin/python -m computer_server --host 127.0.0.1 --port 8000 --width 1280 --height 800 > /tmp/ogb-cua-server.log 2>&1 & fi',
-        `tmux has-session -t work 2>/dev/null || tmux new-session -d -s work 'echo; echo "  ▦ ${botName.replace(/["'\\\\]/g, "")}'"'"'s computer — OpenMausBot"; echo; exec bash -i'`,
+        `tmux has-session -t work 2>/dev/null || tmux new-session -d -s work 'echo; echo "  ▦ ${botName.replace(/["'\\\\]/g, "")}'"'"'s computer — VelarixBot"; echo; exec bash -i'`,
         "echo bootstrapped",
     ].join("\n");
     let boot;

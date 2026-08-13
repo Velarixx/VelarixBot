@@ -1,0 +1,147 @@
+name: Internal desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release candidate version (for example 0.2.0-rc.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: internal-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Validate RC version
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.version }}" =~ ^0\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo "Invalid 0.x RC version"; exit 1; }
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  mac:
+    needs: validate
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Set package version
+        shell: bash
+        run: pnpm version "${{ inputs.version }}" --no-git-tag-version
+      - run: pnpm build
+      - run: pnpm build:server
+      - run: pnpm build:speech
+      - run: pnpm fetch:cua
+      - run: pnpm stage:cua-sdk
+      - name: Package architecture-specific DMG
+        run: pnpm exec electron-builder --mac dmg --${{ matrix.arch }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Verify DMG and packaged runtime resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="release/VelarixBot-${{ inputs.version }}-${{ matrix.arch }}.dmg"
+          test -f "$dmg"
+          hdiutil verify "$dmg"
+          test -x "release/mac-${{ matrix.arch }}/VelarixBot.app/Contents/Resources/speech-helper"
+          test -x "release/mac-${{ matrix.arch }}/VelarixBot.app/Contents/Resources/cua-driver"
+          file "release/mac-${{ matrix.arch }}/VelarixBot.app/Contents/Resources/speech-helper" | grep -q "universal binary"
+          file "release/mac-${{ matrix.arch }}/VelarixBot.app/Contents/Resources/cua-driver" | grep -q "universal binary"
+          test -f "release/mac-${{ matrix.arch }}/VelarixBot.app/Contents/Resources/cua-sdk/node_modules/@trycua/cua-driver/dist/embedded.js"
+          codesign --verify --deep --strict --verbose=2 "release/mac-${{ matrix.arch }}/VelarixBot.app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: velarixbot-mac-${{ matrix.arch }}-${{ inputs.version }}
+          path: release/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    needs: validate
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Set package version
+        shell: bash
+        run: pnpm version "${{ inputs.version }}" --no-git-tag-version
+      - run: pnpm package:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Verify unsigned x64 installer
+        shell: pwsh
+        run: |
+          $path = "release/VelarixBot-Setup-${{ inputs.version }}-x64.exe"
+          if (-not (Test-Path $path)) { throw "Installer missing: $path" }
+          if (Test-Path "release/win-unpacked/resources/speech-helper") { throw "macOS speech helper leaked into Windows package" }
+          $signature = Get-AuthenticodeSignature $path
+          if ($signature.Status -ne "NotSigned") { throw "Expected manual-trust unsigned installer, got $($signature.Status)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: velarixbot-windows-x64-${{ inputs.version }}
+          path: release/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: velarixbot-*-${{ inputs.version }}
+          path: release-assets
+          merge-multiple: true
+      - name: Generate and verify checksums
+        working-directory: release-assets
+        run: |
+          sha256sum *.dmg *.exe > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+      - name: Create draft private prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ inputs.version }}" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "VelarixBot v${{ inputs.version }}" \
+            --draft \
+            --prerelease \
+            --generate-notes \
+            --notes "Internal unsigned release candidate. Download only from this private repository and follow INTERNAL_INSTALL.md to trust this specific app."

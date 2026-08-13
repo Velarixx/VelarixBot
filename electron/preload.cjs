@@ -3,6 +3,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("ogb", {
+  platform: process.platform,
   /** One frame of this Mac's screen as a data: URL (Screen Recording TCC). */
   screenFrame: () => ipcRenderer.invoke("screen:frame"),
   speechStart: () => ipcRenderer.invoke("speech:start"),

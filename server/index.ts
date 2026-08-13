@@ -318,13 +318,24 @@ function stopScreenPoller(botId: string): Frame | null {
 }
 
 // Local computer-use contract written by Electron main on startup
-// (~/Library/Application Support/VelarixBot/cua-connection.json). Read
-// fresh each turn — Electron may restart or permissions may change.
+// (app.getPath("userData")/cua-connection.json). Electron passes the exact
+// location because that path is OS-specific. Read fresh each turn.
+function cuaConnectionCandidates(): string[] {
+  if (process.env.OMB_USER_DATA) return [join(process.env.OMB_USER_DATA, "cua-connection.json")];
+  const root =
+    process.platform === "win32"
+      ? (process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"))
+      : process.platform === "darwin"
+        ? join(homedir(), "Library", "Application Support")
+        : (process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"));
+  return ["VelarixBot", "velarixbot", "OpenMausBot", "openmausbot", "OpenGrokBot", "opengrokbot"].map(
+    (dir) => join(root, dir, "cua-connection.json"),
+  );
+}
+
 function readCuaConnection(): { command: string; args: string[]; env: Record<string, string> } | null {
-  // new name first; pre-rename desktop builds used the old directory
-  for (const dir of ["VelarixBot", "velarixbot", "OpenMausBot", "openmausbot", "OpenGrokBot", "opengrokbot"]) {
+  for (const p of cuaConnectionCandidates()) {
     try {
-      const p = join(homedir(), "Library", "Application Support", dir, "cua-connection.json");
       const conn = JSON.parse(readFileSync(p, "utf8"));
       if (!conn || conn.mode === "unavailable" || !conn.mcpCommand) continue;
       return { command: conn.mcpCommand, args: conn.mcpArgs ?? ["mcp"], env: conn.mcpEnv ?? {} };
@@ -619,6 +630,9 @@ const server = createServer(async (req, res) => {
       const patch: Record<string, unknown> = {};
       for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotExpression", "pinned", "hidden"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
+      }
+      if (patch.computer === "local" && process.env.OMB_LOCAL_CUA_SUPPORTED === "0") {
+        return json(res, 409, { error: "local computer control is not available on Windows; choose Cloud box or Off" });
       }
       if (patch.computer === "local" || (patch.modelSelection && store.bot(m[1])?.computer === "local")) {
         const current = store.bot(m[1]);

@@ -46,6 +46,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [error, setError] = useState<string | null>(null);
   // bumped when a Box token is saved inline, to re-run the spin-up flow
   const [retry, setRetry] = useState(0);
+  const localSupported = window.ogb?.platform !== "win32";
 
   // resolve the mode on open; box endpoints are only ever hit on the
   // cloud path, so local/off can never render a JSON error as an image
@@ -61,14 +62,14 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       return;
     }
     if (bot.computer === "local") {
-      setPhase(isElectron ? "local" : "local-unavailable");
+      setPhase(isElectron && localSupported ? "local" : "local-unavailable");
       return;
     }
     // cloud, or auto (cloud box wins when one exists, else local in-app)
     api(`/api/bots/${bot.id}/computer`)
       .then((status) => {
         if (!alive) return;
-        const autoLocal = bot.computer !== "cloud" && isElectron;
+        const autoLocal = bot.computer !== "cloud" && isElectron && localSupported;
         if (!status.configured) {
           setPhase(autoLocal ? "local" : "unconfigured");
           return;
@@ -92,7 +93,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     return () => {
       alive = false;
     };
-  }, [bot.id, bot.computer, retry]);
+  }, [bot.id, bot.computer, retry, localSupported]);
 
   // cloud preview: SSE frames win while the bot works; otherwise poll
   const live = state.screens[bot.id];
@@ -176,7 +177,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     checking: "Checking…",
     starting: "Starting your bot's computer…",
     unconfigured: "No cloud computer configured",
-    "local-unavailable": "Local preview needs the desktop app — run pnpm dev:desktop",
+    "local-unavailable": localSupported ? "Local preview needs the desktop app — run pnpm dev:desktop" : "Local computer control is unavailable on Windows — choose Cloud box or Off",
     off: "This bot's computer is off",
     error: "Couldn't reach the computer",
   };
@@ -288,17 +289,15 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         <div className="mt-4 rounded-xl bg-card p-4">
           <div className="text-[15px] font-medium text-ink">Runs on</div>
           <div className="mt-0.5 text-[13px] text-ink-secondary">
-            {bot.computer ? "" : "Auto: the cloud box when one exists, else this Mac. "}Pick where this bot's
+            {bot.computer ? "" : localSupported ? "Auto: the cloud box when one exists, else this Mac. " : "Auto: the cloud box when one exists, else Off. "}Pick where this bot's
             computer lives.
           </div>
           <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
-            {(
-              [
-                ["cloud", "Cloud box"],
-                ["local", "This Mac"],
-                ["off", "Off"],
-              ] as const
-            ).map(([mode, label], i) => (
+            {([
+              ["cloud", "Cloud box"] as const,
+              ...(localSupported ? [["local", "This Mac"] as const] : []),
+              ["off", "Off"] as const,
+            ]).map(([mode, label], i) => (
               <button
                 key={mode}
                 onClick={() => dispatch({ type: "updateBot", botId: bot.id, patch: { computer: mode } })}

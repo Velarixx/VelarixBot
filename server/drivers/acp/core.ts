@@ -13,7 +13,6 @@
 // is never a security contract). session/load REPLAYS history as ordinary
 // session/update notifications, so updates are double-gated: nothing emits
 // before the prompt is sent, and `_meta.isReplay` updates are dropped.
-import { spawn, execFile } from "node:child_process";
 import { homedir } from "node:os";
 
 import type {
@@ -28,6 +27,7 @@ import type {
 import { newEventId, newId } from "../../contracts.ts";
 import { augmentedPath } from "../../env-path.ts";
 import { appendNative } from "../native.ts";
+import { cliVersion, killProcessTree, spawnCliHidden } from "../cli.ts";
 
 export interface AcpConfig {
   cli: string;
@@ -150,7 +150,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         const env = childEnv();
         const mcpServers = acpMcpServers(turn);
 
-        const child = spawn(config.cli, support.spawnArgs(config, turn), {
+        const child = spawnCliHidden(config.cli, support.spawnArgs(config, turn), {
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
@@ -188,15 +188,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             send({ jsonrpc: "2.0", id, method, params });
           });
 
-        const stop = () => {
-          try {
-            process.kill(-child.pid!, "SIGTERM");
-          } catch {
-            try {
-              child.kill("SIGTERM");
-            } catch {}
-          }
-        };
+        const stop = () => killProcessTree(child.pid);
 
         const settle = (ok: boolean, stopReason: string | null) => {
           if (state.settled) return;
@@ -468,11 +460,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
       const snapshot = async (): Promise<ProviderSnapshot> => {
         const env = childEnv();
-        const version = await new Promise<string | null>((resolve) => {
-          execFile(config.cli, ["--version"], { timeout: 8000, env }, (err, stdout) =>
-            resolve(err ? null : stdout.trim()),
-          );
-        });
+        const version = await cliVersion(config.cli, 8000, env);
         if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
         return { state: "available", version, authenticated: support.isAuthenticated(env) };
       };
