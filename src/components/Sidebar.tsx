@@ -1,4 +1,3 @@
-import { track } from "@/lib/analytics";
 import { useEffect, useState } from "react";
 import {
   BellDot,
@@ -14,27 +13,17 @@ import {
   Settings,
   Puzzle,
   Trash2,
+  CalendarClock,
 } from "lucide-react";
 import { useStore, formatTime, type Bot } from "@/state/store";
-import { MausAvatar, InitialsAvatar } from "./Avatar";
+import { MausAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
+import { formatCompactTokens, formatUsageCost, stateLabel, type BotState } from "@/lib/product";
 
 const isElectron = navigator.userAgent.includes("Electron");
 
-/** "Milind Soni" → "MS", "milind" → "M", "you@x.dev" → "Y", unset → "?" */
-function profileInitials(profile?: { name?: string; email?: string }): string {
-  const name = profile?.name?.trim();
-  if (name) {
-    const words = name.split(/\s+/);
-    return words
-      .slice(0, 2)
-      .map((w) => w[0]!.toUpperCase())
-      .join("");
-  }
-  const email = profile?.email?.trim();
-  return email ? email[0]!.toUpperCase() : "?";
-}
+const stateTone: Record<BotState, string> = { IDLE: "bg-raised text-ink-secondary", RUNNING: "bg-accent/15 text-accent", DONE: "bg-success/15 text-success", BLOCKED: "bg-danger/15 text-danger", NEEDS_INPUT: "bg-warning/15 text-warning" };
 
 function preview(bot: Bot): string {
   if (bot.busy) return "Working…";
@@ -185,10 +174,10 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
           <span className="truncate text-[13px] text-ink-secondary">
             {preview(bot)}
           </span>
-          {bot.unread && (
-            <span className="size-2 shrink-0 rounded-full bg-accent" />
-          )}
+          <span title={bot.stateDetail} className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide", stateTone[bot.state ?? "IDLE"])}>{stateLabel(bot.state ?? "IDLE")}</span>
+          {bot.unread && <span className="size-2 shrink-0 rounded-full bg-accent" />}
         </div>
+        <div className="mt-0.5 text-[10.5px] text-ink-secondary">{formatCompactTokens((bot.usage?.input ?? 0) + (bot.usage?.output ?? 0))} tokens · {formatUsageCost(bot.usage?.cost ?? null)}</div>
       </div>
     </button>
   );
@@ -219,7 +208,7 @@ export function Sidebar() {
           </div>
         )}
         <button
-          onClick={() => { track("bot_created"); dispatch({ type: "newBot" }); }}
+          onClick={() => dispatch({ type: "newBot" })}
           className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           title="New bot"
@@ -250,6 +239,11 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="px-3 pb-3 pt-2">
+        <button onClick={() => dispatch({ type: "toggleRoutines" })} className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50", state.routinesOpen && "bg-raised")}>
+          <CalendarClock size={20} className="text-ink-secondary" />
+          <span className="flex-1 text-[14px] text-ink">Routines</span>
+          {state.routines.filter((routine) => routine.enabled).length > 0 && <span className="text-[11px] text-ink-secondary">{state.routines.filter((routine) => routine.enabled).length}</span>}
+        </button>
         <button
           onClick={() => dispatch({ type: "togglePlugins", open: true })}
           className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50"
@@ -262,10 +256,8 @@ export function Sidebar() {
             onClick={() => dispatch({ type: "toggleAppSettings" })}
             className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50"
           >
-            <InitialsAvatar initials={profileInitials(state.config?.profile)} size={28} />
-            <span className="truncate text-[14px] text-ink">
-              {state.config?.profile?.name?.trim() || state.config?.profile?.email?.trim() || "You"}
-            </span>
+            <Settings size={20} className="text-ink-secondary" />
+            <span className="truncate text-[14px] text-ink">App Settings</span>
           </button>
           <button
             onClick={() => dispatch({ type: "toggleAppSettings" })}

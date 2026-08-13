@@ -1,6 +1,6 @@
 // Box (box.ascii.dev) provider — the bot's cloud computer. Ported from
 // agentcal-api src/providers/box.js, reshaped per-bot instead of
-// per-customer: every bot gets one persistent box (deterministic name),
+// per-customer: every workspace gets one shared persistent box,
 // stop pauses billing while the disk survives, and Join always mints a
 // FRESH desktop URL (stream tokens rotate on every state change — never
 // persist one).
@@ -32,15 +32,8 @@ async function boxJson(cfg: AppConfig, path: string, opts: RequestInit = {}) {
   return { ok: res.ok && body?.ok !== false, status: res.status, body };
 }
 
-// deterministic per-bot name; the hash kills truncated-uuid collisions
-async function boxNameFor(botId: string) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(botId));
-  const hash = [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, 6);
-  return `ogb-${botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "")}-${hash}`;
-}
+/** Stable identity: every bot deliberately sees the same durable workspace. */
+export const WORKSPACE_BOX_NAME = "openmausbot-workspace";
 
 export async function runCommand(cfg: AppConfig, boxId: string, command: string, { timeoutMs = 120_000 } = {}) {
   const res = await boxFetch(cfg, `/boxes/${boxId}/commands`, {
@@ -90,9 +83,9 @@ async function waitReady(cfg: AppConfig, boxId: string, budgetMs = 90_000) {
 }
 
 export async function findBox(cfg: AppConfig, botId: string) {
-  const name = await boxNameFor(botId);
+  void botId; // retained for API compatibility
   const { body } = await boxJson(cfg, "/boxes");
-  return (body?.boxes ?? []).find((b: any) => b.name === name && b.state !== "error") ?? null;
+  return (body?.boxes ?? []).find((b: any) => b.name === WORKSPACE_BOX_NAME && b.state !== "error") ?? null;
 }
 
 export function boxConfigured(cfg: AppConfig) {
@@ -118,7 +111,7 @@ export async function provisionBox(cfg: AppConfig, botId: string, botName: strin
   if (!boxConfigured(cfg)) {
     throw new Error('box provider not enabled — add {"box":{"token":"…"}} to ~/.openmausbot/config.json');
   }
-  const vmName = await boxNameFor(botId);
+  const vmName = WORKSPACE_BOX_NAME;
   let box = await findBox(cfg, botId);
   let created = false;
   if (!box) {

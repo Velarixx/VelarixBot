@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { StoreProvider, useStore } from "@/state/store";
 import { Onboarding } from "@/components/Onboarding";
-import { emailGateDone, initAnalytics } from "@/lib/analytics";
+import { onboardingComplete } from "@/lib/product";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
 import { SettingsPanel } from "@/components/SettingsPanel";
@@ -10,6 +10,7 @@ import { PluginsPanel } from "@/components/PluginsPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
 import { AppSettingsPanel } from "@/components/AppSettingsPanel";
 import { UpdateBanner } from "@/components/UpdateBanner";
+import { RoutinesPanel } from "@/components/RoutinesPanel";
 
 function Shell() {
   const { state } = useStore();
@@ -39,16 +40,14 @@ function Shell() {
       {state.computerOpen && bot && <ComputerPanel bot={bot} />}
       {state.appSettingsOpen && <AppSettingsPanel />}
       {state.pluginsOpen && <PluginsPanel />}
+      {state.routinesOpen && <RoutinesPanel />}
       </div>
     </div>
   );
 }
 
 export default function App() {
-  const [gated, setGated] = useState(() => !emailGateDone());
-  useEffect(() => {
-    initAnalytics();
-  }, []);
+  const [gated, setGated] = useState(() => !onboardingComplete());
   return (
     <StoreProvider>
       <Shell />

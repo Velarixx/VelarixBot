@@ -1,4 +1,3 @@
-import { track } from "@/lib/analytics";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Mic, Square } from "lucide-react";
 import { useStore, type Bot } from "@/state/store";
@@ -63,7 +62,6 @@ export function Composer({ bot }: { bot: Bot }) {
   const send = () => {
     if (!text.trim() || bot.busy) return;
     dispatch({ type: "send", botId: bot.id, text: text.trim() });
-    track("message_sent", { driver: bot.modelSelection?.instanceId });
     setText("");
   };
 
