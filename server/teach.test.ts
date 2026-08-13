@@ -3,13 +3,21 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "./config.ts";
 import {
+  appendTeachEvent,
+  appendTeachFrame,
+  completeTeachSession,
   deleteSkill,
   distillSkill,
   distillSkillMarkdown,
+  getRecordingSession,
   getSkill,
+  listTeachSessions,
   loadSkills,
+  loadTeachSessions,
   saveSkill,
   skillPrompt,
+  skillSystemNote,
+  startPersistedTeachSession,
 } from "./teach.ts";
 
 describe("teach-a-task distill", () => {
@@ -75,5 +83,36 @@ describe("teach-a-task distill", () => {
     expect(skillPrompt(skill, "Do it now")).toContain("Do it now");
     expect(deleteSkill(skill.id)).toBe(true);
     expect(getSkill(skill.id)).toBeNull();
+    expect(skillSystemNote(skill)).toContain("1. Open Chrome");
+    expect(skillSystemNote(null)).toBe("");
+  });
+
+  it("persists an in-progress teach session and reloads it without a live box", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    const started = startPersistedTeachSession("bot-1");
+    expect(started.status).toBe("recording");
+    appendTeachEvent("bot-1", { type: "item.started", itemType: "tool", title: "Open Chrome" });
+    appendTeachFrame("bot-1", { at: 42 });
+    const reloaded = loadTeachSessions();
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].id).toBe(started.id);
+    expect(reloaded[0].status).toBe("recording");
+    expect(reloaded[0].events).toEqual([{ type: "item.started", itemType: "tool", title: "Open Chrome" }]);
+    expect(reloaded[0].frames).toEqual([{ at: 42 }]);
+    expect(getRecordingSession("bot-1")?.id).toBe(started.id);
+    const skill = saveSkill({
+      name: "File a report",
+      botId: "bot-1",
+      markdown: "# File a report\n\n1. Open Chrome\n",
+    });
+    const completed = completeTeachSession("bot-1", { name: "File a report", skillId: skill.id });
+    expect(completed?.status).toBe("completed");
+    expect(completed?.skillId).toBe(skill.id);
+    expect(getRecordingSession("bot-1")).toBeNull();
+    const listed = listTeachSessions("bot-1");
+    expect(listed).toHaveLength(1);
+    expect(listed[0].status).toBe("completed");
+    expect(listed[0].name).toBe("File a report");
+    expect(loadTeachSessions()[0].status).toBe("completed");
   });
 });

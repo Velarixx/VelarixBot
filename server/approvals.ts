@@ -1,7 +1,7 @@
 // Per-bot approval rules. Always-allow writes a (tool, argument pattern)
 // rule; later permission asks that match auto-resolve with source "rule".
 // Secrets are stripped before a pattern is stored. No cloud policy.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
@@ -123,8 +123,4 @@ export function resolveOpenedRequest(
   const rule = matchRule(botId, tool, summary);
   if (!rule) return null;
   return { behavior: rule.action, source: "rule" };
-}
-
-export function rulesFileExists(botId: string): boolean {
-  return existsSync(rulesPath(botId));
 }

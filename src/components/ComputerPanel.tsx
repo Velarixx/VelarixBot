@@ -52,6 +52,25 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [taught, setTaught] = useState<Skill | null>(null);
   const localSupported = window.ogb?.platform !== "win32";
 
+  useEffect(() => {
+    let alive = true;
+    api(`/api/bots/${bot.id}/teach`)
+      .then((result) => {
+        if (!alive) return;
+        setTeaching(result.session?.status === "recording");
+        const completed = (result.sessions ?? []).find((s: { status: string; skillId?: string }) => s.status === "completed" && s.skillId);
+        if (completed?.skillId) {
+          return api(`/api/skills/${completed.skillId}`).then((r) => {
+            if (alive && r.skill) setTaught(r.skill);
+          });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [bot.id]);
+
   // resolve the mode on open; box endpoints are only ever hit on the
   // cloud path, so local/off can never render a JSON error as an image
   useEffect(() => {
@@ -340,7 +359,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         <div className="mt-4 rounded-xl bg-card p-4">
           <div className="text-[15px] font-medium text-ink">Teach a task</div>
           <div className="mt-0.5 text-[13px] text-ink-secondary">
-            Record this computer session into an ordered skill you can attach to a routine. Frames are counted, not replayed.
+            Record this computer session into an ordered skill you can attach to a bot or a routine. Frames are counted, not replayed.
           </div>
           <button
             onClick={() => {
@@ -366,7 +385,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           </button>
           {taught && (
             <div className="mt-3">
-              <div className="text-[12px] text-ink-secondary">{taught.name} — review the steps, then attach it on a routine.</div>
+              <div className="text-[12px] text-ink-secondary">{taught.name} — review the steps, then attach it on a bot or a routine.</div>
               <textarea
                 value={taught.markdown}
                 onChange={(e) => setTaught({ ...taught, markdown: e.target.value })}

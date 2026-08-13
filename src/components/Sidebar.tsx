@@ -4,7 +4,6 @@ import {
   ClipboardCopy,
   Copy,
   EyeOff,
-  FolderPlus,
   Pencil,
   Pin,
   PinOff,
@@ -14,6 +13,7 @@ import {
   Puzzle,
   Trash2,
   CalendarClock,
+  BookOpen,
 } from "lucide-react";
 import { useStore, formatTime, type Bot } from "@/state/store";
 import { MausAvatar } from "./Avatar";
@@ -104,10 +104,6 @@ function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => voi
           bot.pinned ? "Unpin" : "Pin",
           () => dispatch({ type: "updateBot", botId: bot.id, patch: { pinned: !bot.pinned } }),
         ),
-        item(<FolderPlus size={16} className="text-ink-secondary" />, "Move to new section", undefined, {
-          disabled: true,
-          hint: "Coming soon",
-        }),
         item(<BellDot size={16} className="text-ink-secondary" />, "Mark as Unread", () =>
           dispatch({ type: "markUnread", botId: bot.id }),
         ),
@@ -156,6 +152,7 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
         color={bot.color}
         state={stateForBot(bot)}
         size={56}
+        iconShape={bot.iconShape}
         motion={mascotMotion?.kind ?? "none"}
         motionKey={mascotMotion?.nonce ?? 0}
       />
@@ -245,6 +242,10 @@ export function Sidebar() {
           <CalendarClock size={20} className="text-ink-secondary" />
           <span className="flex-1 text-[14px] text-ink">Routines</span>
           {state.routines.filter((routine) => routine.enabled).length > 0 && <span className="text-[11px] text-ink-secondary">{state.routines.filter((routine) => routine.enabled).length}</span>}
+        </button>
+        <button onClick={() => dispatch({ type: "toggleSkills" })} className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50", state.skillsOpen && "bg-raised")}>
+          <BookOpen size={20} className="text-ink-secondary" />
+          <span className="text-[14px] text-ink">Skills</span>
         </button>
         <button
           onClick={() => dispatch({ type: "togglePlugins", open: true })}

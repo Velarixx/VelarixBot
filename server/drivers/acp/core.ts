@@ -26,6 +26,7 @@ import type {
 } from "../../contracts.ts";
 import { newEventId, newId } from "../../contracts.ts";
 import { augmentedPath } from "../../env-path.ts";
+import { acpImageBlocks, agentAcceptsImagePrompts } from "../../attachments.ts";
 import { appendNative } from "../native.ts";
 import { cliVersion, killProcessTree, spawnCliHidden } from "../cli.ts";
 
@@ -438,9 +439,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               : turn.system
                 ? `${turn.system}\n\n${turn.text}`
                 : turn.text;
+            const prompt: Array<Record<string, unknown>> = [{ type: "text", text }];
+            if (agentAcceptsImagePrompts(init)) {
+              prompt.push(...acpImageBlocks(turn.attachments ?? []));
+            }
             const result = await request("session/prompt", {
               sessionId,
-              prompt: [{ type: "text", text }],
+              prompt,
             });
             const usage = result?._meta ?? {};
             if (typeof usage.inputTokens === "number" || typeof usage.outputTokens === "number") {

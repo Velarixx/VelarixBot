@@ -6,13 +6,13 @@
 //
 // Spawn-based tests are POSIX-only until Windows CLI spawning lands (the fake
 // CLI is a shebang script Windows cannot exec directly).
-import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ensureDirs } from "../../config.ts";
+import { ensureDirs, DATA_DIR } from "../../config.ts";
 import type { ProviderInstance } from "../../contracts.ts";
 import { recordEvents, type EventRecorder } from "../../testing/events.ts";
 import { GrokAgentDriver } from "./grok.ts";
@@ -106,6 +106,55 @@ posixOnly("ACP turns (fake CLI)", () => {
     expect(seen.argv).toContain("stdio");
     expect(seen.argv).toContain("--permission-mode");
     expect(seen.env.XAI_API_KEY).toBeUndefined();
+  });
+
+  it("puts image bytes on session/prompt when the agent advertises image capability", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    const img = join(scratch, "shot.png");
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    writeFileSync(img, png);
+    writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify({ github: { token: "ghp_secret_token" } }));
+    process.env.FAKE_ACP_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-image",
+      text: "look",
+      attachments: [{ path: img, mime: "image/png" }, { path: join(DATA_DIR, "config.json") }],
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const prompt = seen.sessionPrompt.prompt;
+    expect(prompt[0]).toEqual({ type: "text", text: "look" });
+    expect(prompt[1]).toEqual({ type: "image", mimeType: "image/png", data: png.toString("base64") });
+    expect(JSON.stringify(seen.argv)).not.toContain(png.toString("base64"));
+    expect(JSON.stringify(seen)).not.toContain("ghp_secret_token");
+  });
+
+  it("keeps path refs only when the agent does not advertise image prompts", async () => {
+    await create(GrokAgentDriver, "no-image");
+    const dump = join(scratch, "dump.json");
+    const img = join(scratch, "shot.png");
+    writeFileSync(
+      img,
+      Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"),
+    );
+    process.env.FAKE_ACP_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-no-vision",
+      text: "look\n\nAttached files:\n- " + img,
+      attachments: [{ path: img, mime: "image/png" }],
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.sessionPrompt.prompt).toEqual([{ type: "text", text: expect.stringContaining(img) }]);
+    expect(JSON.stringify(seen.sessionPrompt.prompt)).not.toContain("iVBORw0KGgo");
   });
 
   it("surfaces a permission ask as request.opened and completes once allowed", async () => {
