@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -8,13 +8,18 @@ import {
   botMemoryPath,
   capMemory,
   distillMemory,
+  fleetGenerateText,
   joinMemory,
   memoryPrompt,
   readBotMemory,
+  readWorkspace,
+  recallMemory,
+  rememberNote,
   splitMemory,
   turnTextFromMessages,
   workspacePath,
   writeBotMemory,
+  writeWorkspace,
 } from "./memory.ts";
 
 const BOT = "bot-memory-1";
@@ -85,5 +90,52 @@ describe("memory files", () => {
         { role: "bot", kind: "text", text: "hello" },
       ]),
     ).toBe("User: hi\n\nBot: hello");
+  });
+
+  it("writes workspace.md and remember/recall round-trip bot + workspace notes", () => {
+    rememberNote(BOT, "Call me Sam.");
+    rememberNote(BOT, "Team ships on Fridays.", "workspace");
+    expect(existsSync(workspacePath())).toBe(true);
+    expect(readWorkspace()).toContain("Team ships on Fridays.");
+    expect(readBotMemory(BOT).user).toContain("Call me Sam.");
+
+    const all = recallMemory(BOT);
+    expect(all).toContain("Call me Sam.");
+    expect(all).toContain("Team ships on Fridays.");
+    expect(recallMemory(BOT, "friday")).toContain("Team ships on Fridays.");
+    expect(recallMemory(BOT, "friday")).not.toContain("Call me Sam.");
+    expect(recallMemory(BOT, "xyzzy")).toContain("No memory matching");
+
+    writeWorkspace("Edited in settings.");
+    expect(readWorkspace()).toContain("Edited in settings.");
+  });
+
+  it("picks any capable generateText, not only the bot's own driver", async () => {
+    const calls: string[] = [];
+    const claude = {
+      instanceId: "claude",
+      generateText: async (prompt: string) => {
+        calls.push(`claude:${prompt.slice(0, 8)}`);
+        return "Lives in Austin.";
+      },
+    };
+    const codex = { instanceId: "codex" };
+    const grok = {
+      instanceId: "grok",
+      generateText: async () => {
+        throw new Error("xai down");
+      },
+    };
+
+    expect(fleetGenerateText([codex], "codex")).toBeUndefined();
+
+    const viaClaude = fleetGenerateText([codex, claude], "codex");
+    expect(viaClaude).toBeTypeOf("function");
+    await distillMemory({ botId: BOT, turnText: "User: I moved to Austin.", generateText: viaClaude });
+    expect(readBotMemory(BOT).distilled).toContain("Lives in Austin.");
+    expect(calls.some((c) => c.startsWith("claude:"))).toBe(true);
+
+    const fallback = fleetGenerateText([grok, claude], "grok");
+    await expect(fallback!("ping")).resolves.toBe("Lives in Austin.");
   });
 });

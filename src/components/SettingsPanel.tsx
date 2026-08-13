@@ -42,6 +42,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const [apps, setApps] = useState<Array<{ slug: string; label: string }>>([]);
   const [rules, setRules] = useState<Array<{ id: string; tool: string; pattern: string; action: "allow" | "deny" }>>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [memory, setMemory] = useState({ user: "", distilled: "", workspace: "" });
 
   useEffect(() => {
     let alive = true;
@@ -82,9 +83,34 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
     };
   }, [bot.id]);
 
+  useEffect(() => {
+    let alive = true;
+    api(`/api/bots/${bot.id}/memory`)
+      .then((r) => {
+        if (!alive) return;
+        setMemory({
+          user: typeof r.user === "string" ? r.user : "",
+          distilled: typeof r.distilled === "string" ? r.distilled : "",
+          workspace: typeof r.workspace === "string" ? r.workspace : "",
+        });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [bot.id]);
+
   const toggleApp = (slug: string) => {
     const current = bot.enabledApps ?? [];
     patch({ enabledApps: current.includes(slug) ? current.filter((s) => s !== slug) : [...current, slug] });
+  };
+
+  const persistMemory = (next: { user: string; distilled: string; workspace: string }) => {
+    setMemory(next);
+    void api(`/api/bots/${bot.id}/memory`, {
+      method: "PUT",
+      body: JSON.stringify(next),
+    }).catch(() => {});
   };
 
   return (
@@ -232,6 +258,46 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               ))}
             </select>
           </Field>
+
+          <div className="rounded-xl bg-card p-4">
+            <div className="text-[15px] font-medium text-ink">Memory</div>
+            <div className="mt-0.5 text-[13px] text-ink-secondary">
+              Local notes for this bot. Distilled notes update after a turn. Workspace notes are shared with every bot. Nothing leaves this machine.
+            </div>
+            <div className="mt-3">
+              <Field label="This bot">
+                <textarea
+                  className={cn(inputCls, "min-h-[72px] resize-y")}
+                  placeholder="Facts and preferences to keep"
+                  value={memory.user}
+                  onChange={(e) => setMemory((m) => ({ ...m, user: e.target.value }))}
+                  onBlur={(e) => persistMemory({ ...memory, user: e.target.value })}
+                />
+              </Field>
+            </div>
+            <div className="mt-3">
+              <Field label="Distilled">
+                <textarea
+                  className={cn(inputCls, "min-h-[72px] resize-y font-mono text-[13px]")}
+                  placeholder="Updated automatically after turns"
+                  value={memory.distilled}
+                  onChange={(e) => setMemory((m) => ({ ...m, distilled: e.target.value }))}
+                  onBlur={(e) => persistMemory({ ...memory, distilled: e.target.value })}
+                />
+              </Field>
+            </div>
+            <div className="mt-3">
+              <Field label="Shared workspace">
+                <textarea
+                  className={cn(inputCls, "min-h-[72px] resize-y")}
+                  placeholder="Notes every bot should see"
+                  value={memory.workspace}
+                  onChange={(e) => setMemory((m) => ({ ...m, workspace: e.target.value }))}
+                  onBlur={(e) => persistMemory({ ...memory, workspace: e.target.value })}
+                />
+              </Field>
+            </div>
+          </div>
 
           <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
             <div>
