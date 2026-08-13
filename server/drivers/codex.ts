@@ -92,6 +92,37 @@ function decodeConfig(raw: unknown): CodexConfig {
 const QUESTION_TIMEOUT_NOTE = "No answer was given — use your best judgment.";
 const DENY_TIMEOUT_NOTE =
   "VelarixBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
+const CONVERSATIONAL_INPUT_NOTE =
+  "Continue in the chat. Do not present A/B/C or multiple-choice options; the user will type their next message. If they asked to create a bot, call the create_bot tool — never the shell.";
+
+const USER_INPUT_METHODS = new Set(["item/tool/requestUserInput", "tool/requestUserInput"]);
+const APPROVAL_OPTION = /^(accept|allow|approve|deny|decline|cancel)(\b|[A-Z\s(-]|$)/i;
+
+function collectUserInputLabels(params: unknown): string[] {
+  const questions = Array.isArray((params as { questions?: unknown })?.questions)
+    ? ((params as { questions: unknown[] }).questions)
+    : [];
+  return questions.flatMap((q) => {
+    const options = Array.isArray((q as { options?: unknown })?.options)
+      ? ((q as { options: unknown[] }).options)
+      : [];
+    return options
+      .map((o) => String((o as { label?: unknown; value?: unknown })?.label ?? (o as { value?: unknown })?.value ?? "").trim())
+      .filter(Boolean);
+  });
+}
+
+/** Codex `requestUserInput` is a conversational multiple-choice tool. Only
+ * treat it as a permission card when every option is an approval verb
+ * (Accept/Decline/Cancel — MCP/app tool-call approvals). */
+export function isCodexUserInputMethod(method: string): boolean {
+  return USER_INPUT_METHODS.has(method);
+}
+
+export function isCodexPermissionUserInput(params: unknown): boolean {
+  const labels = collectUserInputLabels(params);
+  return labels.length > 0 && labels.every((label) => APPROVAL_OPTION.test(label));
+}
 
 export const CodexDriver: ProviderDriver<CodexConfig> = {
   driverKind: DRIVER_KIND,
@@ -178,19 +209,40 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         stop(); // the app-server never exits on its own
       };
 
-      // server→client approval request → canonical request.opened
+      // server→client approval request → canonical request.opened.
+      // Conversational requestUserInput (A/B/C "what next") is not a
+      // permission ask — auto-answer it so it never becomes an OptionCard.
       const handleServerRequest = (msg: any) => {
         const method = msg.method as string;
         const params = msg.params ?? {};
         const legacy = method === "execCommandApproval" || method === "applyPatchApproval";
-        const isQuestion = method === "item/tool/requestUserInput";
+        const isUserInput = isCodexUserInputMethod(method);
+        const conversational = isUserInput && !isCodexPermissionUserInput(params);
         const tool =
           method === "item/fileChange/requestApproval" || method === "applyPatchApproval"
             ? "edit"
-            : isQuestion
+            : isUserInput
               ? "ask_user"
               : "shell";
-        if (config.fullAuto && !isQuestion && !turn.requireApproval) {
+        const answerUserInput = (message: string) => {
+          const answers: Record<string, { answers: string[] }> = {};
+          for (const q of Array.isArray(params.questions) ? params.questions : []) {
+            if (q?.id) answers[q.id] = { answers: [message] };
+          }
+          send({ jsonrpc: "2.0", id: msg.id, result: { answers } });
+        };
+
+        if (conversational) {
+          answerUserInput(CONVERSATIONAL_INPUT_NOTE);
+          return;
+        }
+
+        if (config.fullAuto && !turn.requireApproval) {
+          if (isUserInput) {
+            const first = collectUserInputLabels(params).find((label) => APPROVAL_OPTION.test(label));
+            answerUserInput(first || "Accept");
+            return;
+          }
           return send({ jsonrpc: "2.0", id: msg.id, result: { decision: legacy ? "approved" : "accept" } });
         }
         const requestId = newId();
@@ -202,18 +254,16 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
               : typeof params.reason === "string"
                 ? params.reason
                 : tool;
-        const choices = isQuestion
-          ? (params.questions?.[0]?.options ?? []).map((o: any) => o.label).slice(0, 5)
+        const choices = isUserInput
+          ? (params.questions?.[0]?.options ?? []).map((o: any) => o.label).filter(Boolean).slice(0, 5)
           : undefined;
         const finish = (behavior: string, message?: string, source = "user") => {
           if (!asks.delete(requestId)) return;
           clearTimeout(timer);
-          if (isQuestion) {
-            const answers: Record<string, { answers: string[] }> = {};
-            for (const q of Array.isArray(params.questions) ? params.questions : []) {
-              answers[q.id] = { answers: [message || QUESTION_TIMEOUT_NOTE] };
-            }
-            send({ jsonrpc: "2.0", id: msg.id, result: { answers } });
+          if (isUserInput) {
+            answerUserInput(
+              message || (behavior === "allow" ? "Accept" : behavior === "deny" ? "Decline" : QUESTION_TIMEOUT_NOTE),
+            );
           } else {
             send({
               jsonrpc: "2.0",
@@ -224,7 +274,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           emit({ ...base(threadId, turnId), type: "request.resolved", requestId, behavior, source });
         };
         const timer = setTimeout(
-          () => (isQuestion ? finish("answer", QUESTION_TIMEOUT_NOTE) : finish("deny", DENY_TIMEOUT_NOTE)),
+          () => (isUserInput ? finish("answer", QUESTION_TIMEOUT_NOTE) : finish("deny", DENY_TIMEOUT_NOTE)),
           15 * 60_000,
         );
         timer.unref?.();
@@ -233,7 +283,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           ...base(threadId, turnId),
           type: "request.opened",
           requestId,
-          requestType: isQuestion ? "question" : "permission",
+          requestType: "permission",
           tool,
           summary,
           choices,

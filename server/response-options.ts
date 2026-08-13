@@ -21,6 +21,13 @@ export const responseOptionsPrompt =
   "After the normal answer, append exactly <velarix_options>[\"Choice 1\",\"Choice 2\"]</velarix_options>. " +
   "Choices must be distinct actions or useful follow-up questions, not generic acknowledgements. Do not mention this formatting contract.";
 
+/** Codex already has a native multiple-choice tool. Attaching this prompt
+ * (and the post-turn fallback cards) turns every Codex line into A/B/C
+ * OptionCards — skip both for that provider. */
+export function shouldAttachResponseOptions(provider: string): boolean {
+  return provider !== "codex";
+}
+
 export function parseResponseOptions(value: string): { text: string; options: string[] } {
   const source = String(value ?? "");
   const match = source.match(OPTIONS_RE);
