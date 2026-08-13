@@ -9,6 +9,7 @@ import {
   MAUS_COLOR_NAMES,
 } from "@/lib/mascot";
 import { ICON_SHAPE_NAMES } from "@/lib/mascot-shapes";
+import { NOTIFY_EVENTS, NOTIFY_EVENT_LABELS, type NotifyEventType } from "@/lib/notify";
 import { ModelPicker } from "./ModelPicker";
 import { cn } from "@/lib/cn";
 
@@ -34,7 +35,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const patch = (
     p: Partial<
-      Pick<Bot, "name" | "title" | "description" | "notifications" | "computer" | "color" | "mascotExpression" | "iconShape" | "requireApproval" | "enabledApps" | "skillId">
+      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "iconShape" | "requireApproval" | "enabledApps" | "skillId">
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   const activeState = stateForBot(bot);
@@ -333,31 +334,73 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
           </div>
 
-          <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
-            <div>
-              <div className="text-[15px] font-medium text-ink">
-                Notifications
+          <div className="rounded-xl bg-card p-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="text-[15px] font-medium text-ink">
+                  Notifications
+                </div>
+                <div className="mt-0.5 text-[13px] text-ink-secondary">
+                  Choose which events toast for this bot
+                </div>
               </div>
-              <div className="mt-0.5 text-[13px] text-ink-secondary">
-                Get notified when this agent finishes or needs input
-              </div>
-            </div>
-            <button
-              role="switch"
-              aria-checked={bot.notifications}
-              onClick={() => patch({ notifications: !bot.notifications })}
-              className={cn(
-                "relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors",
-                bot.notifications ? "bg-accent" : "bg-raised",
-              )}
-            >
-              <span
+              <button
+                role="switch"
+                aria-checked={bot.notifications}
+                onClick={() => patch({ notifications: !bot.notifications })}
                 className={cn(
-                  "absolute top-[3px] size-5 rounded-full bg-white transition-all",
-                  bot.notifications ? "left-[21px]" : "left-[3px]",
+                  "relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors",
+                  bot.notifications ? "bg-accent" : "bg-raised",
                 )}
-              />
-            </button>
+              >
+                <span
+                  className={cn(
+                    "absolute top-[3px] size-5 rounded-full bg-white transition-all",
+                    bot.notifications ? "left-[21px]" : "left-[3px]",
+                  )}
+                />
+              </button>
+            </div>
+            {bot.notifications && (
+              <div className="mt-3 overflow-hidden rounded-lg border border-hairline/40">
+                {NOTIFY_EVENTS.map((type: NotifyEventType, i) => {
+                  const enabled = bot.notifyEvents?.[type] !== false;
+                  const copy = NOTIFY_EVENT_LABELS[type];
+                  return (
+                    <div
+                      key={type}
+                      className={cn("flex items-center justify-between gap-3 px-3 py-2", i > 0 && "border-t border-hairline/40")}
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-[13px] text-ink">{copy.title}</div>
+                        <div className="truncate text-[12px] text-ink-secondary">{copy.hint}</div>
+                      </div>
+                      <button
+                        role="switch"
+                        aria-checked={enabled}
+                        aria-label={`${enabled ? "Disable" : "Enable"} ${copy.title}`}
+                        onClick={() =>
+                          patch({
+                            notifyEvents: { ...bot.notifyEvents, [type]: !enabled },
+                          })
+                        }
+                        className={cn(
+                          "relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors",
+                          enabled ? "bg-accent" : "bg-raised",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "absolute top-[3px] size-4 rounded-full bg-white transition-all",
+                            enabled ? "left-[17px]" : "left-[3px]",
+                          )}
+                        />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">

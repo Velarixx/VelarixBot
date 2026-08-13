@@ -6,6 +6,7 @@
 // turn. Failure modes mirror how real ACP agents misbehave:
 //
 //   FAKE_ACP_MODE   happy (default) | exit-early | hang | no-auth | permission
+//                   | credential (permission ask that is a sign-in handoff)
 //                   | ask-peer (spawn the injected "agents" MCP server from
 //                     session/new's mcpServers, call list_bots + ask_bot on a
 //                     peer, and reply with what the peer said — the comms e2e)
@@ -217,16 +218,21 @@ function handle(msg: any) {
         }
       }
       playTurn();
-      if (mode === "permission") {
+      if (mode === "permission" || mode === "credential") {
         // ask the client to approve a tool, then complete once answered
         pendingPermissionId = 9001;
         onPermissionAnswered = complete;
+        const signIn = mode === "credential";
         out({
           jsonrpc: "2.0",
           id: pendingPermissionId,
           method: "session/request_permission",
           params: {
-            toolCall: { kind: "execute", rawInput: { command: "echo hi" }, title: "echo hi" },
+            toolCall: {
+              kind: "execute",
+              rawInput: { command: signIn ? "Sign in to GitHub. password: hunter2-never-leak" : "echo hi" },
+              title: signIn ? "Sign in to GitHub" : "echo hi",
+            },
             options: [
               { optionId: "allow-once", kind: "allow_once" },
               { optionId: "reject", kind: "reject_once" },

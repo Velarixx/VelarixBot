@@ -40,6 +40,14 @@ describe("Store", () => {
     expect(reloaded.messagesFor(bot.threadId).at(-1)).toMatchObject({ text: "hi" });
   });
 
+  it("persists per-event notification overrides", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.patchBot(bot.id, { notifyEvents: { "peer.reply": false, "turn.completed": true } });
+    const reloaded = new Store(selection);
+    expect(reloaded.bot(bot.id)?.notifyEvents).toMatchObject({ "peer.reply": false, "turn.completed": true });
+  });
+
   it("recovers a crashed RUNNING bot as BLOCKED/interrupted", () => {
     const store = new Store(selection);
     const bot = store.createBot();

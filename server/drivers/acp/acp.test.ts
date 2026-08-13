@@ -170,6 +170,18 @@ posixOnly("ACP turns (fake CLI)", () => {
     expect(done).toMatchObject({ ok: true });
   });
 
+  it("emits a credential handoff for a sign-in permission and keeps secrets out", async () => {
+    await create(GrokAgentDriver, "credential");
+    await instance.adapter.sendTurn({ threadId: "t-cred", text: "go" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "credential", tool: "shell" });
+    expect(JSON.stringify(opened)).not.toContain("hunter2");
+    await instance.adapter.respondToRequest("t-cred", (opened as any).requestId, { behavior: "allow" });
+    await recorder.until((e) => e.type === "request.resolved");
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.stringify(recorder.events)).not.toContain("hunter2");
+  });
+
   it("grok fails closed when the CLI advertises no cached_token (needs login)", async () => {
     await create(GrokAgentDriver, "no-auth");
     await instance.adapter.sendTurn({ threadId: "t-auth", text: "go" });

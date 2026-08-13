@@ -26,6 +26,8 @@ export interface BotRecord {
   enabledApps?: string[];
   /** Taught skill attached to every turn this bot runs. */
   skillId?: string;
+  /** Per-event notification overrides. Missing keys default on when `notifications` is on. */
+  notifyEvents?: Partial<Record<"request.opened" | "turn.completed" | "stall.nudge" | "peer.reply", boolean>>;
   /** Bots sharing this thread's transcript (group mention / ask_bot). */
   threadParticipants?: string[];
 }
@@ -80,6 +82,7 @@ function migrateBot(v: unknown): BotRecord | null {
     ...(b.requireApproval === true ? { requireApproval: true } : {}),
     ...(validStringList(b.enabledApps) ? { enabledApps: validStringList(b.enabledApps) } : {}),
     ...(typeof b.skillId === "string" && b.skillId.trim() ? { skillId: b.skillId.trim() } : {}),
+    ...(validNotifyEvents(b.notifyEvents) ? { notifyEvents: validNotifyEvents(b.notifyEvents) } : {}),
     ...(validStringList(b.threadParticipants) ? { threadParticipants: validStringList(b.threadParticipants) } : {}),
   };
 }
@@ -90,6 +93,16 @@ export function nextRunAt(schedule: RoutineSchedule, from = Date.now()): number 
   }
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.time)) throw new Error("invalid daily time");
   const [h, m] = schedule.time.split(":").map(Number); const d = new Date(from); d.setHours(h, m, 0, 0); if (d.getTime() <= from) d.setDate(d.getDate() + 1); return d.getTime();
+}
+const NOTIFY_EVENT_KEYS = new Set(["request.opened", "turn.completed", "stall.nudge", "peer.reply"]);
+function validNotifyEvents(v: unknown): BotRecord["notifyEvents"] | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: NonNullable<BotRecord["notifyEvents"]> = {};
+  for (const [key, val] of Object.entries(v as Record<string, unknown>)) {
+    if (!NOTIFY_EVENT_KEYS.has(key) || typeof val !== "boolean") continue;
+    out[key as keyof NonNullable<BotRecord["notifyEvents"]>] = val;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 function validStringList(v: unknown): string[] | undefined {
   if (!Array.isArray(v)) return undefined;
@@ -155,6 +168,11 @@ export class Store {
     const b=this.bot(id);if(!b)return null;if(patch.computer&&!MODES.has(patch.computer))throw new Error("invalid computer mode");if(patch.state&&!STATES.has(patch.state))throw new Error("invalid bot state");
     const next: Partial<BotRecord> = { ...patch };
     if (next.iconShape !== undefined) next.iconShape = resolveIconShape(next.iconShape);
+    if (next.notifyEvents !== undefined) {
+      const events = validNotifyEvents(next.notifyEvents);
+      if (events) next.notifyEvents = events;
+      else delete next.notifyEvents;
+    }
     if (Object.prototype.hasOwnProperty.call(next, "skillId")) {
       const skillId = typeof next.skillId === "string" ? next.skillId.trim() : "";
       delete next.skillId;

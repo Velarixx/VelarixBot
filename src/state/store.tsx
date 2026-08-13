@@ -14,7 +14,7 @@ import {
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotState, Usage } from "@/lib/product";
 import { appendStreamingResponseText } from "../../server/response-options";
-import { notifyCopy } from "@/lib/notify";
+import { notifyCopy, unreadBotCount, type NotifyEventType } from "@/lib/notify";
 
 export type { MausColor } from "@/lib/mascot";
 
@@ -55,6 +55,8 @@ export interface Bot {
   title: string;
   description: string;
   notifications: boolean;
+  /** Per-event overrides; missing keys default on when notifications is on. */
+  notifyEvents?: Partial<Record<NotifyEventType, boolean>>;
   color: MausColor;
   mascotExpression?: string | null;
   iconShape?: string | null;
@@ -196,6 +198,7 @@ type Action =
           | "title"
           | "description"
           | "notifications"
+          | "notifyEvents"
           | "computer"
           | "color"
           | "mascotExpression"
@@ -605,6 +608,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                   title: source.title,
                   description: source.description,
                   notifications: source.notifications,
+                  notifyEvents: source.notifyEvents,
                   modelSelection: source.modelSelection,
                   ...(source.computer ? { computer: source.computer } : {}),
                 }),
@@ -738,6 +742,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }
           break;
         }
+        case "peer.reply": {
+          const owner = stateRef.current.bots.find((b) => b.id === frame.botId);
+          const copy = owner ? notifyCopy(owner, { type: "peer.reply" }) : null;
+          if (copy && owner && window.ogb?.notify) {
+            void window.ogb.notify({ ...copy, botId: owner.id });
+          }
+          break;
+        }
         case "screen":
           rawDispatch({ type: "screenFrame", botId: frame.botId, png: frame.png, mime: frame.mime ?? "image/png" });
           break;
@@ -780,6 +792,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => window.ogb?.onNotifyClick?.((botId) => dispatch({ type: "select", id: botId })), [dispatch]);
+
+  useEffect(() => {
+    const tray = window.ogb?.tray;
+    if (!tray?.setUnread) return;
+    void tray.setUnread(unreadBotCount(state.bots));
+  }, [state.bots]);
 
   const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

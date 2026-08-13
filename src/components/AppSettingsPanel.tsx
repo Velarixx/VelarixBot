@@ -41,6 +41,39 @@ function LaunchAtLoginRow() {
     </div>
   );
 }
+
+/** Menu-bar / system-tray icon — desktop shell only; default on. */
+function TrayRow() {
+  const tray = window.ogb?.tray;
+  const [on, setOn] = useState(true);
+  useEffect(() => {
+    if (!tray) return;
+    void tray.get().then((enabled) => setOn(enabled !== false));
+  }, [tray]);
+  if (!tray) return null;
+  return (
+    <div className="mt-4 flex items-center justify-between gap-4 rounded-xl bg-card p-4">
+      <div>
+        <div className="text-[15px] font-medium text-ink">Tray icon</div>
+        <div className="mt-0.5 text-[13px] text-ink-secondary">
+          Keep VelarixBot in the tray when you close the window. Unread bots show a badge. On by default.
+        </div>
+      </div>
+      <button
+        role="switch"
+        aria-checked={on}
+        onClick={() => {
+          const next = !on;
+          setOn(next);
+          void tray.set(next).then((enabled) => setOn(enabled !== false));
+        }}
+        className={cn("relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors", on ? "bg-accent" : "bg-raised")}
+      >
+        <span className={cn("absolute top-[3px] size-5 rounded-full bg-white transition-all", on ? "left-[21px]" : "left-[3px]")} />
+      </button>
+    </div>
+  );
+}
 function UpdatesRow() {
   const s = useUpdaterState();
   if (!window.ogb?.updater) return null;
@@ -137,6 +170,8 @@ export function AppSettingsPanel() {
         </div>
 
         <LaunchAtLoginRow />
+
+        <TrayRow />
 
         <UpdatesRow />
       </div>

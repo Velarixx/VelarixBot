@@ -20,7 +20,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
-import { HANDOFF_CONTINUE, sanitizeHandoffSummary } from "../handoff.ts";
+import { classifyOpenedRequest, isCredentialAsk } from "../handoff.ts";
 
 const DRIVER_KIND = "boxAgent";
 const BOX_API = "https://ascii.dev/api/box/v1";
@@ -73,7 +73,7 @@ function askFromEvent(ev: any): {
   const summary = String(
     nested.question ?? nested.summary ?? nested.text ?? nested.message ?? nested.command ?? tool,
   ).slice(0, 300);
-  const credential = /credential|sign.?in|log.?in|handoff|takeover|2fa|password/i.test(`${kindRaw} ${tool} ${summary}`);
+  const credential = isCredentialAsk(kindRaw, tool, summary);
   const kind: "permission" | "question" | "credential" = credential
     ? "credential"
     : /question|input/i.test(kindRaw) && !/permission|approval/i.test(kindRaw)
@@ -194,14 +194,15 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
         );
         timer.unref?.();
         asks.set(ask.id, { finish });
+        const opened = classifyOpenedRequest(ask.kind, ask.tool, ask.summary, ask.choices);
         emit({
           ...base(threadId, turnId),
           type: "request.opened",
           requestId: ask.id,
-          requestType: ask.kind,
+          requestType: opened.requestType,
           tool: ask.tool,
-          summary: ask.kind === "credential" ? sanitizeHandoffSummary(ask.summary) : ask.summary,
-          choices: ask.kind === "credential" ? ask.choices ?? [HANDOFF_CONTINUE] : ask.choices,
+          summary: opened.summary,
+          choices: opened.choices,
         });
       };
 

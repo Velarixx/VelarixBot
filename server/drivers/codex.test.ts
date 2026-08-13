@@ -358,6 +358,23 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     });
   });
 
+  it("emits a credential handoff for a sign-in requestUserInput and keeps secrets out", async () => {
+    await create({ mode: "credential" });
+    await instance.adapter.sendTurn({ threadId: "t-cred", text: "log in" });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({
+      requestType: "credential",
+      tool: "ask_user",
+    });
+    expect(JSON.stringify(opened)).not.toContain("hunter2");
+    expect((opened as { summary: string }).summary).not.toContain("hunter2");
+    await instance.adapter.respondToRequest("t-cred", opened.requestId!, { behavior: "allow", source: "user" });
+    const resolved = await recorder.until((e) => e.type === "request.resolved");
+    expect(resolved).toMatchObject({ behavior: "allow", source: "user" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(JSON.stringify(recorder.events)).not.toContain("hunter2");
+  });
+
   it("rejects a second turn while one is in flight", async () => {
     await create({ mode: "approval" }); // approval mode parks the turn open
     await instance.adapter.sendTurn({ threadId: "t-busy", text: "one" });

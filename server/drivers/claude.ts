@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { claudeImageBlocks } from "../attachments.ts";
 import { DATA_DIR } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
+import { HANDOFF_CONTINUE, classifyOpenedRequest, isCredentialAsk } from "../handoff.ts";
 
 import type {
   DriverCreateInput,
@@ -73,7 +74,9 @@ const NODE_ENV_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
 // answer with "use your best judgment" — guidance, never a block.
 interface Ask {
   id: string;
-  kind: "permission" | "question";
+  kind: "permission" | "question" | "credential";
+  /** Wire protocol from the MCP proxy — credential is a classified overlay. */
+  origin: "permission" | "question";
   tool: string;
   input: Record<string, unknown>;
   at: number;
@@ -129,8 +132,12 @@ function createPermissionBroker(opts: {
         }
         if (msg.t !== "ask") continue;
         const askId = String(msg.id ?? newId());
-        const kind = msg.kind === "question" ? ("question" as const) : ("permission" as const);
-        const ask: Ask = { id: askId, kind, tool: msg.tool ?? "tool", input: msg.input ?? {}, at: Date.now() };
+        const origin = msg.kind === "question" ? ("question" as const) : ("permission" as const);
+        const tool = msg.tool ?? "tool";
+        const input = (msg.input ?? {}) as Record<string, unknown>;
+        const preview: Ask = { id: askId, kind: origin, origin, tool, input, at: Date.now() };
+        const kind = isCredentialAsk(origin, tool, askSummary(preview)) ? ("credential" as const) : origin;
+        const ask: Ask = { id: askId, kind, origin, tool, input, at: Date.now() };
         const finish = (behavior: string, message: string | undefined, source: string, always?: boolean) => {
           if (!pending.delete(askId)) return;
           clearTimeout(timer);
@@ -141,7 +148,7 @@ function createPermissionBroker(opts: {
         };
         const timer = setTimeout(
           () =>
-            kind === "question"
+            origin === "question"
               ? finish("answer", QUESTION_TIMEOUT_NOTE, "timeout")
               : finish("deny", DENY_TIMEOUT_NOTE, "timeout"),
           timeoutMs,
@@ -158,14 +165,22 @@ function createPermissionBroker(opts: {
     answer(askId: string, behavior: string, message?: string, extra?: { always?: boolean; source?: string }): boolean {
       const p = pending.get(askId);
       if (!p) return false;
-      const valid = p.ask.kind === "question" ? ["answer"] : ["allow", "deny"];
-      if (!valid.includes(behavior)) return false;
+      if (p.ask.origin === "question") {
+        if (!["answer", "allow", "deny"].includes(behavior)) return false;
+        const text =
+          behavior === "deny"
+            ? message || "Denied from VelarixBot"
+            : message || (p.ask.kind === "credential" ? HANDOFF_CONTINUE : undefined);
+        p.finish("answer", text, extra?.source ?? "user", extra?.always);
+        return true;
+      }
+      if (!["allow", "deny"].includes(behavior)) return false;
       p.finish(behavior, message, extra?.source ?? "user", extra?.always);
       return true;
     },
     close() {
       for (const p of [...pending.values()]) {
-        if (p.ask.kind === "question") p.finish("answer", "VelarixBot: the turn is ending — wrap up.", "shutdown");
+        if (p.ask.origin === "question") p.finish("answer", "VelarixBot: the turn is ending — wrap up.", "shutdown");
         else p.finish("deny", "VelarixBot: the turn ended", "shutdown");
       }
       try {
@@ -300,16 +315,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         const socketPath = permissionSocketPath(threadId);
         broker = createPermissionBroker({
           socketPath,
-          onAsk: (ask) =>
+          onAsk: (ask) => {
+            const rawChoices = Array.isArray(ask.input?.choices) ? (ask.input.choices as string[]).slice(0, 5) : undefined;
+            const opened = classifyOpenedRequest(ask.kind, ask.tool, askSummary(ask), rawChoices);
             emit({
               ...base(threadId, turnId),
               type: "request.opened",
               requestId: ask.id,
-              requestType: ask.kind,
+              requestType: opened.requestType,
               tool: ask.tool,
-              summary: askSummary(ask),
-              choices: Array.isArray(ask.input?.choices) ? (ask.input.choices as string[]).slice(0, 5) : undefined,
-            }),
+              summary: opened.summary,
+              choices: opened.choices,
+            });
+          },
           onResolve: (resolved) =>
             emit({
               ...base(threadId, turnId),
