@@ -1,19 +1,10 @@
-# Playwright + LLM-judge eval. Nightly and every rc tag/release.
+# Playwright + LLM-judge eval. Manual only while Actions minutes are tight.
 # Does not publish, tag, or edit release artifacts.
-# Skips cleanly (exit 0) when Claude/Codex secrets are absent (forks / PRs
-# without secrets stay green). On Velarixx/VelarixBot those secrets exist,
-# so schedule / rc / dispatch actually run.
+# Skips cleanly (exit 0) when Claude/Codex secrets are absent.
 name: Playwright eval
 
 on:
-  schedule:
-    - cron: "17 6 * * *"
   workflow_dispatch:
-  push:
-    tags:
-      - "v*-rc.*"
-  release:
-    types: [published, prereleased]
 
 concurrency:
   group: eval-${{ github.ref }}
@@ -30,10 +21,7 @@ jobs:
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       EVAL_ARTIFACTS: ${{ github.workspace }}/eval-artifacts
-      # Existing repo secrets (names only). Never echo these values.
-      # Claude: issue #39 / `claude setup-token`
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      # Codex: OpenAI CI auth.json seed — https://developers.openai.com/codex/auth/ci-cd-auth
       CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
     steps:
       - uses: actions/checkout@v4
