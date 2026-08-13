@@ -40,6 +40,12 @@ contextBridge.exposeInMainWorld("ogb", {
     set: (enabled) => ipcRenderer.invoke("login:set", enabled),
   },
 
+  tray: {
+    get: () => ipcRenderer.invoke("tray:get"),
+    set: (enabled) => ipcRenderer.invoke("tray:set", enabled),
+    setUnread: (count) => ipcRenderer.invoke("tray:setUnread", count),
+  },
+
   /** In-app auto-update. State object:
    *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"error",
    *    version?, percent?, message?, tokenConfigured? }. onState fires immediately

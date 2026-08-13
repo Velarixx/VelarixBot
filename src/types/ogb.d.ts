@@ -30,6 +30,12 @@ declare global {
         get(): Promise<boolean>;
         set(enabled: boolean): Promise<boolean>;
       };
+      /** Menu-bar / system-tray icon. Default on. Packaged/desktop only. */
+      tray?: {
+        get(): Promise<boolean>;
+        set(enabled: boolean): Promise<boolean>;
+        setUnread(count: number): Promise<boolean>;
+      };
       /** In-app auto-update (packaged app only; honest no-op in dev). onState
        * fires immediately with the current state, then on transitions. */
       updater?: {

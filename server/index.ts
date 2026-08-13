@@ -27,7 +27,7 @@ import type { RuntimeEvent } from "./contracts.ts";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
-import { HANDOFF_CONTINUE, HANDOFF_SUBTITLE, HANDOFF_TITLE, sanitizeHandoffSummary } from "./handoff.ts";
+import { HANDOFF_CONTINUE, HANDOFF_TITLE, classifyOpenedRequest, handoffSubtitle, isCredentialAsk } from "./handoff.ts";
 import {
   deleteBotMemory,
   distillMemory,
@@ -178,6 +178,12 @@ function askBotAndWait(
           text: `@${target.name}: ${out}`,
         });
         broadcast({ kind: "message", threadId: groupThreadId, message: note });
+        const owner = store.botByThread(groupThreadId);
+        if (owner) {
+          store.patchBot(owner.id, { unread: true });
+          broadcast({ kind: "bot", bot: store.bot(owner.id) });
+          broadcast({ kind: "peer.reply", botId: owner.id, fromBotId: target.id, fromName: target.name });
+        }
       }
       resolve(out);
     };
@@ -456,7 +462,7 @@ bus.subscribe((event: RuntimeEvent) => {
           requestType: event.requestType,
         });
       }
-      if (event.requestType === "permission" && event.requestId) {
+      if (event.requestType === "permission" && event.requestId && !isCredentialAsk(event.requestType, event.tool, event.summary)) {
         const auto = resolveOpenedRequest(bot.id, event.tool, event.summary);
         if (auto) {
           const instance = registry.get(bot.modelSelection.instanceId);
@@ -469,24 +475,25 @@ bus.subscribe((event: RuntimeEvent) => {
         }
       }
       const permission = event.requestType === "permission";
-      const credential = event.requestType === "credential";
+      const opened = classifyOpenedRequest(event.requestType, event.tool, event.summary, event.choices);
+      const credential = opened.requestType === "credential";
       const message = pushMessage({
         role: "bot",
         kind: "options",
         card: {
-          title: credential ? HANDOFF_TITLE : permission ? "Approval needed" : "Your bot has a question",
+          title: credential ? HANDOFF_TITLE : permission && !credential ? "Approval needed" : "Your bot has a question",
           subtitle: credential
-            ? sanitizeHandoffSummary(event.summary) || HANDOFF_SUBTITLE
+            ? opened.summary || handoffSubtitle(bot.computer)
             : event.summary,
-          options: event.choices?.length
-            ? event.choices
+          options: opened.choices?.length
+            ? opened.choices
             : credential
               ? [HANDOFF_CONTINUE]
               : permission
                 ? ["Allow", "Deny"]
                 : [],
           requestId: event.requestId,
-          requestType: event.requestType,
+          requestType: opened.requestType,
         },
       });
       if (event.requestId) askMessageByRequest.set(event.requestId, message.id);
@@ -1084,7 +1091,7 @@ const server = createServer(async (req, res) => {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: Record<string, unknown> = {};
-      for (const key of ["name", "title", "description", "notifications", "modelSelection", "unread", "computer", "color", "mascotExpression", "iconShape", "pinned", "hidden", "requireApproval", "enabledApps", "skillId", "threadParticipants"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "iconShape", "pinned", "hidden", "requireApproval", "enabledApps", "skillId", "threadParticipants"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (patch.enabledApps !== undefined) patch.enabledApps = parseAllowedToolkits(patch.enabledApps);

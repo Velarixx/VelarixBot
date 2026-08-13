@@ -1,11 +1,13 @@
 import { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, ipcMain, nativeImage, session, shell, systemPreferences, utilityProcess } from "electron";
-import path, { basename } from "node:path";
+import path, { basename, join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
 import { startSpeech, stopSpeech } from "./speech.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { registerNotifyIpc } from "./notify.mjs";
 import { shouldQuitOnLastWindow } from "./background.mjs";
+import { parseTrayEnabled, serializeTrayPrefs, trayBadgeText, trayTooltip } from "./tray-settings.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 127.0.0.1 explicitly — vite binds IPv4; a bare "localhost" here can
@@ -17,6 +19,8 @@ const IS_MAC = process.platform === "darwin";
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
+let trayEnabled = true;
+let trayUnread = 0;
 
 // Packaged: the harness server ships in Resources (compiled JS, zero deps)
 // and runs on Electron's own Node via utilityProcess. It serves the built
@@ -124,6 +128,45 @@ function createWindow() {
   return win;
 }
 
+function trayPrefsPath() {
+  return join(app.getPath("userData"), "prefs.json");
+}
+
+function loadTrayEnabled() {
+  try {
+    return parseTrayEnabled(JSON.parse(readFileSync(trayPrefsPath(), "utf8")));
+  } catch {
+    return true;
+  }
+}
+
+function saveTrayEnabled(enabled) {
+  try {
+    mkdirSync(app.getPath("userData"), { recursive: true });
+    writeFileSync(trayPrefsPath(), serializeTrayPrefs(enabled));
+  } catch (e) {
+    console.error("[tray] prefs save failed:", e);
+  }
+}
+
+function applyTrayBadge(count) {
+  trayUnread = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (!tray) return;
+  try {
+    tray.setToolTip(trayTooltip(trayUnread));
+    if (process.platform === "darwin") tray.setTitle(trayBadgeText(trayUnread));
+  } catch {
+    /* some platforms reject setTitle */
+  }
+}
+
+function destroyTray() {
+  try {
+    tray?.destroy();
+  } catch {}
+  tray = null;
+}
+
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     mainWindow = createWindow();
@@ -141,7 +184,6 @@ function createTray() {
   if (tray) return tray;
   const icon = nativeImage.createFromPath(APP_ICON);
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
-  tray.setToolTip("VelarixBot");
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "Show", click: () => showMainWindow() },
@@ -156,6 +198,7 @@ function createTray() {
     ]),
   );
   tray.on("click", () => showMainWindow());
+  applyTrayBadge(trayUnread);
   return tray;
 }
 
@@ -233,6 +276,26 @@ ipcMain.handle("login:set", (_event, enabled) => {
   return Boolean(app.getLoginItemSettings()?.openAtLogin);
 });
 
+ipcMain.handle("tray:get", () => trayEnabled !== false);
+ipcMain.handle("tray:set", (_event, enabled) => {
+  trayEnabled = enabled !== false;
+  saveTrayEnabled(trayEnabled);
+  if (trayEnabled) {
+    try {
+      createTray();
+    } catch (e) {
+      console.error("[tray] failed:", e);
+    }
+  } else {
+    destroyTray();
+  }
+  return trayEnabled;
+});
+ipcMain.handle("tray:setUnread", (_event, count) => {
+  applyTrayBadge(count);
+  return true;
+});
+
 app.whenReady().then(async () => {
   if (IS_MAC) app.dock.setIcon(APP_ICON);
   // getDisplayMedia in the renderer → this handler → ScreenCaptureKit, all
@@ -256,10 +319,13 @@ app.whenReady().then(async () => {
   // failure — computer use degrades to "unavailable", the rest still works.
   startCua().catch((e) => console.error("[cua] start failed:", e));
   if (app.isPackaged) serverReady = await startServerPackaged();
-  try {
-    createTray();
-  } catch (e) {
-    console.error("[tray] failed:", e);
+  trayEnabled = loadTrayEnabled();
+  if (trayEnabled) {
+    try {
+      createTray();
+    } catch (e) {
+      console.error("[tray] failed:", e);
+    }
   }
   mainWindow = createWindow();
   startUpdater(mainWindow);
@@ -282,10 +348,7 @@ app.on("before-quit", (e) => {
   try {
     serverProc?.kill();
   } catch {}
-  try {
-    tray?.destroy();
-  } catch {}
-  tray = null;
+  destroyTray();
   stopCua().finally(() => {
     cuaCleanedUp = true;
     app.quit();

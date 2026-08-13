@@ -27,6 +27,7 @@ import type {
 import { newEventId, newId } from "../../contracts.ts";
 import { augmentedPath } from "../../env-path.ts";
 import { acpImageBlocks, agentAcceptsImagePrompts } from "../../attachments.ts";
+import { classifyOpenedRequest } from "../../handoff.ts";
 import { appendNative } from "../native.ts";
 import { cliVersion, killProcessTree, spawnCliHidden } from "../cli.ts";
 
@@ -269,13 +270,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           }, 15 * 60_000);
           timer.unref?.();
           asks.set(requestId, finish);
+          const opened = classifyOpenedRequest("permission", tool, summary);
           emit({
             ...base(threadId, turnId),
             type: "request.opened",
             requestId,
-            requestType: "permission",
+            requestType: opened.requestType,
             tool,
-            summary,
+            summary: opened.summary,
+            choices: opened.choices,
           });
         };
 

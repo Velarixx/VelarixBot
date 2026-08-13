@@ -11,6 +11,7 @@
 //   FAKE_CODEX_MODE   happy (default) | approval | resume | stream | no-models
 //                     | user-input (conversational A/B/C requestUserInput)
 //                     | user-input-approval (requestUserInput Accept/Decline)
+//                     | credential (requestUserInput sign-in handoff)
 //                     | exit-zero (assistant text, then process.exit(0)
 //                       without turn/completed)
 //                     | exit-early (crash with code 3 before a turn)
@@ -171,6 +172,22 @@ process.stdin.on("data", (chunk) => {
                     { value: "decline", label: "Decline" },
                     { value: "cancel", label: "Cancel" },
                   ],
+                },
+              ],
+            },
+          });
+        } else if (mode === "credential") {
+          out({
+            jsonrpc: "2.0",
+            id: 100,
+            method: "item/tool/requestUserInput",
+            params: {
+              questions: [
+                {
+                  id: "signin",
+                  header: "Sign in",
+                  question: "Sign in to GitHub to continue. password: hunter2-never-leak",
+                  options: [{ value: "done", label: "I've signed in — continue" }],
                 },
               ],
             },

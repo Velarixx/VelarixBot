@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 import { api, useStore, type Message } from "@/state/store";
+import { shouldOfferDesktop } from "../../server/handoff";
 import { cn } from "@/lib/cn";
 
 const LETTERS = ["A", "B", "C", "D", "E", "F"];
@@ -12,13 +13,15 @@ export function OptionCard({
   botId: string;
   message: Message;
 }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   const [custom, setCustom] = useState("");
   const [joining, setJoining] = useState(false);
   const openedDesktop = useRef(false);
   const card = message.card;
   const permission = card?.requestType === "permission" || (!card?.requestType && !!card?.requestId && card.title === "Approval needed");
   const credential = card?.requestType === "credential";
+  const bot = state.bots.find((b) => b.id === botId);
+  const offerDesktop = credential && shouldOfferDesktop(bot?.computer, state.config?.box.configured === true);
 
   const openDesktop = () => {
     setJoining(true);
@@ -31,10 +34,10 @@ export function OptionCard({
   };
 
   useEffect(() => {
-    if (!credential || !card || card.answered || card.dismissed || openedDesktop.current) return;
+    if (!offerDesktop || !card || card.answered || card.dismissed || openedDesktop.current) return;
     openedDesktop.current = true;
     openDesktop();
-  }, [credential, card?.answered, card?.dismissed, botId]);
+  }, [offerDesktop, card?.answered, card?.dismissed, botId]);
 
   if (!card || card.dismissed) return null;
 
@@ -62,7 +65,7 @@ export function OptionCard({
         </button>
       </div>
 
-      {credential && !card.answered && (
+      {offerDesktop && !card.answered && (
         <button
           onClick={openDesktop}
           disabled={joining}

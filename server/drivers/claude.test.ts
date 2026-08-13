@@ -333,6 +333,58 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
   });
 
+  it("emits a credential handoff for a sign-in ask and keeps secrets out of events", async () => {
+    await create("hang");
+    await instance.adapter.sendTurn({ threadId: "t-cred-abc", text: "go" });
+    await recorder.until((e) => e.type === "session.started");
+
+    const tag = "t-cred-abc".replace(/[^\w-]/g, "").slice(0, 8);
+    const socketPath = join(DATA_DIR, `perm-${tag}.sock`);
+    const conn = connect(socketPath);
+    const answered = new Promise<{ behavior: string; message?: string }>((resolve) => {
+      let buf = "";
+      conn.on("data", (c) => {
+        buf += c;
+        const nl = buf.indexOf("\n");
+        if (nl !== -1) resolve(JSON.parse(buf.slice(0, nl)));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      conn.on("connect", resolve);
+      conn.on("error", reject);
+    });
+    conn.write(
+      JSON.stringify({
+        t: "ask",
+        id: "ask-cred",
+        kind: "question",
+        tool: "ask_user",
+        input: { question: "Sign in to GitHub. password: hunter2-never-leak" },
+      }) + "\n",
+    );
+
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({
+      requestType: "credential",
+      tool: "ask_user",
+      requestId: "ask-cred",
+    });
+    expect(JSON.stringify(opened)).not.toContain("hunter2");
+    expect((opened as { summary: string }).summary).not.toContain("hunter2");
+
+    await instance.adapter.respondToRequest("t-cred-abc", "ask-cred", { behavior: "allow", source: "user" });
+    const reply = await answered;
+    expect(reply).toMatchObject({ behavior: "answer" });
+    expect(reply.message ?? "").toMatch(/signed in/i);
+    const resolved = await recorder.until((e) => e.type === "request.resolved");
+    expect(resolved).toMatchObject({ behavior: "answer", source: "user" });
+    expect(JSON.stringify(recorder.events)).not.toContain("hunter2");
+
+    conn.end();
+    await instance.adapter.interruptTurn("t-cred-abc");
+    await recorder.until((e) => e.type === "turn.completed");
+  });
+
   it("forwards always on allow so the permission proxy can send updatedPermissions", async () => {
     await create("hang");
     await instance.adapter.sendTurn({ threadId: "t-perm-always", text: "go" });

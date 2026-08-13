@@ -28,6 +28,7 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
 import { codexImageInput } from "../attachments.ts";
+import { HANDOFF_CONTINUE, classifyOpenedRequest, isCredentialAsk } from "../handoff.ts";
 import { cliVersion, killProcessTree, spawnCliHidden } from "./cli.ts";
 import { FALLBACK_CODEX_MODELS, loadCodexModelCatalog } from "./codex-models.ts";
 import { appendNative } from "./native.ts";
@@ -215,13 +216,23 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const params = msg.params ?? {};
         const legacy = method === "execCommandApproval" || method === "applyPatchApproval";
         const isUserInput = isCodexUserInputMethod(method);
-        const conversational = isUserInput && !isCodexPermissionUserInput(params);
         const tool =
           method === "item/fileChange/requestApproval" || method === "applyPatchApproval"
             ? "edit"
             : isUserInput
               ? "ask_user"
               : "shell";
+        const summaryPreview =
+          typeof params.command === "string"
+            ? params.command.slice(0, 200)
+            : Array.isArray(params.questions)
+              ? params.questions.map((q: any) => q.question ?? q.header).filter(Boolean).join(" · ")
+              : typeof params.reason === "string"
+                ? params.reason
+                : tool;
+        const credential = isCredentialAsk(isUserInput ? "question" : "permission", tool, summaryPreview);
+        const permissionUserInput = isUserInput && isCodexPermissionUserInput(params);
+        const conversational = isUserInput && !permissionUserInput && !credential;
         const answerUserInput = (message: string) => {
           const answers: Record<string, { answers: string[] }> = {};
           for (const q of Array.isArray(params.questions) ? params.questions : []) {
@@ -244,24 +255,29 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           return send({ jsonrpc: "2.0", id: msg.id, result: { decision: legacy ? "approved" : "accept" } });
         }
         const requestId = newId();
-        const summary =
-          typeof params.command === "string"
-            ? params.command.slice(0, 200)
-            : Array.isArray(params.questions)
-              ? params.questions.map((q: any) => q.question ?? q.header).filter(Boolean).join(" · ")
-              : typeof params.reason === "string"
-                ? params.reason
-                : tool;
+        const summary = summaryPreview;
         const choices = isUserInput
           ? (params.questions?.[0]?.options ?? []).map((o: any) => o.label).filter(Boolean).slice(0, 5)
           : undefined;
+        const opened = classifyOpenedRequest(
+          credential ? "question" : permissionUserInput || !isUserInput ? "permission" : "question",
+          tool,
+          summary,
+          choices,
+        );
         const finish = (behavior: string, message?: string, source = "user") => {
           if (!asks.delete(requestId)) return;
           clearTimeout(timer);
           if (isUserInput) {
-            answerUserInput(
-              message || (behavior === "allow" ? "Accept" : behavior === "deny" ? "Decline" : QUESTION_TIMEOUT_NOTE),
-            );
+            const fallback =
+              behavior === "allow"
+                ? opened.requestType === "credential"
+                  ? HANDOFF_CONTINUE
+                  : "Accept"
+                : behavior === "deny"
+                  ? "Decline"
+                  : QUESTION_TIMEOUT_NOTE;
+            answerUserInput(message || fallback);
           } else {
             send({
               jsonrpc: "2.0",
@@ -281,10 +297,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           ...base(threadId, turnId),
           type: "request.opened",
           requestId,
-          requestType: "permission",
+          requestType: opened.requestType,
           tool,
-          summary,
-          choices,
+          summary: opened.summary,
+          choices: opened.choices,
         });
       };
 
