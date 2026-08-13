@@ -4,13 +4,18 @@
 // initialize/thread/turn handshake, then plays a scripted turn. Like the
 // real app-server, it never exits on its own — the driver kills it.
 //
-//   FAKE_CODEX_MODE   happy (default) | approval | resume | stream
+// Also answers `codex --version` and `codex debug models [--bundled]` so
+// catalog probes at create/snapshot don't hang. Dump JSON matches the
+// real CLI: `{ models: [{ slug, display_name, visibility }] }`.
+//
+//   FAKE_CODEX_MODE   happy (default) | approval | resume | stream | no-models
 //   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision,
 //                     threadStartConfig, threadResumeConfig} as JSON
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { writeFileSync } from "node:fs";
 
+const argv = process.argv.slice(2);
 const mode = process.env.FAKE_CODEX_MODE ?? "happy";
 const calls: Array<{ method: string; params: unknown }> = [];
 let decision: unknown = null;
@@ -25,13 +30,42 @@ const dump = () => {
     writeFileSync(
       process.env.FAKE_CODEX_DUMP,
       JSON.stringify(
-        { argv: process.argv.slice(2), env: process.env, calls, decision, threadStartConfig, threadResumeConfig },
+        { argv, env: process.env, calls, decision, threadStartConfig, threadResumeConfig },
         null,
         2,
       ),
     );
   }
 };
+
+if (argv.includes("--version")) {
+  process.stdout.write("fake-codex 0.144.4\n");
+  process.exit(0);
+}
+
+if (argv[0] === "debug" && argv[1] === "models") {
+  dump();
+  if (mode === "no-models") {
+    process.stderr.write("fake-codex: no model catalog\n");
+    process.exit(1);
+  }
+  // Wider than the old hardcoded Sol/Terra/5.4 set. hide+gpt stays;
+  // Auto Review is internal and the driver must drop it.
+  process.stdout.write(
+    JSON.stringify({
+      models: [
+        { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" },
+        { slug: "gpt-5.6-terra", display_name: "GPT-5.6-Terra", visibility: "list" },
+        { slug: "gpt-5.6-luna", display_name: "GPT-5.6-Luna", visibility: "list" },
+        { slug: "gpt-5.5", display_name: "GPT-5.5", visibility: "list" },
+        { slug: "gpt-5.4", display_name: "GPT-5.4", visibility: "hide" },
+        { slug: "gpt-5.4-mini", display_name: "GPT-5.4-Mini", visibility: "hide" },
+        { slug: "codex-auto-review", display_name: "Codex Auto Review", visibility: "hide" },
+      ],
+    }) + "\n",
+  );
+  process.exit(0);
+}
 
 const finishTurn = () => {
   notify("item/completed", { item: { id: "i1", type: "commandExecution", status: "completed" } });

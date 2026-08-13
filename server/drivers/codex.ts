@@ -26,19 +26,10 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
 import { cliVersion, killProcessTree, spawnCliHidden } from "./cli.ts";
+import { FALLBACK_CODEX_MODELS, loadCodexModelCatalog } from "./codex-models.ts";
 import { appendNative } from "./native.ts";
 
 const DRIVER_KIND = "codex";
-
-// catalog ported from upstream packages/contracts/src/model.ts
-const MODELS = {
-  default: "gpt-5.6-sol",
-  options: [
-    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
-    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-    { id: "gpt-5.4", label: "GPT-5.4" },
-  ],
-};
 
 // proxy entry files live next to this one as .ts in dev (node type
 // stripping) and .js in the compiled dist-server the packaged app ships
@@ -103,12 +94,14 @@ const DENY_TIMEOUT_NOTE =
 export const CodexDriver: ProviderDriver<CodexConfig> = {
   driverKind: DRIVER_KIND,
   metadata: { displayName: "Codex", supportsMultipleInstances: true },
-  models: MODELS,
+  models: FALLBACK_CODEX_MODELS,
   decodeConfig,
   defaultConfig: () => decodeConfig({}),
 
   async create(input: DriverCreateInput<CodexConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
+    const probeEnv = { ...process.env, PATH: augmentedPath() };
+    let models = await loadCodexModelCatalog(config.cli, probeEnv);
     const listeners = new Set<RuntimeEventListener>();
     interface Turn {
       stop: () => void;
@@ -429,8 +422,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     };
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
-      const version = await cliVersion(config.cli, 8000, { ...process.env, PATH: augmentedPath() });
+      const version = await cliVersion(config.cli, 8000, probeEnv);
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
+      models = await loadCodexModelCatalog(config.cli, probeEnv);
       return { state: "available", version };
     };
 
@@ -439,7 +433,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       driverKind: DRIVER_KIND,
       displayName: input.displayName,
       enabled: input.enabled,
-      models: MODELS,
+      get models() {
+        return models;
+      },
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
