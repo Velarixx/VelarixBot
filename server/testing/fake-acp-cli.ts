@@ -9,6 +9,8 @@
 //                   | ask-peer (spawn the injected "agents" MCP server from
 //                     session/new's mcpServers, call list_bots + ask_bot on a
 //                     peer, and reply with what the peer said — the comms e2e)
+//                   | create-bot (call create_bot on the agents MCP and
+//                     reply with the sidebar id the harness returned)
 //   FAKE_ACP_DUMP   path to write {argv, env} as JSON, so a test can assert
 //                   argv shape (agent/stdio flags) and env hygiene
 //
@@ -183,6 +185,26 @@ function handle(msg: any) {
             })
             .catch((e) => {
               out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `peer error: ${(e as Error).message}` } } } });
+              complete();
+            });
+          return;
+        }
+      }
+      if (mode === "create-bot" && agentsMcp) {
+        const depth = Number(agentsMcp.env?.find((e) => e.name === "OMB_TURN_DEPTH")?.value ?? "0") || 0;
+        if (depth === 0) {
+          void driveMcp(agentsMcp, [
+            {
+              name: "create_bot",
+              args: () => ({ name: "Ops", title: "Ops specialist", description: "Handles ops" }),
+            },
+          ])
+            .then((reply) => {
+              out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `created: ${reply}` } } } });
+              complete();
+            })
+            .catch((e) => {
+              out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: `create error: ${(e as Error).message}` } } } });
               complete();
             });
           return;

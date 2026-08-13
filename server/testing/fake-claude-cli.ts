@@ -21,6 +21,18 @@ const argAfter = (flag: string): string | null => {
   return i === -1 ? null : (argv[i + 1] ?? null);
 };
 
+if (argv.includes("--version")) {
+  process.stdout.write("fake-claude 1.0.0\n");
+  process.exit(0);
+}
+
+// generateText one-shot (`-p … --output-format text`). Regular turns use
+// `--output-format stream-json` and fall through to the stdin script.
+if (argAfter("--output-format") === "text") {
+  process.stdout.write("User prefers concise replies. Last turn noted.\n");
+  process.exit(0);
+}
+
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
 
 let stdin = "";
