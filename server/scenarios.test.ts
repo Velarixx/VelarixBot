@@ -360,6 +360,23 @@ describe("harness HTTP/SSE scenarios (fake CLIs)", () => {
     expect(after.state).toBe("DONE");
   }, 40_000);
 
+  it("rejects computer:'cloud' for drivers without cloud computer tools (mirror of the local 409)", async () => {
+    const hermesBot = await addBot("Hermes NoBox", hermesSel);
+    const denied = await h.api("PATCH", `/api/bots/${hermesBot.id}`, { computer: "cloud" });
+    expect(denied.status).toBe(409);
+    expect(denied.body.error).toMatch(/no cloud computer tools/);
+
+    const claudeBot = await addBot("Claude Box", claudeSel);
+    const ok = await h.api("PATCH", `/api/bots/${claudeBot.id}`, { computer: "cloud" });
+    expect(ok.status).toBe(200);
+    // moving a cloud bot onto a non-mounting driver is the same 409 …
+    const swap = await h.api("PATCH", `/api/bots/${claudeBot.id}`, { modelSelection: hermesSel });
+    expect(swap.status).toBe(409);
+    // … unless the same PATCH also turns the computer off (effective mode)
+    const off = await h.api("PATCH", `/api/bots/${claudeBot.id}`, { computer: "off", modelSelection: hermesSel });
+    expect(off.status).toBe(200);
+  });
+
   it("hermes create_bot round-trips through agents MCP onto the sidebar (bot.added)", async () => {
     const maker = await addBot("Hermes Maker", hermesCreate);
     await send(maker.id, "please create a scribe bot");

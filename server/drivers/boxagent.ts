@@ -323,7 +323,8 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session" },
+        // cloudComputer: the turn RUNS on the bot's box (no MCP mount needed)
+        capabilities: { sessionModelSwitch: "in-session", cloudComputer: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.cancel(),
         respondToRequest: async (threadId, requestId, decision) => {
