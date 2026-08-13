@@ -146,7 +146,6 @@ jobs:
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --title "VelarixBot v${{ inputs.version }}" \
-            --draft \
             --prerelease \
             --generate-notes \
             --notes "Internal unsigned release candidate. Download only from this private repository and follow INTERNAL_INSTALL.md to trust this specific app."
