@@ -107,14 +107,16 @@ export interface SendTurnInput {
      * MUST be spawned by Electron main; the harness only points the agent
      * CLI at the already-running socket via this MCP proxy command). */
     localComputer?: { command: string; args: string[]; env: Record<string, string> };
-    /** Peer-agent comms: an MCP proxy (list_bots / ask_bot / create_bot) that
+    /** Peer-agent comms: an MCP proxy (list_bots / ask_bot / create_bot / update_bot / delete_bot) that
      * routes back through the harness so this bot can message other bots and
-     * create real sidebar bots. The harness owns turns, permissions, and
+     * create, update, or remove real sidebar bots. The harness owns turns, permissions, and
      * recursion limits; the proxy only forwards. */
     agents?: { command: string; args: string[]; env: Record<string, string> };
     /** Local markdown memory: remember / recall MCP tools. Spawn contract is
      * built by the harness (token in env, never argv). */
     memory?: { command: string; args: string[]; env: Record<string, string> };
+    /** Workspace CoS tools (web_search, ask_choice, routines, connect_app, …). */
+    workspace?: { command: string; args: string[]; env: Record<string, string> };
   };
   cwd?: string;
   /** Local file paths from a drop/paste. Drivers must not upload them. */

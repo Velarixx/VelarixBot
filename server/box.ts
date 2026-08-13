@@ -235,3 +235,15 @@ export async function screenshotBox(cfg: AppConfig, botId: string) {
   if (!ok || typeof png !== "string" || !png) throw new Error("could not read the frame back from the box");
   return { png, format: "png" };
 }
+
+/** Read a file from the bot's box as base64. Path must be absolute. */
+export async function readBoxPath(cfg: AppConfig, botId: string, filePath: string) {
+  if (!filePath.startsWith("/") || filePath.includes("..")) throw new Error("path must be absolute");
+  const box = await findBox(cfg, botId);
+  if (!box) throw new Error("no computer for this bot yet");
+  if (!READY.has(box.state)) throw new Error(`box is ${box.state}`);
+  const { ok, body } = await boxJson(cfg, `/boxes/${box.id}/files?path=${encodeURIComponent(filePath)}&encoding=base64`);
+  const content = body?.content;
+  if (!ok || typeof content !== "string" || !content) throw new Error("could not read that file from the box");
+  return { content, path: filePath };
+}

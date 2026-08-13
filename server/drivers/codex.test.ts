@@ -652,6 +652,11 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
           args: ["/fake/memory-proxy.js"],
           env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "memtok" },
         },
+        workspace: {
+          command: process.execPath,
+          args: ["/fake/workspace-proxy.js"],
+          env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "wstok" },
+        },
       },
     });
     await recorder.until((e) => e.type === "turn.completed");
@@ -673,6 +678,12 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
       env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "memtok" },
     });
     expect(mcp.memory.args.at(-1)).toMatch(/memory-proxy\.(ts|js)$/);
+    expect(mcp.workspace).toMatchObject({
+      command: process.execPath,
+      args: ["/fake/workspace-proxy.js"],
+      env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "wstok" },
+    });
+    expect(mcp.workspace.args.at(-1)).toMatch(/workspace-proxy\.(ts|js)$/);
     expect(mcp.composio).toMatchObject({
       command: process.execPath,
       args: ["/fake/composio-proxy.js"],

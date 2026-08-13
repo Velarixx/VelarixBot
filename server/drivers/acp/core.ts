@@ -144,6 +144,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         push("agents", turn.integrations?.agents);
         push("composio", turn.integrations?.composio);
         push("memory", turn.integrations?.memory);
+        push("workspace", turn.integrations?.workspace);
         return servers;
       };
 

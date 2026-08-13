@@ -10,9 +10,14 @@ export type IconShape = (typeof ICON_SHAPES)[number];
 export function resolveIconShape(value: unknown): IconShape {
   return ICON_SHAPES.includes(value as IconShape) ? (value as IconShape) : "cursor";
 }
+/** Product rule: the workspace always keeps at least one bot (Chief of Staff / last bot). */
+export const LAST_BOT_ERROR = "cannot delete the last bot";
+export function wouldEmptyWorkspace(botCount: number): boolean {
+  return botCount <= 1;
+}
 export type BotState = "IDLE" | "RUNNING" | "DONE" | "BLOCKED" | "NEEDS_INPUT";
 export interface Usage { input: number; output: number; cost: number | null }
-export interface OptionCardData { title: string; subtitle: string; options: string[]; answered?: string; dismissed?: boolean; requestId?: string; requestType?: "permission" | "question" | "credential" }
+export interface OptionCardData { title: string; subtitle: string; options: string[]; answered?: string; dismissed?: boolean; requestId?: string; requestType?: "permission" | "question" | "credential" | "secret"; connectUrl?: string }
 export interface Message {
   id: string; role: "bot" | "user"; kind: "text" | "options" | "activity" | "screen"; text?: string;
   card?: OptionCardData; tool?: { name: string; ok?: boolean }; png?: string; mime?: string; at: number; usage?: Usage;
@@ -31,7 +36,11 @@ export interface BotRecord {
   /** Bots sharing this thread's transcript (group mention / ask_bot). */
   threadParticipants?: string[];
 }
-export type RoutineSchedule = { kind: "interval"; everyMinutes: number } | { kind: "daily"; time: string };
+export type RoutineSchedule =
+  | { kind: "interval"; everyMinutes: number }
+  | { kind: "daily"; time: string }
+  | { kind: "weekdays"; time: string }
+  | { kind: "listener"; source: "github" | "slack"; everyMinutes?: number };
 export interface ThenStartTurn { botId: string; prompt: string }
 export interface RoutineRecord {
   id: string; botId: string; name: string; prompt: string; schedule: RoutineSchedule; enabled: boolean; running: boolean;
@@ -91,8 +100,50 @@ export function nextRunAt(schedule: RoutineSchedule, from = Date.now()): number 
     if (!Number.isFinite(schedule.everyMinutes) || schedule.everyMinutes <= 0) throw new Error("invalid interval");
     return from + schedule.everyMinutes * 60_000;
   }
+  if (schedule.kind === "listener") {
+    const every = Number.isFinite(schedule.everyMinutes) && (schedule.everyMinutes ?? 0) > 0 ? schedule.everyMinutes! : 15;
+    return from + every * 60_000;
+  }
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.time)) throw new Error("invalid daily time");
-  const [h, m] = schedule.time.split(":").map(Number); const d = new Date(from); d.setHours(h, m, 0, 0); if (d.getTime() <= from) d.setDate(d.getDate() + 1); return d.getTime();
+  const [h, m] = schedule.time.split(":").map(Number);
+  const weekdaysOnly = schedule.kind === "weekdays";
+  const d = new Date(from);
+  d.setHours(h, m, 0, 0);
+  for (let i = 0; i < 8; i++) {
+    const t = d.getTime();
+    const day = d.getDay();
+    const weekday = day >= 1 && day <= 5;
+    if (t > from && (!weekdaysOnly || weekday)) return t;
+    d.setDate(d.getDate() + 1);
+  }
+  throw new Error("invalid clock schedule");
+}
+
+export function parseRoutineSchedule(raw: unknown): RoutineSchedule {
+  if (!raw || typeof raw !== "object") throw new Error("schedule required");
+  const s = raw as Record<string, unknown>;
+  if (s.kind === "listener") {
+    const source = s.source === "slack" ? "slack" : s.source === "github" ? "github" : "";
+    if (source !== "github" && source !== "slack") throw new Error("listener must be github or slack");
+    const everyMinutes = Number(s.everyMinutes);
+    return {
+      kind: "listener",
+      source,
+      everyMinutes: Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15,
+    };
+  }
+  if (s.kind === "interval") {
+    const everyMinutes = Number(s.everyMinutes);
+    if (!Number.isFinite(everyMinutes) || everyMinutes <= 0) throw new Error("invalid interval");
+    return { kind: "interval", everyMinutes };
+  }
+  const time = String(s.time ?? "").slice(0, 5);
+  if (s.kind === "weekdays") {
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error("invalid daily time");
+    return { kind: "weekdays", time };
+  }
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error("invalid daily time");
+  return { kind: "daily", time };
 }
 const NOTIFY_EVENT_KEYS = new Set(["request.opened", "turn.completed", "stall.nudge", "peer.reply"]);
 function validNotifyEvents(v: unknown): BotRecord["notifyEvents"] | undefined {
@@ -120,10 +171,11 @@ function migrateRoutine(v: unknown): RoutineRecord | null {
   if (!v || typeof v !== "object") return null; const r = v as Partial<RoutineRecord>;
   if (![r.id, r.botId, r.name, r.prompt].every((x) => typeof x === "string") || !r.schedule) return null;
   try {
-    const next = Number.isFinite(r.nextRunAt) ? r.nextRunAt! : nextRunAt(r.schedule);
+    const schedule = parseRoutineSchedule(r.schedule);
+    const next = Number.isFinite(r.nextRunAt) ? r.nextRunAt! : nextRunAt(schedule);
     const thenStartTurn = validThenStartTurn(r.thenStartTurn);
     return {
-      id: r.id!, botId: r.botId!, name: r.name!, prompt: r.prompt!, schedule: r.schedule, enabled: r.enabled !== false,
+      id: r.id!, botId: r.botId!, name: r.name!, prompt: r.prompt!, schedule, enabled: r.enabled !== false,
       running: false, nextRunAt: next, lastRunAt: Number.isFinite(r.lastRunAt) ? r.lastRunAt! : null,
       lastResult: typeof r.lastResult === "string" ? r.lastResult : null,
       createdAt: Number.isFinite(r.createdAt) ? r.createdAt! : Date.now(),
@@ -199,13 +251,13 @@ export class Store {
   recordTurnUsage(id:string,usage:Usage){const b=this.bot(id);if(!b)return;const u=validUsage(usage);b.currentTurnUsage=u;b.usage={input:b.usage.input+u.input,output:b.usage.output+u.output,cost:b.usage.cost===null&&u.cost===null?null:(b.usage.cost??0)+(u.cost??0)};this.saveBots();}
   seedIfEmpty(){if(this.bots.length)return;const b=this.createBot();this.patchBot(b.id,{name:"Milind",color:"blue"});}
   routine(id:string){return this.routines.find(r=>r.id===id)??null}
-  createRoutine(input:{botId:string;name:string;prompt:string;schedule:RoutineSchedule;thenStartTurn?:ThenStartTurn;skillId?:string}){if(!this.bot(input.botId))throw new Error("no such bot");if(!input.name.trim()||!input.prompt.trim())throw new Error("name and prompt required");const thenStartTurn=validThenStartTurn(input.thenStartTurn);const skillId=typeof input.skillId==="string"&&input.skillId.trim()?input.skillId.trim():undefined;const r:RoutineRecord={id:newId(),botId:input.botId,name:input.name.trim(),prompt:input.prompt.trim(),schedule:input.schedule,enabled:true,running:false,nextRunAt:nextRunAt(input.schedule),lastRunAt:null,lastResult:null,createdAt:Date.now(),...(thenStartTurn?{thenStartTurn}:{}),...(skillId?{skillId}:{})};this.routines.push(r);this.saveRoutines();return r;}
+  createRoutine(input:{botId:string;name:string;prompt:string;schedule:RoutineSchedule;thenStartTurn?:ThenStartTurn;skillId?:string}){if(!this.bot(input.botId))throw new Error("no such bot");if(!input.name.trim()||!input.prompt.trim())throw new Error("name and prompt required");const schedule=parseRoutineSchedule(input.schedule);const thenStartTurn=validThenStartTurn(input.thenStartTurn);const skillId=typeof input.skillId==="string"&&input.skillId.trim()?input.skillId.trim():undefined;const r:RoutineRecord={id:newId(),botId:input.botId,name:input.name.trim(),prompt:input.prompt.trim(),schedule,enabled:true,running:false,nextRunAt:nextRunAt(schedule),lastRunAt:null,lastResult:null,createdAt:Date.now(),...(thenStartTurn?{thenStartTurn}:{}),...(skillId?{skillId}:{})};this.routines.push(r);this.saveRoutines();return r;}
   patchRoutine(id:string,patch:Pick<Partial<RoutineRecord>,"name"|"prompt"|"schedule"|"enabled"|"thenStartTurn"|"skillId">){
     const r=this.routine(id);if(!r)return null;
     const safe: Pick<Partial<RoutineRecord>,"name"|"prompt"|"schedule"|"enabled"|"thenStartTurn"|"skillId"> = {};
     if (patch.name !== undefined) { if (!patch.name.trim()) throw new Error("name required"); safe.name = patch.name.trim(); }
     if (patch.prompt !== undefined) { if (!patch.prompt.trim()) throw new Error("prompt required"); safe.prompt = patch.prompt.trim(); }
-    if (patch.schedule !== undefined) { safe.schedule = patch.schedule; r.nextRunAt = nextRunAt(patch.schedule); }
+    if (patch.schedule !== undefined) { safe.schedule = parseRoutineSchedule(patch.schedule); r.nextRunAt = nextRunAt(safe.schedule); }
     if (patch.enabled !== undefined) safe.enabled = patch.enabled === true;
     Object.assign(r,safe);
     if (patch.thenStartTurn !== undefined) {

@@ -3,7 +3,10 @@ import { CalendarClock, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-rea
 import { api, useStore, type Routine, type RoutineSchedule, type Skill } from "@/state/store";
 
 function scheduleLabel(schedule: RoutineSchedule) {
-  return schedule.kind === "daily" ? `Daily at ${schedule.time}` : `Every ${schedule.everyMinutes} min`;
+  if (schedule.kind === "daily") return `Daily at ${schedule.time}`;
+  if (schedule.kind === "weekdays") return `Weekdays at ${schedule.time}`;
+  if (schedule.kind === "listener") return `${schedule.source} listener`;
+  return `Every ${schedule.everyMinutes} min`;
 }
 
 export function RoutinesPanel() {

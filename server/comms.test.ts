@@ -166,6 +166,12 @@ describe("comms e2e (fake ACP fleet)", () => {
       description: "Ops",
     });
     expect(create.status).toBe(401);
+    const del = await api("POST", "/api/internal/delete-bot", { bot_id: "x" });
+    expect(del.status).toBe(401);
+    const upd = await api("POST", "/api/internal/update-bot", { bot_id: "x", name: "x" });
+    expect(upd.status).toBe(401);
+    const ws = await api("POST", "/api/internal/workspace", { fromBotId: "x", tool: "web_search", args: { query: "x" } });
+    expect(ws.status).toBe(401);
   });
 
   it(

@@ -3,7 +3,7 @@
 // still needs the model to know it cannot browse or shell-create bots.
 
 export const CODEX_GROUNDING =
-  " You do not have an in-app browser. Create sidebar bots only with the create_bot tool — never the shell, PowerShell, or by writing scripts. Never invent Codex or conversation-only sub-agents.";
+  " You do not have an in-app browser — use web_search and fetch_page to look things up. Create, update, or delete sidebar bots only with the create_bot, update_bot, and delete_bot tools — never the shell, PowerShell, or by writing scripts. Never invent Codex or conversation-only sub-agents.";
 
 export const CHAT_ONLY_GROUNDING =
   " You have no tools. You cannot browse, run commands, create bots, or call plugins. Reply in chat only.";

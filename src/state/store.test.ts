@@ -80,4 +80,16 @@ describe("composer prompt queue (store path)", () => {
     expect(state.queued["bot-1"]).toEqual([]);
     expect(state.bots[0]?.busy).toBe(true);
   });
+
+  it("does not delete the last bot in the workspace", () => {
+    const only = bot({ id: "bot-1" });
+    const start = reducer(initialState, { type: "hydrate", bots: [only] });
+    const after = reducer(start, { type: "deleteBot", botId: "bot-1" });
+    expect(after.bots).toHaveLength(1);
+    expect(after.bots[0]?.id).toBe("bot-1");
+
+    let two = reducer(initialState, { type: "hydrate", bots: [bot({ id: "bot-1" }), bot({ id: "bot-2", name: "Helper" })] });
+    two = reducer(two, { type: "deleteBot", botId: "bot-1" });
+    expect(two.bots.map((b) => b.id)).toEqual(["bot-2"]);
+  });
 });

@@ -36,7 +36,9 @@ export interface OptionCardData {
   dismissed?: boolean;
   /** Present when this card is a live provider ask (approval/question/sign-in). */
   requestId?: string;
-  requestType?: "permission" | "question" | "credential";
+  requestType?: "permission" | "question" | "credential" | "secret";
+  /** Composio OAuth URL for connect_app — opened in the user's browser. */
+  connectUrl?: string;
 }
 
 export interface Message {
@@ -102,7 +104,11 @@ export interface ConfigStatus {
   omnirouter?: { configured: boolean };
 }
 
-export type RoutineSchedule = { kind: "interval"; everyMinutes: number } | { kind: "daily"; time: string };
+export type RoutineSchedule =
+  | { kind: "interval"; everyMinutes: number }
+  | { kind: "daily"; time: string }
+  | { kind: "weekdays"; time: string }
+  | { kind: "listener"; source: "github" | "slack"; everyMinutes?: number };
 export interface Routine {
   id: string; botId: string; name: string; prompt: string; schedule: RoutineSchedule;
   enabled: boolean; running: boolean; nextRunAt: number; lastRunAt: number | null;
@@ -176,7 +182,7 @@ type Action =
   | { type: "enqueue"; botId: string; item: QueuedPrompt }
   | { type: "cancelQueued"; botId: string; id: string }
   | { type: "flushQueue"; botId: string }
-  | { type: "answerCard"; botId: string; messageId: string; answer: string; always?: boolean }
+  | { type: "answerCard"; botId: string; messageId: string; answer: string; always?: boolean; secret?: string }
   | { type: "dismissCard"; botId: string; messageId: string }
   | { type: "newBot" }
   | { type: "botAdded"; bot: Bot; select?: boolean }
@@ -302,6 +308,7 @@ export function reducer(state: AppState, action: Action): AppState {
       }, action.bot.id, "arrive");
     }
     case "deleteBot": {
+      if (state.bots.length <= 1) return state;
       const bots = state.bots.filter((b) => b.id !== action.botId);
       const selectedId =
         state.selectedId === action.botId ? (bots.find((b) => !b.hidden)?.id ?? bots[0]?.id ?? "") : state.selectedId;
@@ -645,7 +652,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               body: JSON.stringify({
                 requestId: card.requestId,
                 behavior,
-                message: behavior === "answer" ? action.answer : undefined,
+                message: action.secret ?? (behavior === "answer" ? action.answer : undefined),
                 always: action.always === true,
               }),
             }).catch(showError);
@@ -700,6 +707,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "deleteBot":
+          if (stateRef.current.bots.length <= 1) break;
           api(`/api/bots/${action.botId}`, { method: "DELETE" }).catch(showError);
           break;
         case "markUnread":

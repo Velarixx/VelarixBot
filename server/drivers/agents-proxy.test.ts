@@ -18,10 +18,14 @@ let stubPort = 0;
 let lastAuth: string | undefined;
 let lastAskBody: any = null;
 let lastCreateBody: any = null;
+let lastDeleteBody: any = null;
+let lastUpdateBody: any = null;
 let askResponse: unknown = { botName: "Helper", text: "hi from helper" };
 let createResponse: unknown = {
   bot: { id: "bot-new", name: "Ops", title: "Ops specialist", description: "Runs ops", model: "fake-model" },
 };
+let deleteResponse: unknown = { id: "bot-helper", name: "Helper" };
+let updateResponse: unknown = { id: "bot-helper", name: "Renamed", title: "Ops", description: "Runs ops" };
 
 let child: ChildProcess;
 const pending = new Map<number, (msg: any) => void>();
@@ -74,6 +78,26 @@ beforeAll(async () => {
       });
       return;
     }
+    if (req.method === "POST" && req.url === "/api/internal/delete-bot") {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => {
+        lastDeleteBody = JSON.parse(data);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(deleteResponse));
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/internal/update-bot") {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => {
+        lastUpdateBody = JSON.parse(data);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(updateResponse));
+      });
+      return;
+    }
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "unknown" }));
   });
@@ -116,12 +140,20 @@ describe("agents-proxy MCP surface", () => {
     const init = await rpc("initialize", { protocolVersion: "2024-11-05" });
     expect(init.result.serverInfo.name).toContain("agents");
     const list = await rpc("tools/list");
-    expect(list.result.tools.map((t: { name: string }) => t.name)).toEqual(["list_bots", "ask_bot", "create_bot"]);
+    expect(list.result.tools.map((t: { name: string }) => t.name)).toEqual([
+      "list_bots",
+      "ask_bot",
+      "create_bot",
+      "delete_bot",
+      "update_bot",
+    ]);
     expect(list.result.tools.find((t: { name: string }) => t.name === "list_bots").annotations).toEqual({
       readOnlyHint: true,
     });
     expect(list.result.tools.find((t: { name: string }) => t.name === "ask_bot").annotations).toBeUndefined();
     expect(list.result.tools.find((t: { name: string }) => t.name === "create_bot").annotations).toBeUndefined();
+    expect(list.result.tools.find((t: { name: string }) => t.name === "delete_bot").annotations).toBeUndefined();
+    expect(list.result.tools.find((t: { name: string }) => t.name === "update_bot").annotations).toBeUndefined();
   });
 
   it("list_bots renders the roster and authenticates with the shared token", async () => {
@@ -213,5 +245,75 @@ describe("agents-proxy MCP surface", () => {
   it("requires name, title, and description", async () => {
     const res = await callTool("create_bot", { name: "Ops", title: "", description: "" });
     expect(res.result.isError).toBe(true);
+  });
+
+  it("delete_bot forwards bot_id + depth and returns the removed sidebar id", async () => {
+    deleteResponse = { id: "bot-helper", name: "Helper" };
+    const res = await callTool("delete_bot", { bot_id: "bot-helper" });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toContain("Helper");
+    expect(res.result.content[0].text).toContain("bot-helper");
+    expect(lastDeleteBody).toMatchObject({
+      fromBotId: "bot-asker",
+      bot_id: "bot-helper",
+      depth: 0,
+    });
+    expect(lastAuth).toBe(`Bearer ${TOKEN}`);
+    expect(JSON.stringify(lastDeleteBody)).not.toContain(TOKEN);
+  });
+
+  it("delete_bot surfaces a last-bot refusal as a tool error", async () => {
+    deleteResponse = { error: "cannot delete the last bot" };
+    const res = await callTool("delete_bot", { bot_id: "bot-helper" });
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain("last bot");
+    expect(JSON.stringify(lastDeleteBody)).not.toContain(TOKEN);
+  });
+
+  it("delete_bot surfaces a harness depth refusal as a tool error", async () => {
+    deleteResponse = { error: "message chains are limited to two hops" };
+    const res = await callTool("delete_bot", { bot_id: "bot-helper" });
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain("two hops");
+  });
+
+  it("requires bot_id for delete_bot", async () => {
+    const res = await callTool("delete_bot", { bot_id: "" });
+    expect(res.result.isError).toBe(true);
+  });
+
+  it("update_bot forwards bot_id + patches and returns the sidebar id", async () => {
+    updateResponse = { id: "bot-helper", name: "Renamed", title: "Ops lead", description: "Runs ops" };
+    const res = await callTool("update_bot", {
+      bot_id: "bot-helper",
+      name: "Renamed",
+      title: "Ops lead",
+      description: "Runs ops",
+    });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toContain("Renamed");
+    expect(res.result.content[0].text).toContain("bot-helper");
+    expect(lastUpdateBody).toMatchObject({
+      fromBotId: "bot-asker",
+      bot_id: "bot-helper",
+      name: "Renamed",
+      title: "Ops lead",
+      description: "Runs ops",
+      depth: 0,
+    });
+    expect(lastAuth).toBe(`Bearer ${TOKEN}`);
+    expect(JSON.stringify(lastUpdateBody)).not.toContain(TOKEN);
+  });
+
+  it("update_bot surfaces a harness depth refusal as a tool error", async () => {
+    updateResponse = { error: "message chains are limited to two hops" };
+    const res = await callTool("update_bot", { bot_id: "bot-helper", name: "X" });
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain("two hops");
+  });
+
+  it("requires bot_id and at least one field for update_bot", async () => {
+    expect((await callTool("update_bot", { bot_id: "" })).result.isError).toBe(true);
+    expect((await callTool("update_bot", { bot_id: "bot-helper" })).result.isError).toBe(true);
   });
 });

@@ -9,7 +9,7 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { attachmentPathRefs, expandAttachmentPaths } from "./attachments.ts";
-import { alwaysAllow, deleteRule, listRules, resolveOpenedRequest } from "./approvals.ts";
+import { alwaysAllow, autoResolvePermission, deleteRule, listRules } from "./approvals.ts";
 import * as box from "./box.ts";
 import * as composio from "./composio.ts";
 import { parseAllowedToolkits } from "./composio-filter.ts";
@@ -22,8 +22,9 @@ import {
   uniqueIds,
 } from "./comms.ts";
 import { ensureBotWorkspace, ensureDirs, instanceConfigs, loadConfig, saveConfig, EVENTS_DIR, NATIVE_DIR } from "./config.ts";
-import { turnGrounding } from "./grounding.ts";
+import { fetchPage, webSearch } from "./web.ts";
 import type { RuntimeEvent } from "./contracts.ts";
+import { newId } from "./contracts.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
@@ -45,7 +46,7 @@ import {
 import { createPeerQueue } from "./peer-queue.ts";
 import { createProactive } from "./proactive.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "./response-options.ts";
-import { mentionedBots, nextRunAt, Store, type Message, type Usage } from "./store.ts";
+import { LAST_BOT_ERROR, mentionedBots, nextRunAt, Store, wouldEmptyWorkspace, type Message, type Usage } from "./store.ts";
 import {
   appendTeachEvent,
   appendTeachFrame,
@@ -106,6 +107,10 @@ const memoryProxyPath = (() => {
   const ts = join(dirname(fileURLToPath(import.meta.url)), "memory-proxy.ts");
   return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
 })();
+const workspaceProxyPath = (() => {
+  const ts = join(dirname(fileURLToPath(import.meta.url)), "workspace-proxy.ts");
+  return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
+})();
 // in the packaged app process.execPath is Electron — run the proxy as node
 const AGENTS_NODE_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
 
@@ -147,6 +152,20 @@ function memoryIntegration(botId: string) {
       OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
       OMB_BOT_ID: botId,
       OMB_COMMS_TOKEN: COMMS_TOKEN,
+    },
+  };
+}
+
+function workspaceIntegration(botId: string, depth: number) {
+  return {
+    command: process.execPath,
+    args: [workspaceProxyPath],
+    env: {
+      ...AGENTS_NODE_FLAG,
+      OMB_HARNESS_URL: `http://127.0.0.1:${PORT}`,
+      OMB_BOT_ID: botId,
+      OMB_COMMS_TOKEN: COMMS_TOKEN,
+      OMB_TURN_DEPTH: String(depth),
     },
   };
 }
@@ -239,17 +258,38 @@ function publicBot(id: string) {
 
 /** Create a sidebar bot and fan it out on SSE so the UI list updates even
  * when the creator is an agents-proxy call rather than the composer +. */
-async function createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string }) {
+async function createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: "cloud" | "local" | "off" }) {
   const bot = store.createBot();
   store.patchBot(bot.id, {
     modelSelection: await selectionForModel(init?.model),
     ...(init?.name?.trim() ? { name: init.name.trim() } : {}),
     ...(typeof init?.title === "string" ? { title: init.title } : {}),
     ...(typeof init?.description === "string" ? { description: init.description } : {}),
+    ...(init?.computer ? { computer: init.computer } : {}),
   });
   const full = publicBot(bot.id)!;
   broadcast({ kind: "bot.added", bot: full });
   return full;
+}
+
+async function removeSidebarBot(id: string): Promise<{ ok: true; bot: { id: string; name: string } } | { error: string; status: number }> {
+  const bot = store.bot(id);
+  if (!bot) return { error: "no such bot", status: 404 };
+  if (wouldEmptyWorkspace(store.bots.length)) return { error: LAST_BOT_ERROR, status: 409 };
+  await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
+  stopScreenPoller(bot.id);
+  liveTeach.get(bot.id)?.unsub();
+  liveTeach.delete(bot.id);
+  deleteBotMemory(bot.id);
+  deleteSkillsForBot(bot.id);
+  store.deleteBot(bot.id);
+  for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
+    try {
+      unlinkSync(join(dir, `${bot.threadId}.ndjson`));
+    } catch {}
+  }
+  broadcast({ kind: "bot.deleted", botId: bot.id });
+  return { ok: true, bot: { id: bot.id, name: bot.name } };
 }
 let bootSelection = { instanceId: "claude", model: "claude-sonnet-5" };
 const store = new Store(() => bootSelection);
@@ -259,6 +299,70 @@ store.onRoutine = (routine) => broadcast({ kind: "routine", routine });
 store.onRoutineDeleted = (routineId) => broadcast({ kind: "routine.deleted", routineId });
 const routineByThread = new Map<string, string>();
 const pendingAskByRequest = new Map<string, { botId: string; tool: string; summary: string; requestType: string }>();
+const SECRET_CARD_ANSWER = "••••";
+const userAskWaiters = new Map<
+  string,
+  { resolve: (text: string) => void; reject: (error: Error) => void; secret: boolean; botId: string }
+>();
+
+function settleUserAsk(requestId: string, text: string): boolean {
+  const waiter = userAskWaiters.get(requestId);
+  if (!waiter) return false;
+  userAskWaiters.delete(requestId);
+  waiter.resolve(text);
+  return true;
+}
+
+function askUserAndWait(
+  botId: string,
+  input: { question: string; choices?: string[]; secret?: boolean; connectUrl?: string },
+): Promise<string> {
+  const bot = store.bot(botId);
+  if (!bot) return Promise.reject(new Error("no such bot"));
+  const requestId = newId();
+  const secret = input.secret === true;
+  const message = store.appendMessage(bot.threadId, {
+    role: "bot",
+    kind: "options",
+    card: {
+      title: secret ? "Secret needed" : input.connectUrl ? "Connect an app" : "Your bot has a question",
+      subtitle: input.question,
+      options: input.connectUrl ? ["Done"] : (input.choices ?? []).filter(Boolean).slice(0, 5),
+      requestId,
+      requestType: secret ? "secret" : "question",
+      ...(input.connectUrl ? { connectUrl: input.connectUrl } : {}),
+    },
+  });
+  broadcast({ kind: "message", threadId: bot.threadId, message });
+  store.patchBot(bot.id, { state: "NEEDS_INPUT" });
+  proactive.noteState(bot.id, "NEEDS_INPUT");
+  broadcast({ kind: "bot", bot: store.bot(bot.id) });
+  pendingAskByRequest.set(requestId, {
+    botId: bot.id,
+    tool: secret ? "ask_secret" : input.connectUrl ? "connect_app" : "ask_choice",
+    summary: input.question,
+    requestType: secret ? "secret" : "question",
+  });
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (!userAskWaiters.delete(requestId)) return;
+      reject(new Error("timed out waiting for the user"));
+    }, ASK_BUDGET_MS);
+    timer.unref?.();
+    userAskWaiters.set(requestId, {
+      resolve: (text) => {
+        clearTimeout(timer);
+        resolve(text);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+      secret,
+      botId: bot.id,
+    });
+  });
+}
 
 const idleListeners = new Set<(botId: string) => void>();
 function notifyIdle(botId: string) {
@@ -394,6 +498,156 @@ function broadcast(payload: unknown) {
   }
 }
 
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
+
+async function handleWorkspaceTool(
+  fromBotId: string,
+  tool: string,
+  args: Record<string, unknown>,
+  depth: number,
+): Promise<{ text?: string; error?: string }> {
+  const bot = store.bot(fromBotId);
+  if (!bot) return { error: "no such bot" };
+  if (depth >= MAX_COMMS_DEPTH && (tool === "ask_choice" || tool === "ask_secret" || tool === "create_routine")) {
+    return { error: COMMS_DEPTH_ERROR };
+  }
+  try {
+    if (tool === "web_search") {
+      return { text: await webSearch(String(args.query ?? "")) };
+    }
+    if (tool === "fetch_page") {
+      return { text: await fetchPage(String(args.url ?? "")) };
+    }
+    if (tool === "ask_choice") {
+      const question = String(args.question ?? "").trim();
+      const choices = (Array.isArray(args.choices) ? args.choices : []).map((c) => String(c).trim()).filter(Boolean).slice(0, 5);
+      if (!question || choices.length < 2) return { error: "ask_choice needs a question and at least two choices." };
+      const answer = await askUserAndWait(fromBotId, { question, choices });
+      return { text: answer };
+    }
+    if (tool === "ask_secret") {
+      const prompt = String(args.prompt ?? "").trim();
+      if (!prompt) return { error: "ask_secret needs a prompt." };
+      const value = await askUserAndWait(fromBotId, { question: prompt, secret: true });
+      return { text: value };
+    }
+    if (tool === "create_routine") {
+      const name = String(args.name ?? "").trim();
+      const prompt = String(args.prompt ?? "").trim();
+      if (!name || !prompt) return { error: "create_routine needs name and prompt." };
+      const listener = String(args.listener ?? "").trim().toLowerCase();
+      const everyMinutes = Number(args.every_minutes);
+      const time = String(args.time ?? "").trim().slice(0, 5);
+      let schedule: Parameters<typeof store.createRoutine>[0]["schedule"];
+      if (listener === "github" || listener === "slack") {
+        const status = cfg.composio?.key
+          ? await composio.connectionStatus(cfg, [listener]).catch(() => ({ [listener]: { connected: false } }))
+          : { [listener]: { connected: false } };
+        if (!status[listener]?.connected) {
+          return {
+            error: `${listener} is not connected. Call connect_app with slug ${listener} first. Never ask the user to paste a token in chat.`,
+          };
+        }
+        schedule = { kind: "listener", source: listener, everyMinutes: Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15 };
+      } else if (Number.isFinite(everyMinutes) && everyMinutes > 0) {
+        schedule = { kind: "interval", everyMinutes };
+      } else if (time) {
+        schedule = args.every_day === true ? { kind: "daily", time } : { kind: "weekdays", time };
+      } else {
+        return { error: "create_routine needs time (HH:MM), every_minutes, or listener=github|slack." };
+      }
+      const skillId = String(args.skill_id ?? "").trim();
+      const routine = store.createRoutine({
+        botId: fromBotId,
+        name,
+        prompt,
+        schedule,
+        ...(skillId ? { skillId } : {}),
+      });
+      broadcast({ kind: "routine", routine });
+      return {
+        text: `Created routine ${routine.name} (id: ${routine.id}, ${routine.schedule.kind}${routine.schedule.kind === "listener" ? ` ${routine.schedule.source}` : ""}). It runs while the harness is up.`,
+      };
+    }
+    if (tool === "save_skill") {
+      const name = String(args.name ?? "").trim();
+      const steps = String(args.steps ?? "").trim();
+      if (!name || !steps) return { error: "save_skill needs name and steps." };
+      const skill = saveSkill({ name, botId: fromBotId, markdown: steps });
+      store.patchBot(fromBotId, { skillId: skill.id });
+      broadcast({ kind: "bot", bot: store.bot(fromBotId) });
+      return { text: `Saved skill ${skill.name} (id: ${skill.id}). Run it with run_skill using that id.` };
+    }
+    if (tool === "run_skill") {
+      const skillId = String(args.skill_id ?? "").trim();
+      const skill = getSkill(skillId);
+      if (!skill) return { error: "no such skill" };
+      return { text: `Follow these saved steps now:\n\n${skill.markdown}` };
+    }
+    if (tool === "attach_to_chat") {
+      const kind = String(args.kind ?? "").trim();
+      if (kind === "screenshot") {
+        const polled = screenPollers.get(fromBotId)?.last;
+        const shot = polled ?? (bot.computer === "cloud" && box.boxConfigured(cfg) ? await box.screenshotBox(cfg, fromBotId).then((s) => ({ png: s.png, mime: "image/png" as const })) : null);
+        if (!shot) return { error: "no screenshot available — turn computer on (cloud box) first." };
+        const message = store.appendMessage(bot.threadId, { role: "bot", kind: "screen", png: shot.png, mime: shot.mime });
+        broadcast({ kind: "message", threadId: bot.threadId, message });
+        return { text: "Attached the current computer screenshot to this chat." };
+      }
+      if (kind === "file") {
+        const filePath = String(args.path ?? "").trim();
+        if (!filePath) return { error: "attach_to_chat file needs path." };
+        const read = await box.readBoxPath(cfg, fromBotId, filePath);
+        if (IMAGE_EXT.test(filePath)) {
+          const message = store.appendMessage(bot.threadId, {
+            role: "bot",
+            kind: "screen",
+            png: read.content,
+            mime: filePath.toLowerCase().endsWith(".jpg") || filePath.toLowerCase().endsWith(".jpeg") ? "image/jpeg" : "image/png",
+          });
+          broadcast({ kind: "message", threadId: bot.threadId, message });
+          return { text: `Attached ${filePath} to this chat.` };
+        }
+        const decoded = Buffer.from(read.content, "base64").toString("utf8").slice(0, 8_000);
+        const message = store.appendMessage(bot.threadId, {
+          role: "bot",
+          kind: "text",
+          text: `File from computer (${filePath}):\n${decoded}`,
+        });
+        broadcast({ kind: "message", threadId: bot.threadId, message });
+        return { text: `Attached text from ${filePath} to this chat.` };
+      }
+      return { error: "attach_to_chat kind must be screenshot or file." };
+    }
+    if (tool === "connect_app") {
+      const slug = String(args.slug ?? "").trim().toLowerCase();
+      if (!slug) return { error: "connect_app needs a catalog slug (e.g. github)." };
+      if (!cfg.composio?.key) {
+        return {
+          error:
+            "Composio Connect is not configured. The user must add a Connect key in App Settings. Never ask them to paste a token in chat.",
+        };
+      }
+      const auth = await composio.authorizeService(cfg, slug);
+      const url = typeof auth?.url === "string" ? auth.url : "";
+      if (!url) return { error: `could not start connect for ${slug}` };
+      const enabled = Array.from(new Set([...(bot.enabledApps ?? []), slug]));
+      store.patchBot(fromBotId, { enabledApps: enabled });
+      broadcast({ kind: "bot", bot: store.bot(fromBotId) });
+      const answer = await askUserAndWait(fromBotId, {
+        question: `Connect ${slug} in the browser, then come back here.`,
+        connectUrl: url,
+      });
+      return { text: `Connect flow for ${slug} finished (${answer}). Tools for that app mount on the next turn.` };
+    }
+    return { error: `unknown workspace tool ${tool}` };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (tool === "ask_secret" || /token|secret|password/i.test(message)) return { error: "couldn't complete that request" };
+    return { error: message };
+  }
+}
+
 // ── server-side event folding (upstream's ingestion worker, miniature) ──
 // The canonical stream is the source of truth; the persisted transcript
 // and every client view are projections of it.
@@ -464,7 +718,7 @@ bus.subscribe((event: RuntimeEvent) => {
         });
       }
       if (event.requestType === "permission" && event.requestId && !isCredentialAsk(event.requestType, event.tool, event.summary)) {
-        const auto = resolveOpenedRequest(bot.id, event.tool, event.summary);
+        const auto = autoResolvePermission(bot, event.tool, event.summary);
         if (auto) {
           const instance = registry.get(bot.modelSelection.instanceId);
           if (instance) {
@@ -740,7 +994,7 @@ async function startTurn(
         if (cua) integrations.localComputer = cua;
       }
       // peer-agent comms: give a user-initiated turn list_bots / ask_bot /
-      // create_bot. Always mount at depth 0 so a lone bot can still create
+      // create_bot / delete_bot. Always mount at depth 0 so a lone bot can still create
       // sidebar peers. A comms-invoked turn (depth ≥ cap) gets none — hard
       // recursion stop. Only drivers that mount the tools get the integration
       // (and the prompt hint). Any bot can still be the TARGET of ask_bot.
@@ -749,6 +1003,7 @@ async function startTurn(
       }
       if (instance.adapter.capabilities.agentsMcp === true) {
         integrations.memory = memoryIntegration(bot.id);
+        integrations.workspace = workspaceIntegration(bot.id, commsDepth);
       }
       // @mentions in the user's message (the composer's tagging UI) become
       // an explicit delegation nudge — the agent still does the ask_bot call
@@ -784,10 +1039,13 @@ async function startTurn(
               ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
               : "") +
           (integrations.agents
-            ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply — the reply stays in this transcript, do not ask the user to relay it. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar. Never create bots with the shell, PowerShell, or by writing scripts — only create_bot."
+            ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply — the reply stays in this transcript, do not ask the user to relay it. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. update_bot renames a bot or changes its title/description. delete_bot removes a sidebar bot by id — never the last bot in the workspace. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar. Never create or delete bots with the shell, PowerShell, or by writing scripts — only create_bot, update_bot, and delete_bot."
             : "") +
           (integrations.memory
             ? " You have remember and recall tools. remember saves a lasting note for this bot (or the shared workspace). recall reads those notes. Prefer remember for durable facts instead of relying on chat history."
+            : "") +
+          (integrations.workspace
+            ? " Workspace tools: web_search and fetch_page look things up (you have no in-app browser). ask_choice asks the user a multiple-choice question. ask_secret asks for a password/code — the value never appears in chat; never ask them to paste a token in the transcript. create_routine schedules work (weekdays by default; GitHub/Slack listeners need connect_app first). save_skill / run_skill store and follow step recipes. attach_to_chat puts a computer screenshot or file into this thread. connect_app starts installing a catalog app (github, slack, …) via a user connect card."
             : "") +
           (tagged.length
             ? ` The user tagged ${tagged
@@ -923,7 +1181,7 @@ const server = createServer(async (req, res) => {
         const depth = Number(body.depth ?? 0) || 0;
         if (!name || !title || !description) return json(res, 400, { error: "name, title, and description required" });
         if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: COMMS_DEPTH_ERROR });
-        const created = await createSidebarBot({ name, title, description, ...(model ? { model } : {}) });
+        const created = await createSidebarBot({ name, title, description, ...(model ? { model } : {}), computer: "cloud" });
         const from = store.bot(fromBotId);
         if (from) {
           const note = store.appendMessage(from.threadId, {
@@ -934,8 +1192,73 @@ const server = createServer(async (req, res) => {
           broadcast({ kind: "message", threadId: from.threadId, message: note });
         }
         return json(res, 200, {
-          bot: { id: created.id, name: created.name, title: created.title, description: created.description, model: created.modelSelection.model },
+          bot: { id: created.id, name: created.name, title: created.title, description: created.description, model: created.modelSelection.model, computer: created.computer },
         });
+      }
+      if (method === "POST" && path === "/api/internal/delete-bot") {
+        const body = await readBody(req);
+        const targetId = String(body.bot_id ?? body.botId ?? "").trim();
+        const depth = Number(body.depth ?? 0) || 0;
+        if (!targetId) return json(res, 400, { error: "bot_id required" });
+        if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: COMMS_DEPTH_ERROR });
+        const fromBotId = String(body.fromBotId ?? "");
+        const from = store.bot(fromBotId);
+        const removed = await removeSidebarBot(targetId);
+        if ("error" in removed) {
+          if (removed.status === 404) return json(res, 404, { error: removed.error });
+          return json(res, 200, { error: removed.error });
+        }
+        if (from && from.id !== removed.bot.id) {
+          const note = store.appendMessage(from.threadId, {
+            role: "bot",
+            kind: "activity",
+            tool: { name: `removed @${removed.bot.name}` },
+          });
+          broadcast({ kind: "message", threadId: from.threadId, message: note });
+        }
+        return json(res, 200, { id: removed.bot.id, name: removed.bot.name });
+      }
+      if (method === "POST" && path === "/api/internal/update-bot") {
+        const body = await readBody(req);
+        const targetId = String(body.bot_id ?? body.botId ?? "").trim();
+        const depth = Number(body.depth ?? 0) || 0;
+        if (!targetId) return json(res, 400, { error: "bot_id required" });
+        if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: COMMS_DEPTH_ERROR });
+        const target = store.bot(targetId);
+        if (!target) return json(res, 404, { error: "no such bot" });
+        const patch: { name?: string; title?: string; description?: string } = {};
+        if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
+        if (typeof body.title === "string") patch.title = body.title;
+        if (typeof body.description === "string") patch.description = body.description;
+        if (!Object.keys(patch).length) return json(res, 400, { error: "name, title, or description required" });
+        const updated = store.patchBot(targetId, patch);
+        if (!updated) return json(res, 404, { error: "no such bot" });
+        broadcast({ kind: "bot", bot: updated });
+        const from = store.bot(String(body.fromBotId ?? ""));
+        if (from) {
+          const note = store.appendMessage(from.threadId, {
+            role: "bot",
+            kind: "activity",
+            tool: { name: `updated @${updated.name}` },
+          });
+          broadcast({ kind: "message", threadId: from.threadId, message: note });
+        }
+        return json(res, 200, { id: updated.id, name: updated.name, title: updated.title, description: updated.description });
+      }
+      if (method === "POST" && path === "/api/internal/workspace") {
+        const body = await readBody(req);
+        const fromBotId = String(body.fromBotId ?? "");
+        const tool = String(body.tool ?? "").trim();
+        const depth = Number(body.depth ?? 0) || 0;
+        const args = body.args && typeof body.args === "object" && !Array.isArray(body.args) ? (body.args as Record<string, unknown>) : {};
+        if (!tool) return json(res, 400, { error: "tool required" });
+        const result = await handleWorkspaceTool(fromBotId, tool, args, depth);
+        if (result.error) {
+          const payload = { error: result.error };
+          if (tool === "ask_secret") return json(res, 200, payload);
+          return json(res, 200, payload);
+        }
+        return json(res, 200, { text: result.text });
       }
       if (method === "POST" && path === "/api/internal/remember") {
         const body = await readBody(req);
@@ -1116,22 +1439,8 @@ const server = createServer(async (req, res) => {
     }
     m = path.match(/^\/api\/bots\/([\w-]+)$/);
     if (m && method === "DELETE") {
-      const bot = store.bot(m[1]);
-      if (!bot) return json(res, 404, { error: "no such bot" });
-      // a running turn dies with its bot
-      await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
-      stopScreenPoller(bot.id);
-      liveTeach.get(bot.id)?.unsub();
-      liveTeach.delete(bot.id);
-      deleteBotMemory(bot.id);
-      deleteSkillsForBot(bot.id);
-      store.deleteBot(bot.id);
-      for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
-        try {
-          unlinkSync(join(dir, `${bot.threadId}.ndjson`));
-        } catch {}
-      }
-      broadcast({ kind: "bot.deleted", botId: bot.id });
+      const removed = await removeSidebarBot(m[1]);
+      if ("error" in removed) return json(res, removed.status, { error: removed.error });
       return json(res, 200, { ok: true });
     }
 
@@ -1175,12 +1484,43 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
-      const instance = registry.get(bot.modelSelection.instanceId);
-      if (!instance) return json(res, 409, { error: "provider unavailable" });
       const body = await readBody(req);
       const requestId = String(body.requestId);
+      const waiter = userAskWaiters.get(requestId);
+      if (waiter) {
+        const secret = waiter.secret;
+        const raw = String(body.message ?? "").trim() || String(body.behavior ?? "");
+        const display = secret ? SECRET_CARD_ANSWER : raw || "ok";
+        const messageId = askMessageByRequest.get(requestId);
+        if (messageId) {
+          const existing = store.messagesFor(bot.threadId).find((msg) => msg.id === messageId);
+          if (existing?.card) {
+            const patched = store.patchMessage(bot.threadId, messageId, {
+              card: { ...existing.card, answered: display },
+            });
+            if (patched) broadcast({ kind: "message.patch", threadId: bot.threadId, message: patched });
+          }
+        } else {
+          const existing = store.messagesFor(bot.threadId).find((msg) => msg.card?.requestId === requestId);
+          if (existing?.card) {
+            const patched = store.patchMessage(bot.threadId, existing.id, {
+              card: { ...existing.card, answered: display },
+            });
+            if (patched) broadcast({ kind: "message.patch", threadId: bot.threadId, message: patched });
+          }
+        }
+        pendingAskByRequest.delete(requestId);
+        settleUserAsk(requestId, secret ? raw : display);
+        return json(res, 200, { ok: true });
+      }
+      const instance = registry.get(bot.modelSelection.instanceId);
+      if (!instance) return json(res, 409, { error: "provider unavailable" });
       const pending = pendingAskByRequest.get(requestId);
-      if (body.always === true && pending?.requestType === "permission") {
+      if (
+        pending?.requestType === "permission" &&
+        body.behavior === "allow" &&
+        !isCredentialAsk(pending.requestType, pending.tool, pending.summary)
+      ) {
         alwaysAllow(bot.id, pending.tool, pending.summary);
       }
       await instance.adapter.respondToRequest(bot.threadId, requestId, {

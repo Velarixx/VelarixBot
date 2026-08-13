@@ -44,6 +44,8 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const [rules, setRules] = useState<Array<{ id: string; tool: string; pattern: string; action: "allow" | "deny" }>>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [memory, setMemory] = useState({ user: "", distilled: "", workspace: "" });
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const lastBot = state.bots.length <= 1;
 
   useEffect(() => {
     let alive = true;
@@ -99,6 +101,10 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
     return () => {
       alive = false;
     };
+  }, [bot.id]);
+
+  useEffect(() => {
+    setConfirmDelete(false);
   }, [bot.id]);
 
   const toggleApp = (slug: string) => {
@@ -407,7 +413,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             <div>
               <div className="text-[15px] font-medium text-ink">Require approval</div>
               <div className="mt-0.5 text-[13px] text-ink-secondary">
-                Always show a permission card, even if this provider is on full auto
+                Always show a permission card, even when a stored Allow or full auto would skip it
               </div>
             </div>
             <button
@@ -431,7 +437,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
           <div className="rounded-xl bg-card p-4">
             <div className="text-[15px] font-medium text-ink">Approval rules</div>
             <div className="mt-0.5 text-[13px] text-ink-secondary">
-              Always-allow and deny patterns for this bot. Revoke a rule to ask again. Patterns never store raw secrets.
+              Always-allow and deny patterns for every bot in this install. Revoke a rule to ask again. Patterns never store raw secrets.
             </div>
             {rules.length === 0 ? (
               <div className="mt-3 text-[12px] text-ink-secondary">
@@ -508,6 +514,44 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                   );
                 })}
               </div>
+            )}
+          </div>
+
+          <div className="rounded-xl bg-card p-4">
+            <div className="text-[15px] font-medium text-ink">Remove bot</div>
+            <div className="mt-0.5 text-[13px] text-ink-secondary">
+              {lastBot
+                ? "This is the last bot in the workspace — add another before removing it."
+                : "Deletes this bot, its transcript, and its workspace files."}
+            </div>
+            {lastBot ? null : confirmDelete ? (
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    dispatch({ type: "deleteBot", botId: bot.id });
+                    dispatch({ type: "toggleSettings", open: false });
+                  }}
+                  className="rounded-lg bg-danger/15 px-3 py-2 text-[13px] font-medium text-danger hover:bg-danger/25"
+                >
+                  Confirm remove
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(false)}
+                  className="rounded-lg px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(true)}
+                className="mt-3 rounded-lg px-3 py-2 text-[13px] font-medium text-danger hover:bg-danger/10"
+              >
+                Remove bot
+              </button>
             )}
           </div>
         </div>
