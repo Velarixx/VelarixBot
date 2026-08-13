@@ -22,7 +22,7 @@
     "build:speech": "node scripts/build-speech-helper.mjs",
     "fetch:cua": "node scripts/fetch-cua-driver.mjs",
     "stage:cua-sdk": "node scripts/stage-cua-sdk.mjs",
-    "package:mac": "pnpm build && pnpm build:server && pnpm build:speech && pnpm fetch:cua && pnpm stage:cua-sdk && electron-builder --mac --publish never",
+    "package:mac": "pnpm build && pnpm build:server && pnpm build:speech && pnpm fetch:cua && pnpm stage:cua-sdk && electron-builder --mac --arm64 --publish never",
     "package:win": "pnpm build && pnpm build:server && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {

@@ -20,6 +20,8 @@ Compare the complete hash with the matching line in `SHA256SUMS.txt`.
 
 ## macOS
 
+macOS releases are Apple Silicon (arm64) only. Use `VelarixBot-<version>-arm64.dmg`.
+
 1. Open the downloaded `.dmg` and drag VelarixBot to Applications.
 2. In Finder, Control-click `/Applications/VelarixBot.app` and choose **Open**.
 3. Confirm **Open** when macOS warns that the developer cannot be verified.

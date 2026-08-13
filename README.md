@@ -184,8 +184,7 @@ flowchart LR
 
 1. Open [private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases).
 2. Download the latest release for your computer:
-   - Apple Silicon Mac: `VelarixBot-<version>-arm64.dmg`
-   - Intel Mac: `VelarixBot-<version>-x64.dmg`
+   - Apple Silicon Mac (arm64 only): `VelarixBot-<version>-arm64.dmg`
    - Windows: `VelarixBot-Setup-<version>-x64.exe`
 3. Verify the download against `SHA256SUMS.txt` and follow the
    [one-time installation and trust instructions](INTERNAL_INSTALL.md).
@@ -217,10 +216,11 @@ Provider prompts still go directly to the explicitly selected CLI/provider under
 
 ## Internal desktop releases
 
-GitHub Actions builds the distributable installers on native runners: separate Intel and Apple Silicon macOS DMGs,
-plus a Windows x64 NSIS installer. These internal builds intentionally use the free manual-trust route. The macOS app
-is ad-hoc signed but not notarized, and the Windows installer is unsigned. Follow [`INTERNAL_INSTALL.md`](INTERNAL_INSTALL.md)
-to verify `SHA256SUMS.txt` and approve only the downloaded VelarixBot copy.
+GitHub Actions builds the distributable installers on native runners: an Apple Silicon (arm64) macOS DMG
+plus a Windows x64 NSIS installer. Mac releases are Apple Silicon only. These internal builds intentionally use the
+free manual-trust route. The macOS app is ad-hoc signed but not notarized, and the Windows installer is unsigned.
+Follow [`INTERNAL_INSTALL.md`](INTERNAL_INSTALL.md) to verify `SHA256SUMS.txt` and approve only the downloaded
+VelarixBot copy.
 
 Automatic updates check [private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases) from the packaged app. Set a GitHub token in App Settings (stored write-only in `~/.velarixbot/config.json`, or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The token is never baked into the app, argv, logs, or SSE. Dev and browser builds are an honest no-op. You can still download each update manually, verify its
 checksum, and install it over the existing version.
