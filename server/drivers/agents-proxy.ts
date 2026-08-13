@@ -1,10 +1,12 @@
 // Agent-to-agent comms MCP proxy — spawned as an MCP server inside a bot's
-// agent process (via the "agents" integration). Exposes two tools that let
-// one bot talk to another, routed back through the harness so the harness
-// stays the single owner of turns, permissions, and recursion limits:
+// agent process (via the "agents" integration). Exposes tools that let
+// one bot talk to another or create a real sidebar bot, routed back through
+// the harness so the harness stays the single owner of turns, permissions,
+// and recursion limits:
 //
 //   list_bots()            → the other bots in this workspace + their status
 //   ask_bot(bot_id, msg)   → send msg to that bot, wait, return its reply
+//   create_bot(...)        → create a real sidebar bot (name/title/description)
 //
 // Speaks raw JSON-RPC 2.0 over stdio (no MCP SDK — house style, matches
 // computer-proxy / permission-proxy). All state comes from env, injected by
@@ -38,6 +40,21 @@ const TOOLS = [
         message: { type: "string", description: "What to say / ask the bot." },
       },
       required: ["bot_id", "message"],
+    },
+  },
+  {
+    name: "create_bot",
+    description:
+      "Create a real VelarixBot bot that appears in the sidebar. Use this when asked to create bots or specialists. Never invent Codex/conversation-only sub-agents — they do not show in the workspace. After creating, list_bots will include the new bot and ask_bot can message it by id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Display name in the sidebar (required)." },
+        title: { type: "string", description: "Short role title, e.g. Engineering Reviewer." },
+        description: { type: "string", description: "What this bot is for — becomes its persona." },
+        model: { type: "string", description: "Optional model id (e.g. gpt-5.6-terra). Omit to use the workspace default." },
+      },
+      required: ["name", "title", "description"],
     },
   },
 ];
@@ -78,6 +95,31 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     if (r.busy) return { text: `That bot is busy right now — try again after it finishes.` };
     if (r.error) return { text: `Couldn't reach that bot: ${r.error}`, isError: true };
     return { text: `${r.botName ?? "Bot"} replied:\n${r.text ?? "(no reply)"}` };
+  }
+  if (name === "create_bot") {
+    const botName = String(args.name ?? "").trim();
+    const title = String(args.title ?? "").trim();
+    const description = String(args.description ?? "").trim();
+    const model = String(args.model ?? "").trim();
+    if (!botName || !title || !description) {
+      return { text: "create_bot needs name, title, and description.", isError: true };
+    }
+    const r = await api(`/api/internal/create-bot`, {
+      method: "POST",
+      body: JSON.stringify({
+        fromBotId: BOT_ID,
+        name: botName,
+        title,
+        description,
+        ...(model ? { model } : {}),
+        depth: DEPTH,
+      }),
+    });
+    if (r.error) return { text: `Couldn't create that bot: ${r.error}`, isError: true };
+    const created = (r.bot as Json) ?? {};
+    return {
+      text: `Created sidebar bot ${created.name ?? botName} (id: ${created.id}, model: ${created.model ?? "default"}). It is now in the VelarixBot sidebar. Message it with ask_bot using that id.`,
+    };
   }
   return { text: `Unknown tool: ${name}`, isError: true };
 }

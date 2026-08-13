@@ -136,8 +136,9 @@ export function Composer({ bot }: { bot: Bot }) {
         )}
         <div className="flex items-center gap-2 rounded-full border border-hairline/40 bg-raised/60 py-2 pl-2 pr-2">
         <button
+          onClick={() => dispatch({ type: "newBot" })}
           className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-raised hover:text-ink"
-          title="Attach"
+          title="New bot"
         >
           <Plus size={20} />
         </button>

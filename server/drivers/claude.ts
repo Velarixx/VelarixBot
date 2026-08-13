@@ -276,7 +276,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.computer = { ...turn.integrations.localComputer };
         allowed.push("mcp__computer");
       }
-      // peer-agent comms (list_bots/ask_bot) — the harness builds the whole
+      // peer-agent comms (list_bots/ask_bot/create_bot) — the harness builds the whole
       // spawn contract (command/args/env incl. the boot token) in
       // agentsIntegration(); pre-allowing matters doubly here, or the CLI's
       // own ListAgents look-alike shadows it and "@Bot" asks go nowhere

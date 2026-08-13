@@ -135,7 +135,7 @@ type Action =
   | { type: "answerCard"; botId: string; messageId: string; answer: string }
   | { type: "dismissCard"; botId: string; messageId: string }
   | { type: "newBot" }
-  | { type: "botAdded"; bot: Bot }
+  | { type: "botAdded"; bot: Bot; select?: boolean }
   | { type: "deleteBot"; botId: string }
   | { type: "duplicateBot"; botId: string }
   | { type: "markUnread"; botId: string }
@@ -231,12 +231,18 @@ function reducer(state: AppState, action: Action): AppState {
       );
     case "dismissCard":
       return patchCard(state, action.botId, action.messageId, { dismissed: true });
-    case "botAdded":
+    case "botAdded": {
+      const exists = state.bots.some((b) => b.id === action.bot.id);
+      const selectedId = action.select === false ? state.selectedId : action.bot.id;
+      if (exists) {
+        return selectedId === state.selectedId ? state : { ...state, selectedId };
+      }
       return withMascotMotion({
         ...state,
         bots: [action.bot, ...state.bots],
-        selectedId: action.bot.id,
+        selectedId,
       }, action.bot.id, "arrive");
+    }
     case "deleteBot": {
       const bots = state.bots.filter((b) => b.id !== action.botId);
       const selectedId =
@@ -629,6 +635,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           rawDispatch({ type: "botPatched", bot });
           break;
         }
+        case "bot.added":
+          rawDispatch({ type: "botAdded", bot: frame.bot, select: false });
+          break;
         case "runtime": {
           const event = frame.event;
           if (event.type === "content.delta" && event.streamKind === "assistant_text") {

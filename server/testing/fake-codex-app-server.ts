@@ -9,6 +9,9 @@
 // real CLI: `{ models: [{ slug, display_name, visibility }] }`.
 //
 //   FAKE_CODEX_MODE   happy (default) | approval | resume | stream | no-models
+//                     | exit-zero (assistant text, then process.exit(0)
+//                       without turn/completed)
+//                     | exit-early (crash with code 3 before a turn)
 //   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision,
 //                     threadStartConfig, threadResumeConfig} as JSON
 //
@@ -106,6 +109,10 @@ process.stdin.on("data", (chunk) => {
 
     switch (msg.method) {
       case "initialize":
+        if (mode === "exit-early") {
+          process.stderr.write("fake-codex: simulated crash before result\n");
+          process.exit(3);
+        }
         out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
         break;
       case "thread/resume":
@@ -126,6 +133,11 @@ process.stdin.on("data", (chunk) => {
         if (mode === "approval") {
           out({ jsonrpc: "2.0", id: 100, method: "execCommandApproval", params: { command: "rm -rf scratch" } });
           // turn continues from the approval response handler above
+        } else if (mode === "exit-zero") {
+          notify("item/completed", { item: { id: "i1", type: "commandExecution", status: "completed" } });
+          notify("item/completed", { item: { id: "m1", type: "agentMessage", text: "done from fake codex" } });
+          dump();
+          process.exit(0);
         } else {
           finishTurn();
         }
@@ -136,5 +148,6 @@ process.stdin.on("data", (chunk) => {
   }
 });
 
-// match the real app-server: stay alive until killed
-setInterval(() => {}, 1_000);
+// match the real app-server: stay alive until killed (exit-zero / exit-early
+// end the process themselves)
+if (mode !== "exit-zero" && mode !== "exit-early") setInterval(() => {}, 1_000);

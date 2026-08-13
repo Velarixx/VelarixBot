@@ -17,7 +17,11 @@ let stub: Server;
 let stubPort = 0;
 let lastAuth: string | undefined;
 let lastAskBody: any = null;
+let lastCreateBody: any = null;
 let askResponse: unknown = { botName: "Helper", text: "hi from helper" };
+let createResponse: unknown = {
+  bot: { id: "bot-new", name: "Ops", title: "Ops specialist", description: "Runs ops", model: "fake-model" },
+};
 
 let child: ChildProcess;
 const pending = new Map<number, (msg: any) => void>();
@@ -57,6 +61,16 @@ beforeAll(async () => {
         lastAskBody = JSON.parse(data);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(askResponse));
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/internal/create-bot") {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => {
+        lastCreateBody = JSON.parse(data);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(createResponse));
       });
       return;
     }
@@ -101,7 +115,7 @@ describe("agents-proxy MCP surface", () => {
     const init = await rpc("initialize", { protocolVersion: "2024-11-05" });
     expect(init.result.serverInfo.name).toContain("agents");
     const list = await rpc("tools/list");
-    expect(list.result.tools.map((t: { name: string }) => t.name)).toEqual(["list_bots", "ask_bot"]);
+    expect(list.result.tools.map((t: { name: string }) => t.name)).toEqual(["list_bots", "ask_bot", "create_bot"]);
   });
 
   it("list_bots renders the roster and authenticates with the shared token", async () => {
@@ -141,6 +155,51 @@ describe("agents-proxy MCP surface", () => {
 
   it("requires bot_id and message", async () => {
     const res = await callTool("ask_bot", { bot_id: "", message: "" });
+    expect(res.result.isError).toBe(true);
+  });
+
+  it("create_bot forwards name/title/description/model and returns the sidebar id", async () => {
+    createResponse = {
+      bot: { id: "bot-new", name: "Ops", title: "Ops specialist", description: "Runs ops", model: "gpt-5.6-terra" },
+    };
+    const res = await callTool("create_bot", {
+      name: "Ops",
+      title: "Ops specialist",
+      description: "Runs ops",
+      model: "gpt-5.6-terra",
+    });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toContain("Ops");
+    expect(res.result.content[0].text).toContain("bot-new");
+    expect(res.result.content[0].text).toContain("sidebar");
+    expect(lastCreateBody).toMatchObject({
+      fromBotId: "bot-asker",
+      name: "Ops",
+      title: "Ops specialist",
+      description: "Runs ops",
+      model: "gpt-5.6-terra",
+      depth: 0,
+    });
+    expect(lastAuth).toBe(`Bearer ${TOKEN}`);
+    expect(JSON.stringify(lastCreateBody)).not.toContain(TOKEN);
+  });
+
+  it("create_bot omits model when the caller did not pass one", async () => {
+    createResponse = { bot: { id: "bot-2", name: "Scout", title: "Scout", description: "Looks around", model: "fake-model" } };
+    await callTool("create_bot", { name: "Scout", title: "Scout", description: "Looks around" });
+    expect(lastCreateBody).toMatchObject({ name: "Scout", title: "Scout", description: "Looks around", depth: 0 });
+    expect(lastCreateBody.model).toBeUndefined();
+  });
+
+  it("create_bot surfaces a harness depth refusal as a tool error", async () => {
+    createResponse = { error: "message chains are limited to one hop" };
+    const res = await callTool("create_bot", { name: "X", title: "X", description: "X" });
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain("one hop");
+  });
+
+  it("requires name, title, and description", async () => {
+    const res = await callTool("create_bot", { name: "Ops", title: "", description: "" });
     expect(res.result.isError).toBe(true);
   });
 });

@@ -152,9 +152,12 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     expect(seen.env.OPENAI_API_KEY).toBeUndefined();
     const methods = seen.calls.map((c: { method: string }) => c.method);
     expect(methods).toEqual(["initialize", "initialized", "thread/start", "turn/start"]);
-    // persona rides in front of the prompt text — codex has no system slot
+    // persona is developerInstructions on thread/start — not prepended onto the user text
+    const threadStart = seen.calls.find((c: { method: string }) => c.method === "thread/start");
+    expect(threadStart.params.developerInstructions).toBe("You are Testy.");
     const turnStart = seen.calls.at(-1);
-    expect(turnStart.params.input[0].text).toBe("You are Testy.\n\nlist files");
+    expect(turnStart.params.input[0].text).toBe("list files");
+    expect(turnStart.params.input[0].text).not.toContain("You are Testy.");
     // no integrations → no mcp overlay on thread/start
     expect(seen.threadStartConfig).toBeNull();
     expect(seen.threadResumeConfig).toBeNull();
@@ -183,16 +186,21 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     const dump = join(scratch, "dump.json");
     process.env.FAKE_CODEX_DUMP = dump;
 
-    await instance.adapter.sendTurn({ threadId: "t-resume", text: "again", resumeCursor: "codex-thread-9" });
+    await instance.adapter.sendTurn({ threadId: "t-resume", text: "again", system: "You are Testy.", resumeCursor: "codex-thread-9" });
     const started = await recorder.until((e) => e.type === "session.started");
     expect(started).toMatchObject({ sessionId: "codex-thread-9" });
     await recorder.until((e) => e.type === "turn.completed");
 
-    const methods = JSON.parse(readFileSync(dump, "utf8")).calls.map((c: { method: string }) => c.method);
+    const dumped = JSON.parse(readFileSync(dump, "utf8"));
+    const methods = dumped.calls.map((c: { method: string }) => c.method);
     expect(methods).toContain("thread/resume");
     expect(methods).not.toContain("thread/start");
+    const resumed = dumped.calls.find((c: { method: string }) => c.method === "thread/resume");
+    expect(resumed.params.developerInstructions).toBe("You are Testy.");
+    const turnStart = dumped.calls.find((c: { method: string }) => c.method === "turn/start");
+    expect(turnStart.params.input[0].text).toBe("again");
     // no integrations → resume must not invent an mcp overlay
-    expect(JSON.parse(readFileSync(dump, "utf8")).threadResumeConfig).toBeNull();
+    expect(dumped.threadResumeConfig).toBeNull();
   });
 
   it("falls back to a fresh thread when resume fails", async () => {
@@ -368,5 +376,24 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     expect(seen.env.CODEX_MCP_COMPOSIO_KEY).toBe(composioKey);
     expect(JSON.stringify(seen.argv)).not.toContain(composioKey);
     expect(JSON.stringify(seen.threadResumeConfig)).not.toContain(composioKey);
+  });
+
+  it("a clean exit 0 before turn/completed is a finished turn, not a kill", async () => {
+    await create({ mode: "exit-zero" });
+    await instance.adapter.sendTurn({ threadId: "t-exit0", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ type: "turn.completed", ok: true, stopReason: null });
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
+    const text = recorder.events.find((e: any) => e.type === "item.completed" && e.itemType === "assistant_text");
+    expect(text).toMatchObject({ text: "done from fake codex" });
+  });
+
+  it("a non-zero exit before turn/completed is still a failed turn", async () => {
+    await create({ mode: "exit-early" });
+    await instance.adapter.sendTurn({ threadId: "t-crash", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "exit_before_result" });
+    const error = recorder.events.find((e) => e.type === "runtime.error")!;
+    expect(error.message).toContain("codex exited 3");
   });
 });
