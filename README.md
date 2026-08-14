@@ -233,12 +233,25 @@ optional and requested only for on-device dictation.
 
 Bot definitions, transcripts, and routines live in one local SQLite database (`~/.velarixbot/velarixbot.db`, WAL —
 appends never rewrite history and a kill loses at most the in-flight message); screenshots are stored beside it as
-content-hash files under `~/.velarixbot/blobs`. Configuration, credentials, approval rules, memory notes, and skills
+content-hash files under `~/.velarixbot/blobs`. Configuration, approval rules, memory notes, and skills
 also live under `~/.velarixbot`. On first launch after an update, existing JSON stores are imported into SQLite in one
 checksum-verified transaction — the originals are copied to `~/.velarixbot/backup/` first and never modified.
-Desktop-only runtime files use Electron's OS-specific VelarixBot user-data directory. This is local-first, not per-user encryption:
-anyone who can use the same OS account or read those directories can access the data. On a shared computer, use a
-separate OS account and do not configure credentials you are unwilling to share.
+Desktop-only runtime files use Electron's OS-specific VelarixBot user-data directory.
+
+API keys and tokens pasted in App Settings are sealed with the operating system's credential store via Electron
+`safeStorage` (macOS Keychain, Windows DPAPI, Linux libsecret/kwallet) and kept in `~/.velarixbot/secrets.json`;
+`config.json` holds only `secret://` references, never the values, and a pre-existing `config.json` with plaintext
+keys is migrated on the first boot. Each provider subprocess receives only the secret its driver actually needs,
+never the whole key ring. When no OS keychain is available — running the bare harness server headless
+(`pnpm dev:server`), or a Linux session without a secret store — new secrets fall back to base64 entries in the
+same 0600 `secrets.json`. That fallback is deliberately **not** encryption (it is the same OS-account trust
+boundary as before, just never in `config.json`), the file marks itself accordingly, and fallback entries are
+upgraded to the OS keychain automatically the next time the desktop app runs. Keychain-sealed secrets simply read
+as *not configured* in a headless run.
+
+Everything else stays local-first, not per-user encryption: anyone who can use the same OS account (and therefore
+its keychain) can access the data. On a shared computer, use a separate OS account and do not configure
+credentials you are unwilling to share.
 Provider prompts still go directly to the explicitly selected CLI/provider under that provider's own privacy terms.
 
 ## Internal desktop releases
@@ -249,7 +262,7 @@ free manual-trust route. The macOS app is ad-hoc signed but not notarized, and t
 Follow [`INTERNAL_INSTALL.md`](INTERNAL_INSTALL.md) to verify `SHA256SUMS.txt` and approve only the downloaded
 VelarixBot copy.
 
-Automatic updates check [private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases) from the packaged app. Set a GitHub token in App Settings (stored write-only in `~/.velarixbot/config.json`, or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The token is never baked into the app, argv, logs, or SSE. Dev and browser builds are an honest no-op. You can still download each update manually, verify its
+Automatic updates check [private GitHub Releases](https://github.com/Velarixx/VelarixBot/releases) from the packaged app. Set a GitHub token in App Settings (stored write-only in the OS-keychain-backed secret store — `~/.velarixbot/config.json` holds only a `secret://` reference — or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The token is never baked into the app, argv, logs, or SSE. Dev and browser builds are an honest no-op. You can still download each update manually, verify its
 checksum, and install it over the existing version.
 
 ## Developer setup (maintainers only)
