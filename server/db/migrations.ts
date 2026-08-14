@@ -136,6 +136,31 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // P1.3: per-stream sequences on the event log. Runtime events are
+    // sequenced on their thread's stream; the SSE hub persists renderer
+    // frames on its own "ui" stream. `sequence` is 1-based and gap-free
+    // within a stream, so `id:`/Last-Event-ID resume can prove zero
+    // loss/dupes. Existing rows are backfilled in global-seq order.
+    version: 3,
+    name: "event-log-stream-sequences",
+    up(db) {
+      db.exec(`
+        ALTER TABLE event_log ADD COLUMN stream_id TEXT;
+        ALTER TABLE event_log ADD COLUMN sequence INTEGER;
+        ALTER TABLE event_log ADD COLUMN schema_version INTEGER;
+      `);
+      const rows = db.prepare<{ seq: number; thread_id: string }>("SELECT seq, thread_id FROM event_log ORDER BY seq").all();
+      const update = db.prepare("UPDATE event_log SET stream_id = ?, sequence = ?, schema_version = 1 WHERE seq = ?");
+      const counters = new Map<string, number>();
+      for (const row of rows) {
+        const next = (counters.get(row.thread_id) ?? 0) + 1;
+        counters.set(row.thread_id, next);
+        update.run(row.thread_id, next, row.seq);
+      }
+      db.exec("CREATE UNIQUE INDEX event_log_stream_sequence ON event_log(stream_id, sequence);");
+    },
+  },
 ];
 
 export interface MigrationRow {

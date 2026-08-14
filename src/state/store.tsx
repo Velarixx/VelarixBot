@@ -23,6 +23,7 @@ import {
   takeNext,
   type QueuedPrompt,
 } from "@/lib/prompt-queue";
+import { advanceCursor, eventsUrl, INITIAL_CURSOR, shouldApplyFrame, type SseCursor } from "@/lib/sse-resume";
 
 export type { QueuedPrompt };
 
@@ -779,13 +780,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [state.bots, state.queued, dispatch]);
 
-  // ── initial load + SSE fold ──────────────────────────────────────────
+  // ── initial load + SSE fold (P1.3 resumable stream) ──────────────────
+  // Snapshot + cursor + Last-Event-ID replay: hydrate from
+  // /api/events/snapshot, subscribe from the cursor it was taken at, skip
+  // anything at or before the last applied sequence. A reload or dropped
+  // connection replays exactly the missed frames — no loss, no dupes.
   useEffect(() => {
     let alive = true;
-    const loadAll = () => {
-      api("/api/bots")
-        .then(({ bots }) => alive && rawDispatch({ type: "hydrate", bots }))
-        .catch(() => {});
+    let es: EventSource | null = null;
+    let cursor: SseCursor = INITIAL_CURSOR;
+    const loadExtras = () => {
       api("/api/instances")
         .then(({ instances }) => alive && rawDispatch({ type: "instances", instances }))
         .catch(() => {});
@@ -796,21 +800,63 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         .then(({ routines }) => alive && rawDispatch({ type: "routinesLoaded", routines }))
         .catch(() => {});
     };
-    loadAll();
-
-    const es = new EventSource("/api/events");
-    es.onopen = () => {
-      rawDispatch({ type: "connected", value: true });
-      loadAll(); // resync anything missed while disconnected
+    // sequenced frames received while a snapshot fetch is in flight are
+    // buffered and re-folded against the snapshot's cursor afterwards — a
+    // frame newer than the snapshot must not be wiped by the hydrate
+    let pendingDuringResync: any[] | null = null;
+    const resync = () => {
+      pendingDuringResync ??= [];
+      return api("/api/events/snapshot")
+        .then((snap) => {
+          if (!alive) return;
+          rawDispatch({ type: "hydrate", bots: snap.bots });
+          // SET (not advance): a resync is also the recovery from a
+          // reset stream whose sequences restarted below our old cursor
+          cursor = {
+            streamId: typeof snap.streamId === "string" ? snap.streamId : null,
+            sequence: typeof snap.sequence === "number" ? snap.sequence : 0,
+          };
+        })
+        .catch(() => {})
+        .then(() => {
+          const queued = pendingDuringResync ?? [];
+          pendingDuringResync = null;
+          for (const frame of queued) foldFrame(frame);
+        });
     };
-    es.onerror = () => rawDispatch({ type: "connected", value: false });
-    es.onmessage = (raw) => {
-      let frame: any;
-      try {
-        frame = JSON.parse(raw.data);
-      } catch {
+    loadExtras();
+
+    const connect = () => {
+      if (!alive) return;
+      es = new EventSource(eventsUrl(cursor));
+      es.onopen = () => rawDispatch({ type: "connected", value: true });
+      es.onerror = () => rawDispatch({ type: "connected", value: false });
+      es.onmessage = (raw: MessageEvent) => {
+        let frame: any;
+        try {
+          frame = JSON.parse(raw.data);
+        } catch {
+          return;
+        }
+        foldFrame(frame);
+      };
+    };
+    const foldFrame = (frame: any) => {
+      if (frame.kind === "hello") {
+        // the server could not resume our cursor (fresh page, pruned or
+        // reset stream) — fall back to a full snapshot resync
+        if (frame.resumed === false) {
+          void resync();
+          loadExtras();
+        }
         return;
       }
+      if (pendingDuringResync && typeof frame.sequence === "number") {
+        pendingDuringResync.push(frame);
+        return;
+      }
+      if (!shouldApplyFrame(cursor, frame)) return; // replay overlap — already applied
+      cursor = advanceCursor(cursor, frame);
       switch (frame.kind) {
         case "message":
           rawDispatch({ type: "messageAdded", threadId: frame.threadId, message: frame.message });
@@ -900,9 +946,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
       }
     };
+    // hydrate first, then subscribe from the snapshot's cursor. When the
+    // snapshot fails (server still booting) we connect anyway: the hello
+    // arrives with resumed=false and triggers the resync above.
+    void resync().then(connect);
     return () => {
       alive = false;
-      es.close();
+      es?.close();
     };
   }, []);
 

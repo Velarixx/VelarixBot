@@ -13,6 +13,7 @@ import type { RuntimeEvent } from "./contracts.ts";
 import type { EventBus } from "./harness/bus.ts";
 import type { ProviderRegistry } from "./harness/registry.ts";
 import { createProactive, type Proactive } from "./proactive.ts";
+import { UI_STREAM_ID } from "./repositories/event-log.ts";
 import type { Repositories } from "./repositories/index.ts";
 import { createApprovalsRoutes } from "./routes/approvals.ts";
 import { createBotsRoutes } from "./routes/bots.ts";
@@ -80,7 +81,15 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   const { repos, providers: registry, bus, cfg, port, apiToken, commsToken, staticDir, stamp } = input;
   const clock: Clock = input.clock ?? { now: () => Date.now() };
 
-  const hub = createSseHub();
+  // the hub's semantic frames are durable on the event log's "ui" stream
+  // (P1.3): SSE id:/Last-Event-ID resume replays exactly the missed frames
+  const hub = createSseHub({
+    streamId: UI_STREAM_ID,
+    append: (type, payload) => repos.eventLog.appendToStream(UI_STREAM_ID, type, payload),
+    replayAfter: (after) => repos.eventLog.replayAfter(UI_STREAM_ID, after),
+    latest: () => repos.eventLog.latestSequence(UI_STREAM_ID),
+    oldest: () => repos.eventLog.oldestSequence(UI_STREAM_ID),
+  });
   const broadcast = hub.broadcast;
 
   // canonical events are mirrored into SQLite (event_log); the per-thread
@@ -174,7 +183,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // route order preserves the pre-refactor dispatch: internal comms first
   // (their own token), then the launch-token gate, then the public surface
   const gatedRoutes: RouteHandler[] = [
-    createEventsRoutes({ hub }),
+    createEventsRoutes({ hub, bots }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
     createBotsRoutes({ bots, turns, teach, registry, computers, cfg, broadcast }),
