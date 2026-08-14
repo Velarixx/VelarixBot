@@ -3,7 +3,7 @@
 // live in SettingsPanel; contextual Box-token entry stays in ComputerPanel.
 import { X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useStore } from "@/state/store";
+import { api, useStore } from "@/state/store";
 import { ApiKeyRow } from "./ApiKeys";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
@@ -74,6 +74,75 @@ function TrayRow() {
     </div>
   );
 }
+/** P1.7 one-click diagnostics + verified profile backup. The export is the
+ * redacted support bundle (versions, capabilities, redacted logs, integrity
+ * result) — no transcripts, no API keys. Backup writes a verified SQLite
+ * snapshot into the local data directory. */
+function DiagnosticsRow() {
+  const [busy, setBusy] = useState<"export" | "backup" | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  const downloadExport = async () => {
+    setBusy("export");
+    setNote(null);
+    try {
+      const bundle = await api("/api/diagnostics/export");
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `velarixbot-diagnostics-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setNote("Diagnostics saved. No transcripts or keys are included.");
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const backupNow = async () => {
+    setBusy("backup");
+    setNote(null);
+    try {
+      const { path } = await api("/api/diagnostics/backup", { method: "POST" });
+      setNote(`Verified backup saved to ${path}`);
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="mt-4 rounded-xl bg-card p-4">
+      <div className="text-[15px] font-medium text-ink">Diagnostics & backup</div>
+      <div className="mt-0.5 text-[13px] text-ink-secondary">
+        Export versions, capabilities, redacted logs, and a database integrity result for support — transcripts and
+        keys are never included. Backup writes a verified snapshot of your local data.
+      </div>
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={() => void downloadExport()}
+          disabled={busy !== null}
+          className="rounded-lg bg-raised px-3 py-1.5 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-40"
+        >
+          {busy === "export" ? "Exporting…" : "Export diagnostics"}
+        </button>
+        <button
+          onClick={() => void backupNow()}
+          disabled={busy !== null}
+          className="rounded-lg bg-raised px-3 py-1.5 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-40"
+        >
+          {busy === "backup" ? "Backing up…" : "Back up now"}
+        </button>
+      </div>
+      {note && <div className="mt-2 break-all text-[12px] text-ink-secondary">{note}</div>}
+    </div>
+  );
+}
+
 function UpdatesRow() {
   const s = useUpdaterState();
   if (!window.ogb?.updater) return null;
@@ -172,6 +241,8 @@ export function AppSettingsPanel() {
         <LaunchAtLoginRow />
 
         <TrayRow />
+
+        <DiagnosticsRow />
 
         <UpdatesRow />
       </div>
