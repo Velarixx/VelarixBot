@@ -153,6 +153,13 @@ describe("packaged server entry", () => {
     expect(win).toContain("smoke-packaged-server.mjs");
     expect(mac.indexOf("verify-packaged-server.mjs")).toBeLessThan(mac.indexOf("smoke-packaged-server.mjs"));
     expect(win.indexOf("verify-packaged-server.mjs")).toBeLessThan(win.indexOf("smoke-packaged-server.mjs"));
+    // the mac job inlines electron-builder (unlike windows' package:win), so
+    // it must stage the sqlite dep itself — after build:server, before the
+    // package step — or the DMG ships a server that crashes at boot
+    expect(mac).toContain("pnpm stage:sqlite");
+    expect(mac.indexOf("build:server")).toBeLessThan(mac.indexOf("stage:sqlite"));
+    expect(mac.indexOf("stage:sqlite")).toBeLessThan(mac.indexOf("electron-builder --mac"));
+    expect(win).toContain("package:win"); // package:win already runs stage:sqlite (pinned above)
     expect(mac).toContain("--arm64");
     expect(mac).not.toMatch(/--x64/);
     expect(workflow).toMatch(/needs:\s*\[mac, windows\]/);
