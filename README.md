@@ -147,8 +147,19 @@ State details explain blocked or interrupted turns. The sidebar and chat header 
 input/output token totals and cost when the provider supplies it; unknown cost is shown as unavailable, never guessed.
 
 Open **Routines** from the sidebar to create a persistent scheduled prompt for a bot, enable or pause it, inspect its
-next/last run, or delete it. Routines are stored locally and run while the harness server is running. A busy bot will
-not start overlapping routine work. An open Routines panel stays live over SSE as runs start, finish, or are deleted.
+next/last run, or delete it. Routines are stored locally and **run while VelarixBot is open** — there is no cloud
+scheduler, so nothing runs while the app is closed or the laptop is asleep. Each routine has an explicit missed-run
+policy for occurrences that came due while it was: **run once** (coalesce the backlog into one run — the default),
+**skip** (drop them), or **catch up** (replay each missed occurrence in order, capped at 20). Clock schedules store
+the IANA time zone they were created in, so a daily 09:00 stays 09:00 wall-clock across DST transitions and OS
+timezone changes; a wall time skipped by spring-forward runs at the first moment after the gap.
+
+Every run — including skips, with the reason why — lands in a per-routine history (the last 20 runs, shown in the
+panel). A running routine holds a lease it renews every scheduler tick; if VelarixBot dies mid-run, the next launch
+recovers the lease, records the run as interrupted, and never double-runs that occurrence (each scheduled occurrence
+is claimed under an idempotency key). A **Test run** button runs a routine immediately without consuming its
+schedule. A busy bot will not start overlapping routine work; the skipped occurrence is recorded. An open Routines
+panel stays live over SSE as runs start, finish, or are deleted.
 
 Group chats: `@mention` another bot to share one transcript. Sign-in on a cloud computer pauses on a credential card
 (no secrets in events). **Teach a task** on the Computer panel distills a supervised session into an editable skill
