@@ -48,7 +48,20 @@ export interface RuntimeEventBase {
   itemId?: string;
   requestId?: string;
   raw?: { source: string; payload: unknown };
+  // ── P1.3 durable-stream envelope ─────────────────────────────────────
+  // Stamped by the event log when the event is persisted (the bus emits
+  // events without them; every durable/replayed copy carries all three).
+  /** Envelope version so a consumer can detect a newer producer. */
+  schemaVersion?: number;
+  /** The durable stream this event was sequenced on (thread id for
+   * runtime events; the SSE hub uses its own "ui" stream). */
+  streamId?: string;
+  /** Per-stream monotonic sequence (1-based, no gaps within a stream). */
+  sequence?: number;
 }
+
+/** Version of the persisted/streamed event envelope (P1.3). */
+export const EVENT_SCHEMA_VERSION = 1;
 
 export type RuntimeEvent = RuntimeEventBase &
   (

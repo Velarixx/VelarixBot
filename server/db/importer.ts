@@ -226,6 +226,15 @@ function messageFingerprint(message: Message): unknown {
   return message;
 }
 
+/** The P1.3 stream envelope (schemaVersion / streamId / sequence) is
+ * assigned by the event log at write time — storage metadata, not source
+ * content. Strip it on BOTH sides so the integrity gate compares what the
+ * legacy files actually said. */
+function eventFingerprint(event: RuntimeEvent): unknown {
+  const { schemaVersion, streamId, sequence, ...rest } = event;
+  return rest;
+}
+
 function sourcesChecksum(sources: {
   bots: BotRecord[];
   routines: RoutineRecord[];
@@ -243,7 +252,7 @@ function sourcesChecksum(sources: {
       bots: sources.bots,
       routines: sources.routines,
       messages: threads.map((t) => [t, sources.messages.get(t)!.map(messageFingerprint)]),
-      events: eventThreads.map((t) => [t, sources.events.get(t)]),
+      events: eventThreads.map((t) => [t, sources.events.get(t)!.map(eventFingerprint)]),
       rules: sources.rules,
       audit: sources.audit,
       skills: sources.skills,

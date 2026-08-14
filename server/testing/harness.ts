@@ -89,6 +89,13 @@ export interface SseFrame {
   botId?: string;
   threadId?: string;
   message?: { kind?: string; role?: string; text?: string; card?: { requestId?: string; options?: string[]; answered?: string; dismissed?: boolean; title?: string } };
+  /** P1.3 durable-stream stamps (persisted frames only). */
+  schemaVersion?: number;
+  streamId?: string;
+  sequence?: number;
+  resumed?: boolean;
+  /** The SSE `id:` line of this frame, when the server sent one. */
+  sseId?: number;
   [k: string]: unknown;
 }
 
@@ -100,9 +107,17 @@ export interface SseRecorder {
   close(): void;
 }
 
-export async function connectSse(base: string, token?: string): Promise<SseRecorder> {
-  const res = await fetch(`${base}/api/events`, {
-    headers: token ? { authorization: `Bearer ${token}` } : undefined,
+export async function connectSse(
+  base: string,
+  token?: string,
+  resume?: { header?: number; query?: number },
+): Promise<SseRecorder> {
+  const url = resume?.query !== undefined ? `${base}/api/events?lastEventId=${resume.query}` : `${base}/api/events`;
+  const res = await fetch(url, {
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(resume?.header !== undefined ? { "last-event-id": String(resume.header) } : {}),
+    },
   });
   if (!res.ok || !res.body) throw new Error(`SSE ${res.status}`);
   const reader = res.body.getReader();
@@ -133,14 +148,17 @@ export async function connectSse(base: string, token?: string): Promise<SseRecor
         while ((sep = buf.indexOf("\n\n")) !== -1) {
           const block = buf.slice(0, sep);
           buf = buf.slice(sep + 2);
-          const data = block
-            .split("\n")
+          const lines = block.split("\n");
+          const data = lines
             .filter((l) => l.startsWith("data:"))
             .map((l) => l.slice(5).trimStart())
             .join("\n");
           if (!data) continue;
+          const idLine = lines.find((l) => l.startsWith("id:"));
           try {
-            deliver(JSON.parse(data) as SseFrame);
+            const frame = JSON.parse(data) as SseFrame;
+            if (idLine) frame.sseId = Number.parseInt(idLine.slice(3).trim(), 10);
+            deliver(frame);
           } catch {
             /* keep-alive or partial */
           }
