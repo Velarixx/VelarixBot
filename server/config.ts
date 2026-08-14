@@ -2,10 +2,11 @@
 //   { "xai": {"key":"xai-…"}, "composio": {"key":"ck_…"}, "box": {"token":"…"},
 //     "openrouter": {"key":"sk-or-…"}, "omnirouter": {"key":"…"},
 //     "instances": { "<instanceId>": {"driver":"grok", …} } }
-import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { atomicWriteFileSync, ensurePrivateDir } from "./atomic.ts";
 import type { InstanceConfig, InstanceConfigMap } from "./contracts.ts";
 
 export interface AppConfig {
@@ -37,7 +38,7 @@ export function botWorkspaceDir(botId: string): string {
 
 export function ensureBotWorkspace(botId: string): string {
   const dir = botWorkspaceDir(botId);
-  mkdirSync(dir, { recursive: true });
+  ensurePrivateDir(dir);
   return dir;
 }
 
@@ -54,7 +55,8 @@ export function ensureDirs() {
       }
     }
   }
-  for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR, join(DATA_DIR, "memory")]) mkdirSync(dir, { recursive: true });
+  // user-private data: 0700 dirs (transcripts, keys, approval rules live here)
+  for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR, join(DATA_DIR, "memory")]) ensurePrivateDir(dir);
 }
 
 export function loadConfig(): AppConfig {
@@ -88,8 +90,9 @@ export function saveConfig(patch: Partial<AppConfig>): void {
       disk[key] = { ...(disk[key] as object), ...patch[key] };
     }
   }
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(p, JSON.stringify(disk, null, 2));
+  ensurePrivateDir(DATA_DIR);
+  // config.json holds raw API keys: 0600, fsynced, never torn mid-write
+  atomicWriteFileSync(p, JSON.stringify(disk, null, 2));
 }
 
 // Default fleet: one instance per built-in driver (upstream

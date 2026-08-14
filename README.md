@@ -82,10 +82,15 @@ switch a bot to *this Mac* instead.
 
 ### 🙋 Bots ask before they act
 
-Shell commands, file edits, and questions surface as inline cards — Allow / Deny / answer in chat. A
+Shell commands, file edits, and questions surface as inline cards — Allow once / Deny / answer in chat. A
 permission broker turns every risky action into a decision you make, for cloud and local computers alike.
-**Always allow** writes a per-bot rule (glob patterns only — no substring catch-all, no raw secrets stored).
-List and revoke those rules in bot settings.
+**Allow once** persists nothing. **Always allow for this bot** writes a rule scoped to that one bot, with an
+explicit tool + redacted matcher — a wildcard is never auto-generated, and a rule for bot A never fires for
+bot B. **Advanced: always allow for all bots** is the only action that writes a workspace-wide rule, still
+with an explicit matcher. Deny is never persisted, and sign-in/credential asks are never auto-resolved by
+rules. Legacy workspace-wide rules from older builds are paused on boot until you re-enable them in bot
+settings, where every rule can also be revoked. Each decision is appended to a local audit log
+(`~/.velarixbot/approvals/audit.jsonl`) with the secret-redacted matcher.
 
 <img src="docs/screenshots/approval-card.png" alt="Approval and question cards in chat" width="100%">
 
@@ -232,12 +237,18 @@ These commands are for changing VelarixBot, not installing it for normal use:
 ```sh
 git clone https://github.com/Velarixx/VelarixBot && cd VelarixBot
 pnpm install
+export VELARIX_DEV_TOKEN=$(openssl rand -hex 32)   # PowerShell: $env:VELARIX_DEV_TOKEN = ...
 pnpm dev:server    # harness server → 127.0.0.1:8799
-pnpm dev           # app → http://127.0.0.1:5199
+pnpm dev           # app → http://127.0.0.1:5199 (proxy injects the dev token)
 pnpm dev:desktop   # Electron shell
 pnpm typecheck     # app + server
 pnpm build         # typecheck + production build
 ```
+
+Every `/api/*` route except `/api/health` requires a per-launch bearer token. The packaged app mints one per
+launch in Electron main and injects it on every renderer request (including the SSE stream). In dev, export the
+same `VELARIX_DEV_TOKEN` for both `pnpm dev:server` and `pnpm dev` — there is no way to switch auth off: without
+a token in env the server mints one nobody holds and stays locked.
 
 Development requires macOS or Windows, Node 24+, and pnpm. GitHub Actions, not developer machines, builds the
 downloadable release artifacts.
@@ -252,7 +263,7 @@ chat, routines, provider CLIs, and per-bot Box cloud computers remain available.
 Shipped teammates runtime (local-first, no cloud service, no telemetry, no paid gating):
 
 - **Tier 1** — OS notifications (honors per-bot `notifications`), boxAgent permission cards, local chat attachments, persistent routines, sidebar search, in-app updater from private GitHub Releases (write-only token).
-- **Tier 2** — close-to-hide tray (Show/Quit) so the harness stays up, launch-at-login (off by default), per-bot markdown memory plus workspace notes, stall nudges, routine-complete `startTurn`, Always-allow rules with a require-approval override.
+- **Tier 2** — close-to-hide tray (Show/Quit) so the harness stays up, launch-at-login (off by default), per-bot markdown memory plus workspace notes, stall nudges, routine-complete `startTurn`, per-bot Always-allow rules with a require-approval override.
 - **Tier 3** — group mention threads, `ask_bot` depth 2 with a cycle guard and busy-peer queue, Box sign-in credential cards, teach-a-task → editable skill, per-bot Composio app mounts, per-bot Box workspaces so two cloud bots can run at once.
 
 The driver SPI in [`server/contracts.ts`](server/contracts.ts) is small. Adding a provider requires one driver in

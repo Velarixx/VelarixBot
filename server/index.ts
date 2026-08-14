@@ -9,7 +9,18 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { attachmentPathRefs, expandAttachmentPaths } from "./attachments.ts";
-import { alwaysAllow, autoResolvePermission, deleteRule, listRules } from "./approvals.ts";
+import { requireApiAuth, resolveApiToken } from "./auth.ts";
+import {
+  appendAudit,
+  argumentPattern,
+  autoResolvePermission,
+  confirmRule,
+  deleteRule,
+  listRules,
+  persistAllowRule,
+  quarantineLegacyRules,
+  redactSecrets,
+} from "./approvals.ts";
 import * as box from "./box.ts";
 import * as composio from "./composio.ts";
 import { parseAllowedToolkits } from "./composio-filter.ts";
@@ -80,6 +91,9 @@ const MIME: Record<string, string> = {
 };
 
 ensureDirs();
+// Consent-bug migration: legacy workspace-wide / wildcard Allow rules are
+// parked (disabled) until reconfirmed in Settings. Idempotent on every boot.
+quarantineLegacyRules();
 const cfg = loadConfig();
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
@@ -92,6 +106,11 @@ bus.attach(registry.instances());
 // agents-proxy and memory-proxy call; regenerated each boot (the proxy
 // gets it via env).
 const COMMS_TOKEN = process.env.OMB_COMMS_TOKEN || randomBytes(24).toString("hex");
+// Per-launch capability for the public /api surface (separate from
+// COMMS_TOKEN): Electron main mints it and injects it on every renderer
+// request; dev sets VELARIX_DEV_TOKEN. Without either, the minted token is
+// never shared — fail closed, never silent-off. /api/health stays open.
+const API_TOKEN = resolveApiToken();
 // Cap message chains: depth 0 = a user-initiated turn (may ask a peer);
 // a peer invoked via ask_bot runs at depth 1 and may ask once more;
 // depth 2 gets NO agents tool. A visited-set blocks A→B→A loops.
@@ -746,7 +765,7 @@ bus.subscribe((event: RuntimeEvent) => {
             : credential
               ? [HANDOFF_CONTINUE]
               : permission
-                ? ["Allow", "Deny"]
+                ? ["Allow once", "Deny"]
                 : [],
           requestId: event.requestId,
           requestType: opened.requestType,
@@ -1285,6 +1304,27 @@ const server = createServer(async (req, res) => {
       return json(res, 404, { error: "unknown internal endpoint" });
     }
 
+    // ── launch-token gate for everything else under /api ──────────────
+    // 401 without/with a wrong or stale token; Host must be the loopback
+    // bind (DNS-rebinding guard); browser Origins are rejected on state
+    // changes. /api/health is exempt (port-fallback probe + release smoke).
+    if (path.startsWith("/api/")) {
+      const denied = requireApiAuth(
+        {
+          path,
+          method,
+          headers: {
+            authorization: req.headers.authorization,
+            host: req.headers.host,
+            origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+          },
+        },
+        API_TOKEN,
+        PORT,
+      );
+      if (denied) return json(res, denied.status, { error: denied.error });
+    }
+
     // ── events stream ──
     if (method === "GET" && path === "/api/events") {
       res.writeHead(200, {
@@ -1322,7 +1362,7 @@ const server = createServer(async (req, res) => {
     routineMatch = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
     if (routineMatch && method === "POST") { await runRoutine(routineMatch[1]); return json(res, 202, { ok: true }); }
 
-    // ── per-bot approval rules (list + revoke; Always-allow writes them) ──
+    // ── approval rules (list + revoke + reconfirm; Always-allow writes them) ──
     let approvalsMatch = path.match(/^\/api\/bots\/([\w-]+)\/approvals$/);
     if (approvalsMatch && method === "GET") {
       if (!store.bot(approvalsMatch[1])) return json(res, 404, { error: "no such bot" });
@@ -1332,6 +1372,17 @@ const server = createServer(async (req, res) => {
     if (approvalsMatch && method === "DELETE") {
       if (!store.bot(approvalsMatch[1])) return json(res, 404, { error: "no such bot" });
       return deleteRule(approvalsMatch[1], approvalsMatch[2]) ? json(res, 200, { ok: true }) : json(res, 404, { error: "no such rule" });
+    }
+    // Settings reconfirmation of a quarantined legacy rule — the only patch
+    // supported is {confirmed:true}; rules are otherwise immutable.
+    if (approvalsMatch && method === "PATCH") {
+      if (!store.bot(approvalsMatch[1])) return json(res, 404, { error: "no such bot" });
+      const body = await readBody(req);
+      if (body.confirmed !== true) return json(res, 400, { error: "only {confirmed:true} is supported" });
+      const rule = confirmRule(approvalsMatch[1], approvalsMatch[2]);
+      return rule
+        ? json(res, 200, { rule: { ...rule, pattern: redactSecrets(rule.pattern) } })
+        : json(res, 404, { error: "no such rule" });
     }
 
     // ── per-bot + shared workspace memory (local markdown; no embeddings) ──
@@ -1534,12 +1585,27 @@ const server = createServer(async (req, res) => {
       const instance = registry.get(bot.modelSelection.instanceId);
       if (!instance) return json(res, 409, { error: "provider unavailable" });
       const pending = pendingAskByRequest.get(requestId);
-      if (
-        pending?.requestType === "permission" &&
-        body.behavior === "allow" &&
-        !isCredentialAsk(pending.requestType, pending.tool, pending.summary)
-      ) {
-        alwaysAllow(bot.id, pending.tool, pending.summary);
+      if (pending?.requestType === "permission") {
+        // A rule persists ONLY on an explicit Always-allow (`always: true`).
+        // Plain Allow-once persists nothing; Deny and credential asks never
+        // persist; scope defaults to this bot — "workspace" is the explicit
+        // Advanced: all-bots consent.
+        const persisted = persistAllowRule({
+          botId: bot.id,
+          tool: pending.tool,
+          summary: pending.summary,
+          behavior: String(body.behavior ?? ""),
+          always: body.always === true,
+          scope: body.persistScope === "workspace" ? "workspace" : "bot",
+          requestType: pending.requestType,
+        });
+        appendAudit({
+          bot: bot.id,
+          tool: pending.tool,
+          matcher: argumentPattern(pending.summary),
+          decision: `user.${String(body.behavior ?? "")}${body.always === true ? ".always" : ""}`,
+          ...(persisted ? { ruleId: persisted.id } : {}),
+        });
       }
       await instance.adapter.respondToRequest(bot.threadId, requestId, {
         behavior: body.behavior,

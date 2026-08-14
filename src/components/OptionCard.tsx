@@ -160,14 +160,31 @@ export function OptionCard({
       )}
 
       {!card.answered && permission && (
-        <button
-          onClick={() =>
-            dispatch({ type: "answerCard", botId, messageId: message.id, answer: "Allow", always: true })
-          }
-          className="mt-3 text-[13px] text-ink-secondary hover:text-ink"
-        >
-          Always allow for all bots
-        </button>
+        <div className="mt-3 flex flex-col items-start gap-1.5">
+          <button
+            onClick={() =>
+              dispatch({ type: "answerCard", botId, messageId: message.id, answer: "Allow once", always: true })
+            }
+            className="text-[13px] text-ink-secondary hover:text-ink"
+          >
+            Always allow for this bot
+          </button>
+          <button
+            onClick={() =>
+              dispatch({
+                type: "answerCard",
+                botId,
+                messageId: message.id,
+                answer: "Allow once",
+                always: true,
+                persistScope: "workspace",
+              })
+            }
+            className="text-[12px] text-ink-secondary/70 hover:text-ink"
+          >
+            Advanced: always allow for all bots
+          </button>
+        </div>
       )}
     </div>
   );

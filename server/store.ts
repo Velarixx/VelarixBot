@@ -1,5 +1,6 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { atomicWriteFileSync, ensurePrivateDir } from "./atomic.ts";
 import { botWorkspaceDir, DATA_DIR } from "./config.ts";
 import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
 
@@ -57,12 +58,11 @@ const STATES = new Set<BotState>(["IDLE", "RUNNING", "DONE", "BLOCKED", "NEEDS_I
 const MODES = new Set(["cloud", "local", "off"]);
 const zeroUsage = (): Usage => ({ input: 0, output: 0, cost: null });
 
+// temp + fsync + rename + dir-fsync (+ .bak of the previous state): a crash
+// or kill mid-write always leaves a parseable prior state for readArray.
 function atomicWrite(path: string, value: unknown, preserveCurrent = true) {
-  mkdirSync(DATA_DIR, { recursive: true });
-  const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, JSON.stringify(value, null, 2));
-  if (preserveCurrent && existsSync(path)) copyFileSync(path, `${path}.bak`);
-  renameSync(temp, path);
+  ensurePrivateDir(DATA_DIR);
+  atomicWriteFileSync(path, JSON.stringify(value, null, 2), { backup: preserveCurrent });
 }
 function readArray(path: string): unknown[] {
   try { const v: unknown = JSON.parse(readFileSync(path, "utf8")); if (!Array.isArray(v)) throw new Error("not array"); return v; }
@@ -202,7 +202,7 @@ export class Store {
 
   constructor(defaultSelection: () => ModelSelection) {
     this.defaultSelection = defaultSelection;
-    mkdirSync(DATA_DIR, { recursive: true });
+    ensurePrivateDir(DATA_DIR);
     this.bots = readArray(BOTS_FILE).map(migrateBot).filter((b): b is BotRecord => !!b);
     this.routines = readArray(ROUTINES_FILE).map(migrateRoutine).filter((r): r is RoutineRecord => !!r);
     if (this.bots.length) atomicWrite(BOTS_FILE, this.bots);

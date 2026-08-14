@@ -1,5 +1,5 @@
 // Durable product-foundation persistence tests.
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -80,6 +80,32 @@ describe("Store", () => {
     const recovered = new Store(selection);
     expect(recovered.bot(bot.id)?.name).toBe("Backed up");
     expect(JSON.parse(readFileSync(file, "utf8"))).toBeInstanceOf(Array);
+  });
+
+  it("a write killed before rename leaves the prior state parseable", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.patchBot(bot.id, { name: "Survivor" });
+    const file = join(DATA_DIR, "bots.json");
+    // a crashed writer dies between temp-write and rename: the temp (even
+    // torn/garbage) must never shadow the fsynced published state
+    writeFileSync(`${file}.4242.tmp`, '[{"id":"torn', { flag: "w" });
+    const reloaded = new Store(selection);
+    expect(reloaded.bot(bot.id)?.name).toBe("Survivor");
+    expect(JSON.parse(readFileSync(file, "utf8"))).toBeInstanceOf(Array);
+  });
+
+  it("leaves no temp litter after a completed write", () => {
+    const store = new Store(selection);
+    store.createBot();
+    expect(readdirSync(DATA_DIR).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  (process.platform === "win32" ? it.skip : it)("keeps the data dir 0700 and store files 0600", () => {
+    const store = new Store(selection);
+    store.createBot();
+    expect(statSync(DATA_DIR).mode & 0o777).toBe(0o700);
+    expect(statSync(join(DATA_DIR, "bots.json")).mode & 0o777).toBe(0o600);
   });
 
   it("rejects invalid bot and message patches", () => {

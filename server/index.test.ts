@@ -15,6 +15,7 @@ const ROOT = join(SERVER_DIR, "..");
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
 const BASE = `http://127.0.0.1:${PORT}`;
 const COMMS_TOKEN = "test-create-bot-token";
+const API_TOKEN = "test-public-api-token";
 
 let child: ChildProcess;
 let home: string;
@@ -25,6 +26,7 @@ const api = async (method: string, path: string, body?: unknown, headers?: Recor
     method,
     headers: {
       ...(body ? { "content-type": "application/json" } : {}),
+      authorization: `Bearer ${API_TOKEN}`,
       ...headers,
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -38,7 +40,7 @@ async function openSse(): Promise<{
   until: (pred: (frames: any[]) => boolean) => Promise<void>;
   close: () => void;
 }> {
-  const res = await fetch(`${BASE}/api/events`);
+  const res = await fetch(`${BASE}/api/events`, { headers: { authorization: `Bearer ${API_TOKEN}` } });
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -115,6 +117,7 @@ beforeAll(async () => {
         USERPROFILE: home,
         OMB_PORT: String(PORT),
         OMB_COMMS_TOKEN: COMMS_TOKEN,
+        VELARIX_DEV_TOKEN: API_TOKEN,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -506,6 +509,33 @@ describe("harness HTTP API", () => {
     const after = await api("GET", `/api/bots/${bot.id}/approvals`);
     expect(after.body.rules.map((r: { id: string }) => r.id)).toEqual(["rule-keep"]);
     const missing = await api("DELETE", `/api/bots/${bot.id}/approvals/rule-drop`);
+    expect(missing.status).toBe(404);
+  });
+
+  it("reconfirms a quarantined rule via PATCH and rejects other patches", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const dir = join(home, ".velarixbot", "approvals");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `${bot.id}.json`),
+      JSON.stringify([
+        { id: "rule-paused", tool: "shell", pattern: "*", action: "allow", createdAt: 1, disabled: true, quarantined: true },
+      ]),
+    );
+    const listed = await api("GET", `/api/bots/${bot.id}/approvals`);
+    expect(listed.body.rules[0]).toMatchObject({ id: "rule-paused", disabled: true, quarantined: true });
+
+    const badPatch = await api("PATCH", `/api/bots/${bot.id}/approvals/rule-paused`, { pattern: "*" });
+    expect(badPatch.status).toBe(400);
+
+    const confirmed = await api("PATCH", `/api/bots/${bot.id}/approvals/rule-paused`, { confirmed: true });
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.rule).toMatchObject({ id: "rule-paused", confirmed: true });
+    expect(confirmed.body.rule.disabled).toBeUndefined();
+    expect(confirmed.body.rule.quarantined).toBeUndefined();
+
+    const missing = await api("PATCH", `/api/bots/${bot.id}/approvals/nope`, { confirmed: true });
     expect(missing.status).toBe(404);
   });
 

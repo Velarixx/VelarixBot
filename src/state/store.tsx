@@ -182,7 +182,17 @@ type Action =
   | { type: "enqueue"; botId: string; item: QueuedPrompt }
   | { type: "cancelQueued"; botId: string; id: string }
   | { type: "flushQueue"; botId: string }
-  | { type: "answerCard"; botId: string; messageId: string; answer: string; always?: boolean; secret?: string }
+  | {
+      type: "answerCard";
+      botId: string;
+      messageId: string;
+      answer: string;
+      /** Explicit persistence consent — plain Allow never persists a rule. */
+      always?: boolean;
+      /** Rule scope when always is set; defaults to this bot on the server. */
+      persistScope?: "bot" | "workspace";
+      secret?: string;
+    }
   | { type: "dismissCard"; botId: string; messageId: string }
   | { type: "newBot" }
   | { type: "botAdded"; bot: Bot; select?: boolean }
@@ -642,7 +652,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               ? /deny|dismiss|cancel/i.test(action.answer)
                 ? "deny"
                 : "allow"
-              : action.answer === "Allow"
+              : action.answer === "Allow once" || action.answer === "Allow"
                 ? "allow"
                 : action.answer === "Deny"
                   ? "deny"
@@ -654,6 +664,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 behavior,
                 message: action.secret ?? (behavior === "answer" ? action.answer : undefined),
                 always: action.always === true,
+                ...(action.always === true ? { persistScope: action.persistScope ?? "bot" } : {}),
               }),
             }).catch(showError);
           } else {

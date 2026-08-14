@@ -32,6 +32,7 @@ const FAKE_CLI = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
 const BASE = `http://127.0.0.1:${PORT}`;
 const COMMS_TOKEN = "test-comms-e2e-token";
+const API_TOKEN = "test-comms-public-token";
 describe("comms depth and cycle guard", () => {
   it("caps chains at two hops (depth 0 and 1 may ask; depth 2 may not)", () => {
     expect(MAX_COMMS_DEPTH).toBe(2);
@@ -96,6 +97,7 @@ describe("comms e2e (fake ACP fleet)", () => {
       method,
       headers: {
         ...(body ? { "content-type": "application/json" } : {}),
+        authorization: `Bearer ${API_TOKEN}`,
         ...headers,
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -131,6 +133,7 @@ describe("comms e2e (fake ACP fleet)", () => {
         USERPROFILE: home,
         OMB_PORT: String(PORT),
         OMB_COMMS_TOKEN: COMMS_TOKEN,
+        VELARIX_DEV_TOKEN: API_TOKEN,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

@@ -113,8 +113,8 @@ beforeAll(async () => {
       },
       "hermes-perm": {
         driver: "hermesAgent",
-        // edit-kind asks so the grok leg's workspace-global "shell" Allow
-        // rule (#60) can never pre-resolve this leg's first permission card
+        // edit-kind asks keep this leg's rule distinct from the grok leg's
+        // "shell" rule (rules are per-bot now, so this is belt-and-braces)
         environment: { FAKE_ACP_MODE: "permission", FAKE_ACP_PERMISSION_KIND: "edit", ...hermesEnv },
         config: { cli: FAKE_ACP_CLI, fullAuto: false },
       },
@@ -227,6 +227,70 @@ describe("harness HTTP/SSE scenarios (fake CLIs)", () => {
     expect(permissionCards).toHaveLength(1);
     expect(permissionCards[0].card.answered).toBe("allow");
     expect(after.state).toBe("DONE");
+  }, 40_000);
+
+  it("one-time Allow persists nothing — the identical ask cards again", async () => {
+    const bot = await addBot("Allow Once", grokPerm);
+    await send(bot.id, "run a command");
+    const opened = await h.sse.until(
+      (f) => f.kind === "runtime" && f.event?.type === "request.opened" && f.event.threadId === bot.threadId,
+    );
+    await h.api("POST", `/api/bots/${bot.id}/respond`, {
+      requestId: opened.event?.requestId,
+      behavior: "allow",
+    });
+    const firstDone = await h.sse.until(turnDone(bot.threadId));
+    expect((await h.api("GET", `/api/bots/${bot.id}/approvals`)).body.rules).toEqual([]);
+
+    await send(bot.id, "run the identical command again");
+    const reopened = await h.sse.untilAfter(
+      firstDone,
+      (f) => f.kind === "runtime" && f.event?.type === "request.opened" && f.event.threadId === bot.threadId,
+    );
+    expect(reopened.event?.requestId).toBeTruthy();
+    await h.api("POST", `/api/bots/${bot.id}/respond`, {
+      requestId: reopened.event?.requestId,
+      behavior: "allow",
+    });
+    await h.sse.untilAfter(reopened, turnDone(bot.threadId));
+    const after = await publicBot(bot.id);
+    const permissionCards = after.messages.filter(
+      (m: { kind: string; card?: { requestId?: string } }) => m.kind === "options" && m.card?.requestId,
+    );
+    expect(permissionCards).toHaveLength(2);
+    expect((await h.api("GET", `/api/bots/${bot.id}/approvals`)).body.rules).toEqual([]);
+  }, 40_000);
+
+  it("a bot-A always-allow rule is scoped: it never fires for bot B", async () => {
+    const a = await addBot("Perm A", grokPerm);
+    await send(a.id, "run a command");
+    const openedA = await h.sse.until(
+      (f) => f.kind === "runtime" && f.event?.type === "request.opened" && f.event.threadId === a.threadId,
+    );
+    await h.api("POST", `/api/bots/${a.id}/respond`, {
+      requestId: openedA.event?.requestId,
+      behavior: "allow",
+      always: true,
+    });
+    await h.sse.until(turnDone(a.threadId));
+    const rulesA = (await h.api("GET", `/api/bots/${a.id}/approvals`)).body.rules as Array<{ pattern: string }>;
+    expect(rulesA).toHaveLength(1);
+    expect(rulesA[0].pattern).toBeTruthy();
+    expect(rulesA[0].pattern).not.toBe("*"); // wildcards are never auto-generated
+
+    // bot B issues the identical ask and still gets a card — no cross-bot rule
+    const b = await addBot("Perm B", grokPerm);
+    await send(b.id, "run the same command");
+    const openedB = await h.sse.until(
+      (f) => f.kind === "runtime" && f.event?.type === "request.opened" && f.event.threadId === b.threadId,
+    );
+    expect(openedB.event?.requestId).toBeTruthy();
+    expect((await h.api("GET", `/api/bots/${b.id}/approvals`)).body.rules).toEqual([]);
+    await h.api("POST", `/api/bots/${b.id}/respond`, {
+      requestId: openedB.event?.requestId,
+      behavior: "allow",
+    });
+    await h.sse.until(turnDone(b.threadId));
   }, 40_000);
 
   it("drains the peer queue once a busy helper finishes", async () => {

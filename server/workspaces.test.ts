@@ -15,6 +15,7 @@ const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const FAKE_CLI = join(SERVER_DIR, "testing", "fake-claude-cli.ts");
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
 const BASE = `http://127.0.0.1:${PORT}`;
+const API_TOKEN = "test-box-ws-token";
 describe("per-bot box workspaces (no shared 409)", () => {
   let child: ChildProcess;
   let home: string;
@@ -23,7 +24,10 @@ describe("per-bot box workspaces (no shared 409)", () => {
   const api = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
     const res = await fetch(`${BASE}${path}`, {
       method,
-      headers: body ? { "content-type": "application/json" } : undefined,
+      headers: {
+        ...(body ? { "content-type": "application/json" } : {}),
+        authorization: `Bearer ${API_TOKEN}`,
+      },
       body: body ? JSON.stringify(body) : undefined,
     });
     return { status: res.status, body: await res.json() };
@@ -53,6 +57,7 @@ describe("per-bot box workspaces (no shared 409)", () => {
         HOME: home,
         USERPROFILE: home,
         OMB_PORT: String(PORT),
+        VELARIX_DEV_TOKEN: API_TOKEN,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
