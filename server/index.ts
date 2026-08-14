@@ -10,18 +10,24 @@ import { createServer } from "node:http";
 import { createApplication } from "./app.ts";
 import { quarantineLegacyRules } from "./approvals.ts";
 import { resolveApiToken } from "./auth.ts";
-import { ensureDirs, instanceConfigs, loadConfig } from "./config.ts";
+import { ensureDirs, instanceConfigs, loadConfig, migrateConfigSecrets } from "./config.ts";
 import { openDefaultDatabase } from "./db/database.ts";
 import { importLegacyData } from "./db/importer.ts";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { createRepositories } from "./repositories/index.ts";
+import { initSecretStore } from "./secrets.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const STATIC_DIR = process.env.OMB_STATIC_DIR || null;
 
 ensureDirs();
+// SecretStore first (Electron-main safeStorage broker when forked packaged,
+// the documented file fallback when headless), then the idempotent plaintext
+// → secret:// migration for a pre-P1.5 config.json — both before loadConfig.
+await initSecretStore();
+await migrateConfigSecrets();
 // Consent-bug migration: legacy workspace-wide / wildcard Allow rules are
 // parked (disabled) until reconfirmed in Settings. Idempotent on every boot.
 quarantineLegacyRules();

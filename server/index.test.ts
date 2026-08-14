@@ -4,7 +4,7 @@
 // suite is deterministic with or without agent CLIs installed — and pins
 // the shadow-instance behavior end to end while it's at it.
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -99,13 +99,21 @@ async function openSse(): Promise<{
   return { frames, until, close };
 }
 
+// a clearly-fake plaintext secret seeded into the pre-boot config.json to pin
+// the P1.5 boot migration (constructed at runtime, never credential-shaped)
+const SEEDED_XAI_KEY = ["fake", "seeded", "xai", "canary", Date.now().toString(36)].join("-");
+
 beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), "omb-api-test-"));
-  // a fleet of exactly one unknown driver: no CLI probes, no network
+  // a fleet of exactly one unknown driver: no CLI probes, no network —
+  // plus one plaintext secret the boot migration must move out of the file
   mkdirSync(join(home, ".openmausbot"), { recursive: true });
   writeFileSync(
     join(home, ".openmausbot", "config.json"),
-    JSON.stringify({ instances: { ghost: { driver: "not-a-real-driver", displayName: "Ghost" } } }),
+    JSON.stringify({
+      xai: { key: SEEDED_XAI_KEY },
+      instances: { ghost: { driver: "not-a-real-driver", displayName: "Ghost" } },
+    }),
   );
 
   child = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
@@ -262,6 +270,46 @@ describe("harness HTTP API", () => {
 
     const nothing = await api("PUT", "/api/config", {});
     expect(nothing.status).toBe(400);
+  });
+
+  it("boot migrated the seeded plaintext secret out of config.json", async () => {
+    // seeded pre-boot as plaintext (see beforeAll) — post-migration the file
+    // holds a secret:// ref and the value lives only in the secret store
+    const configRaw = readFileSync(join(home, ".velarixbot", "config.json"), "utf8");
+    expect(configRaw).not.toContain(SEEDED_XAI_KEY);
+    expect(JSON.parse(configRaw).xai.key).toBe("secret://xai.key");
+    const secretsRaw = readFileSync(join(home, ".velarixbot", "secrets.json"), "utf8");
+    expect(secretsRaw).not.toContain(SEEDED_XAI_KEY);
+    expect(JSON.parse(secretsRaw).entries["xai.key"]).toBeTruthy();
+    // and it still counts as configured
+    const { body } = await api("GET", "/api/config");
+    expect(body.xai).toEqual({ configured: true });
+  });
+
+  it("PUT /api/config writes secret refs to disk; clearing deletes ref and secret", async () => {
+    const configPath = join(home, ".velarixbot", "config.json");
+    const secretsPath = join(home, ".velarixbot", "secrets.json");
+    const newKey = ["fake", "replaced", "xai", "canary", Date.now().toString(36)].join("-");
+
+    const put = await api("PUT", "/api/config", { xai: { key: newKey } });
+    expect(put.status).toBe(200);
+    expect(put.body.xai).toEqual({ configured: true });
+    const rawAfterPut = readFileSync(configPath, "utf8");
+    expect(rawAfterPut).not.toContain(newKey);
+    expect(JSON.parse(rawAfterPut).xai.key).toBe("secret://xai.key");
+    expect(readFileSync(secretsPath, "utf8")).not.toContain(newKey);
+
+    // clearing from the UI sends an empty string: the ref leaves config.json
+    // AND the stored secret is deleted
+    const cleared = await api("PUT", "/api/config", { xai: { key: "" } });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.xai).toEqual({ configured: false });
+    const rawAfterClear = readFileSync(configPath, "utf8");
+    expect(rawAfterClear).not.toContain("secret://xai.key");
+    expect(rawAfterClear).not.toContain(newKey);
+    expect(JSON.parse(readFileSync(secretsPath, "utf8")).entries["xai.key"]).toBeUndefined();
+    const status = await api("GET", "/api/config");
+    expect(status.body.xai).toEqual({ configured: false });
   });
 
   it("does not accept or echo identity/profile data", async () => {

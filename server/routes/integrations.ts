@@ -287,7 +287,7 @@ export function createIntegrationsRoutes(deps: {
         json(res, 400, { error: "nothing to save" });
         return true;
       }
-      saveConfig(patch);
+      await saveConfig(patch);
       Object.assign(cfg, loadConfig());
       await reloadProviders();
       const status = configStatus();
