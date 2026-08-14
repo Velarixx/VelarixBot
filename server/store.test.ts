@@ -9,6 +9,7 @@ import {
   nextRunAt,
   normalizeBot,
   normalizeRoutine,
+  parseMissedPolicy,
   parseRoutineSchedule,
   resolveIconShape,
   wouldEmptyWorkspace,
@@ -89,8 +90,81 @@ describe("routine schedules", () => {
       running: true,
       nextRunAt: 42,
     });
-    expect(routine).toMatchObject({ running: false, nextRunAt: 42, enabled: true, lastRunAt: null });
+    expect(routine).toMatchObject({ running: false, nextRunAt: 42, enabled: true, lastRunAt: null, missedPolicy: "run-once" });
     expect(normalizeRoutine({ id: "r1" })).toBeNull();
+  });
+
+  it("normalizes the missed policy and defaults unknown values to run-once", () => {
+    const base = { id: "r1", botId: "b1", name: "R", prompt: "P", schedule: { kind: "interval", everyMinutes: 5 }, nextRunAt: 42 };
+    expect(normalizeRoutine({ ...base, missedPolicy: "catch-up" })?.missedPolicy).toBe("catch-up");
+    expect(normalizeRoutine({ ...base, missedPolicy: "skip" })?.missedPolicy).toBe("skip");
+    expect(normalizeRoutine({ ...base, missedPolicy: "bogus" })?.missedPolicy).toBe("run-once");
+    expect(parseMissedPolicy("run-once")).toBe("run-once");
+    expect(parseMissedPolicy("whenever")).toBeNull();
+  });
+});
+
+describe("timezone-explicit clock schedules", () => {
+  it("round-trips a valid zone and rejects or drops a bad one by strictness", () => {
+    expect(parseRoutineSchedule({ kind: "daily", time: "09:30", timeZone: "Europe/Berlin" })).toEqual({
+      kind: "daily",
+      time: "09:30",
+      timeZone: "Europe/Berlin",
+    });
+    // lenient (loading a stored record): an unknown zone degrades to local
+    expect(parseRoutineSchedule({ kind: "daily", time: "09:30", timeZone: "Mars/Olympus" })).toEqual({ kind: "daily", time: "09:30" });
+    // strict (create/edit): an unknown zone is an error
+    expect(() => parseRoutineSchedule({ kind: "daily", time: "09:30", timeZone: "Mars/Olympus" }, { strictTimeZone: true })).toThrow(
+      /invalid time zone/,
+    );
+  });
+
+  it("computes occurrences by the stored zone's wall clock, not the host's", () => {
+    // 2026-01-15 12:00Z: 09:00 in New York is 14:00Z (EST, UTC-5) and still
+    // ahead today; 09:00 in Tokyo already passed, so it lands tomorrow —
+    // true in any host zone the test happens to run in
+    const from = Date.UTC(2026, 0, 15, 12, 0);
+    expect(nextRunAt({ kind: "daily", time: "09:00", timeZone: "America/New_York" }, from)).toBe(Date.UTC(2026, 0, 15, 14, 0));
+    expect(nextRunAt({ kind: "daily", time: "09:00", timeZone: "Asia/Tokyo" }, from)).toBe(Date.UTC(2026, 0, 16, 0, 0));
+  });
+
+  it("keeps the wall time stable across a DST transition (23h/25h days)", () => {
+    // Europe/Berlin springs forward 2026-03-29: 09:00 CET (08:00Z) on the
+    // 28th, then 09:00 CEST (07:00Z) on the 29th — a 23-hour gap
+    const beforeSpring = Date.UTC(2026, 2, 28, 9, 0); // 10:00 Berlin
+    const first = nextRunAt({ kind: "daily", time: "09:00", timeZone: "Europe/Berlin" }, beforeSpring);
+    const second = nextRunAt({ kind: "daily", time: "09:00", timeZone: "Europe/Berlin" }, first);
+    expect(first).toBe(Date.UTC(2026, 2, 29, 7, 0));
+    expect(first - beforeSpring).toBe(22 * 3_600_000);
+    // Berlin falls back 2026-10-25: the day is 25 hours long
+    const beforeFall = nextRunAt({ kind: "daily", time: "09:00", timeZone: "Europe/Berlin" }, Date.UTC(2026, 9, 24, 6, 0));
+    const afterFall = nextRunAt({ kind: "daily", time: "09:00", timeZone: "Europe/Berlin" }, beforeFall);
+    expect(beforeFall).toBe(Date.UTC(2026, 9, 24, 7, 0)); // CEST
+    expect(afterFall).toBe(Date.UTC(2026, 9, 25, 8, 0)); // CET
+    expect(afterFall - beforeFall).toBe(25 * 3_600_000);
+    expect(second - first).toBe(24 * 3_600_000);
+  });
+
+  it("resolves a spring-forward gap to the first instant after it", () => {
+    // America/New_York 2026-03-08: 02:00–03:00 EST never happens. A 02:30
+    // schedule runs at 03:00 EDT (07:00Z), the first instant past the gap.
+    const from = Date.UTC(2026, 2, 8, 5, 0); // 00:00 EST that night
+    expect(nextRunAt({ kind: "daily", time: "02:30", timeZone: "America/New_York" }, from)).toBe(Date.UTC(2026, 2, 8, 7, 0));
+  });
+
+  it("resolves a fall-back repeat to the earlier instant", () => {
+    // America/New_York 2026-11-01: 01:30 happens twice (EDT 05:30Z, then
+    // EST 06:30Z). The schedule fires once, at the earlier instant.
+    const from = Date.UTC(2026, 10, 1, 4, 0); // 00:00 EDT that night
+    expect(nextRunAt({ kind: "daily", time: "01:30", timeZone: "America/New_York" }, from)).toBe(Date.UTC(2026, 10, 1, 5, 30));
+  });
+
+  it("weekdays follow the zone's calendar, not the host's", () => {
+    // 2026-08-14 23:00 UTC is Friday in UTC but already Saturday 11:00 in
+    // Auckland — the next Auckland weekday 09:00 is Monday the 17th (NZST,
+    // UTC+12): 2026-08-16 21:00Z
+    const from = Date.UTC(2026, 7, 14, 23, 0);
+    expect(nextRunAt({ kind: "weekdays", time: "09:00", timeZone: "Pacific/Auckland" }, from)).toBe(Date.UTC(2026, 7, 16, 21, 0));
   });
 });
 

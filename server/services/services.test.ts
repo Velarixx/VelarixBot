@@ -9,7 +9,7 @@ import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { createRepositories, type Repositories } from "../repositories/index.ts";
 import { createBotsService, type BotsService } from "./bots.ts";
-import { createRoutinesService, type RoutinesService } from "./routines.ts";
+import { CATCH_UP_CAP, createRoutinesService, ROUTINE_LEASE_MS, type RoutinesService } from "./routines.ts";
 
 const selection = () => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
@@ -107,6 +107,7 @@ describe("bots service", () => {
       lastRunAt: null,
       lastResult: null,
       createdAt: 1,
+      missedPolicy: "run-once",
       skillId: "skill-1",
     });
     bots.clearSkillRefs("skill-1");
@@ -134,16 +135,8 @@ describe("routines service (fake clock)", () => {
   let frames: unknown[];
   let busy: boolean;
 
-  beforeEach(() => {
-    rmSync(DATA_DIR, { recursive: true, force: true });
-    db = openDatabase(defaultDbPath());
-    repos = createRepositories(db);
-    bots = createBotsService({ repos, defaultSelection: selection });
-    now = 1_000_000;
-    started = [];
-    frames = [];
-    busy = false;
-    routines = createRoutinesService({
+  const makeService = (): RoutinesService =>
+    createRoutinesService({
       repos,
       now: () => now,
       broadcast: (frame) => frames.push(frame),
@@ -157,6 +150,17 @@ describe("routines service (fake clock)", () => {
       getSkill: () => null,
       skillPrompt: (_skill, prompt) => prompt,
     });
+
+  beforeEach(() => {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    db = openDatabase(defaultDbPath());
+    repos = createRepositories(db);
+    bots = createBotsService({ repos, defaultSelection: selection });
+    now = 1_000_000;
+    started = [];
+    frames = [];
+    busy = false;
+    routines = makeService();
   });
   afterEach(() => {
     try {
@@ -166,59 +170,234 @@ describe("routines service (fake clock)", () => {
     }
   });
 
-  it("tick starts a due routine, records a run, and settleTurn finishes it", async () => {
+  const makeRoutine = (overrides: Partial<Parameters<RoutinesService["createRoutine"]>[0]> = {}) => {
     const bot = bots.createBot();
     const routine = routines.createRoutine({
       botId: bot.id,
       name: "Standup",
       prompt: "Brief me",
       schedule: { kind: "interval", everyMinutes: 15 },
+      ...overrides,
     });
+    return { bot, routine };
+  };
+
+  it("tick starts a due routine, records a leased run, and settleTurn finishes it", async () => {
+    const { bot, routine } = makeRoutine();
     expect(routine.nextRunAt).toBe(now + 15 * 60_000);
+    expect(routine.missedPolicy).toBe("run-once");
 
     routines.tick(now); // not due yet — the clock has not advanced
     expect(started).toEqual([]);
 
+    const scheduledFor = routine.nextRunAt;
     now += 15 * 60_000 + 1;
     routines.tick(now);
     await Promise.resolve(); // let the fire-and-forget run settle
     expect(started).toEqual([{ botId: bot.id, text: "Brief me" }]);
     expect(routines.routine(routine.id)).toMatchObject({ running: true, lastResult: "running" });
-    expect(repos.routines.runsFor(routine.id)).toHaveLength(1);
+    const open = repos.routines.runsFor(routine.id);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({
+      status: "running",
+      kind: "scheduled",
+      attempt: 1,
+      scheduled_for: scheduledFor,
+      idempotency_key: `${routine.id}@${scheduledFor}`,
+      lease_until: now + ROUTINE_LEASE_MS,
+    });
+    // the next occurrence stays on the schedule grid, anchored to the
+    // occurrence rather than the (slightly late) tick
+    expect(routines.routine(routine.id)?.nextRunAt).toBe(scheduledFor + 15 * 60_000);
     expect(frames.some((f) => (f as { kind?: string }).kind === "routine")).toBe(true);
 
     const thenStart = routines.settleTurn(bot.threadId, true);
     expect(thenStart).toBeNull();
     expect(routines.routine(routine.id)).toMatchObject({ running: false, lastResult: "DONE" });
-    expect(repos.routines.runsFor(routine.id)[0]).toMatchObject({ result: "DONE", finished_at: now });
+    expect(repos.routines.runsFor(routine.id)[0]).toMatchObject({ result: "DONE", status: "done", finished_at: now });
   });
 
-  it("skips a busy bot and reschedules without a run row", async () => {
-    const bot = bots.createBot();
-    const routine = routines.createRoutine({
-      botId: bot.id,
-      name: "Standup",
-      prompt: "Brief me",
-      schedule: { kind: "interval", everyMinutes: 15 },
-    });
+  it("skips a busy bot, reschedules, and records why", async () => {
+    const { routine } = makeRoutine();
     busy = true;
+    const scheduledFor = routine.nextRunAt;
     now += 15 * 60_000 + 1;
     routines.tick(now);
     await Promise.resolve();
     expect(started).toEqual([]);
     expect(routines.routine(routine.id)).toMatchObject({ running: false, lastResult: "skipped: bot busy" });
-    expect(routines.routine(routine.id)?.nextRunAt).toBe(now + 15 * 60_000);
-    expect(repos.routines.runsFor(routine.id)).toEqual([]);
+    expect(routines.routine(routine.id)?.nextRunAt).toBe(scheduledFor + 15 * 60_000);
+    const runs = repos.routines.runsFor(routine.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "skipped", result: "skipped: bot busy", scheduled_for: scheduledFor });
+  });
+
+  it("crash mid-run: the lease lapses, the run closes as interrupted, and the occurrence never double-runs", async () => {
+    const { routine } = makeRoutine();
+    const scheduledFor = routine.nextRunAt;
+    now = scheduledFor + 1;
+    routines.tick(now);
+    await Promise.resolve();
+    expect(routines.routine(routine.id)?.running).toBe(true);
+
+    // the process dies mid-run: a fresh service over the same database has
+    // no in-memory run ownership, so the lease is never renewed again
+    routines = makeService();
+    now += ROUTINE_LEASE_MS - 1;
+    routines.tick(now);
+    // lease still live — the run is respected, nothing double-starts
+    expect(repos.routines.runsFor(routine.id)[0].status).toBe("running");
+
+    now += 1;
+    started = [];
+    routines.tick(now);
+    await Promise.resolve();
+    const runs = repos.routines.runsFor(routine.id);
+    expect(runs.map((r) => r.status)).toContain("interrupted");
+    expect(runs.find((r) => r.status === "interrupted")).toMatchObject({
+      scheduled_for: scheduledFor,
+      result: "interrupted: VelarixBot quit mid-run",
+    });
+    expect(routines.routine(routine.id)?.running).toBe(false);
+    // the interrupted occurrence itself is settled; only newer occurrences
+    // may run, and exactly one row exists for the crashed one
+    expect(runs.filter((r) => r.scheduled_for === scheduledFor)).toHaveLength(1);
+    for (const call of started) expect(call.botId).toBeTruthy();
+  });
+
+  it("boot recovery closes orphaned runs immediately and never replays the occurrence", async () => {
+    const { routine } = makeRoutine();
+    const scheduledFor = routine.nextRunAt;
+    now = scheduledFor + 1;
+    routines.tick(now);
+    await Promise.resolve();
+    expect(routines.routine(routine.id)?.running).toBe(true);
+
+    // restart: app.ts calls recoverInterrupted before the first tick
+    expect(repos.routines.recoverInterrupted(now + 5_000)).toBe(1);
+    routines = makeService();
+    expect(routines.routine(routine.id)?.running).toBe(false);
+
+    // simulate the worst crash window: the run row committed but the
+    // advanced nextRunAt did not — the idempotency key still wins
+    const r = routines.routine(routine.id)!;
+    routines.markRoutine(routine.id, { nextRunAt: scheduledFor });
+    started = [];
+    routines.tick(now + 5_001);
+    await Promise.resolve();
+    expect(started).toEqual([]); // no double-run
+    expect(repos.routines.runsFor(r.id).filter((run) => run.scheduled_for === scheduledFor)).toHaveLength(1);
+    // and the schedule moved on instead of wedging
+    expect(routines.routine(routine.id)!.nextRunAt).toBeGreaterThan(scheduledFor);
+  });
+
+  it("missed policy skip: drops the backlog and records why", async () => {
+    const { routine } = makeRoutine({ missedPolicy: "skip" });
+    const firstDue = routine.nextRunAt;
+    now = firstDue + 4 * 15 * 60_000; // asleep through 5 occurrences
+    routines.tick(now);
+    await Promise.resolve();
+    expect(started).toEqual([]);
+    const runs = repos.routines.runsFor(routine.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].status).toBe("skipped");
+    expect(runs[0].result).toBe("skipped: 5 missed runs while VelarixBot was closed or asleep (policy: skip)");
+    expect(routines.routine(routine.id)!.nextRunAt).toBeGreaterThan(now);
+  });
+
+  it("missed policy run-once (default): coalesces the backlog into one run", async () => {
+    const { bot, routine } = makeRoutine();
+    const firstDue = routine.nextRunAt;
+    const latest = firstDue + 3 * 15 * 60_000;
+    now = latest + 1_000; // 4 occurrences due, well past grace
+    routines.tick(now);
+    await Promise.resolve();
+    expect(started).toEqual([{ botId: bot.id, text: "Brief me" }]);
+    const runs = repos.routines.runsFor(routine.id);
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).toMatchObject({ status: "running", scheduled_for: latest });
+    expect(runs[1].status).toBe("skipped");
+    expect(runs[1].result).toBe("skipped: 3 of 4 missed runs while VelarixBot was closed or asleep coalesced into one run (policy: run-once)");
+    routines.settleTurn(bot.threadId, true);
+    expect(routines.routine(routine.id)!.nextRunAt).toBe(latest + 15 * 60_000);
+  });
+
+  it("missed policy catch-up: replays the backlog in order, one at a time", async () => {
+    const { bot, routine } = makeRoutine({ missedPolicy: "catch-up" });
+    const firstDue = routine.nextRunAt;
+    now = firstDue + 2 * 15 * 60_000 + 1_000; // 3 occurrences due
+    for (let i = 0; i < 3; i++) {
+      routines.tick(now);
+      await Promise.resolve();
+      routines.settleTurn(bot.threadId, true);
+    }
+    expect(started).toHaveLength(3);
+    const runs = repos.routines.runsFor(routine.id);
+    expect(runs.map((r) => r.scheduled_for).reverse()).toEqual([firstDue, firstDue + 15 * 60_000, firstDue + 30 * 60_000]);
+    expect(runs.every((r) => r.status === "done")).toBe(true);
+    // caught up: nothing more is due
+    started = [];
+    routines.tick(now);
+    await Promise.resolve();
+    expect(started).toEqual([]);
+  });
+
+  it("missed policy catch-up: caps the backlog and records the overflow", async () => {
+    const { bot, routine } = makeRoutine({ missedPolicy: "catch-up", schedule: { kind: "interval", everyMinutes: 1 } });
+    const firstDue = routine.nextRunAt;
+    now = firstDue + 49 * 60_000; // 50 occurrences due — 30 over the cap
+    routines.tick(now);
+    await Promise.resolve();
+    const runs = repos.routines.runsFor(routine.id);
+    const skip = runs.find((r) => r.status === "skipped")!;
+    expect(skip.result).toBe(`skipped: 30 oldest of 50 missed runs while VelarixBot was closed or asleep (catch-up cap ${CATCH_UP_CAP})`);
+    // the first replayed occurrence is #31
+    expect(runs.find((r) => r.status === "running")!.scheduled_for).toBe(firstDue + 30 * 60_000);
+    routines.settleTurn(bot.threadId, true);
+  });
+
+  it("manual test run: records a manual row and never consumes the schedule", async () => {
+    const { bot, routine } = makeRoutine();
+    const nextBefore = routine.nextRunAt;
+    const outcome = await routines.runRoutine(routine.id);
+    expect(outcome).toEqual({ started: true });
+    expect(started).toHaveLength(1);
+    expect(routines.routine(routine.id)).toMatchObject({ running: true, lastResult: "running (test run)", nextRunAt: nextBefore });
+    expect(repos.routines.runsFor(routine.id)[0]).toMatchObject({ kind: "manual", status: "running", idempotency_key: null });
+
+    // no overlapping second run
+    expect(await routines.runRoutine(routine.id)).toEqual({ started: false, reason: "already running" });
+    routines.settleTurn(bot.threadId, true);
+    expect(routines.routine(routine.id)?.nextRunAt).toBe(nextBefore);
+
+    // a paused routine can still be test-run
+    routines.patchRoutine(routine.id, { enabled: false });
+    expect((await routines.runRoutine(routine.id)).started).toBe(true);
+    routines.settleTurn(bot.threadId, true);
+
+    // a busy bot refuses instead of queueing
+    busy = true;
+    expect(await routines.runRoutine(routine.id)).toEqual({ started: false, reason: "bot busy" });
+    expect(await routines.runRoutine("nope")).toEqual({ started: false, reason: "no such routine" });
+  });
+
+  it("stamps clock schedules with the host time zone at create and edit", () => {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const { routine } = makeRoutine({ schedule: { kind: "daily", time: "09:00" } });
+    expect(routine.schedule).toEqual({ kind: "daily", time: "09:00", timeZone: zone });
+    const patched = routines.patchRoutine(routine.id, { schedule: { kind: "weekdays", time: "08:30" } })!;
+    expect(patched.schedule).toEqual({ kind: "weekdays", time: "08:30", timeZone: zone });
+    // an explicit zone is preserved verbatim; a bogus one is rejected
+    const explicit = routines.patchRoutine(routine.id, { schedule: { kind: "daily", time: "07:00", timeZone: "Asia/Tokyo" } })!;
+    expect(explicit.schedule).toEqual({ kind: "daily", time: "07:00", timeZone: "Asia/Tokyo" });
+    expect(() => routines.patchRoutine(routine.id, { schedule: { kind: "daily", time: "07:00", timeZone: "Mars/Olympus" } })).toThrow(
+      /invalid time zone/,
+    );
+    expect(() => routines.createRoutine({ botId: routine.botId, name: "x", prompt: "y", schedule: { kind: "daily", time: "09:00" }, missedPolicy: "sometimes" })).toThrow(/invalid missed policy/);
   });
 
   it("disables a routine whose bot is gone", async () => {
-    const bot = bots.createBot();
-    const routine = routines.createRoutine({
-      botId: bot.id,
-      name: "Standup",
-      prompt: "Brief me",
-      schedule: { kind: "interval", everyMinutes: 15 },
-    });
+    const { bot, routine } = makeRoutine();
     repos.deleteBotCascade(bot.id); // routine dies with the bot cascade
     expect(routines.routine(routine.id)).toBeNull();
 
@@ -230,13 +409,7 @@ describe("routines service (fake clock)", () => {
   });
 
   it("broadcasts routine.deleted on delete and refuses ownership rewrites", () => {
-    const bot = bots.createBot();
-    const routine = routines.createRoutine({
-      botId: bot.id,
-      name: "Safe",
-      prompt: "Do it",
-      schedule: { kind: "interval", everyMinutes: 15 },
-    });
+    const { bot, routine } = makeRoutine({ name: "Safe", prompt: "Do it" });
     routines.patchRoutine(routine.id, { name: "Renamed", id: "forged", running: true } as never);
     expect(routines.routine(routine.id)).toMatchObject({ id: routine.id, botId: bot.id, name: "Renamed", running: false });
     expect(routines.deleteRoutine(routine.id)).toBe(true);

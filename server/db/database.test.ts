@@ -1,13 +1,13 @@
 // Migration suite: schema application, idempotence, and the durability
 // pragmas the rest of P0.4 relies on.
-import { rmSync, statSync } from "node:fs";
+import { mkdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "../config.ts";
 import { defaultDbPath, openDatabase } from "./database.ts";
 import { appliedMigrations, isApplied, migrate, MIGRATIONS, recordApplied } from "./migrations.ts";
-import type { SqliteDatabase } from "./sqlite-native.ts";
+import { loadBetterSqlite3, type SqliteDatabase } from "./sqlite-native.ts";
 
 const MANDATED_TABLES = [
   "schema_migrations",
@@ -60,6 +60,27 @@ describe("database + migrations", () => {
     db.close();
     db = openDatabase(defaultDbPath());
     expect(appliedMigrations(db)).toEqual(first);
+  });
+
+  it("backfills legacy routine_runs rows: open rows close as interrupted", () => {
+    // build a v1 database the way a pre-P1.2 build left it, then apply v2
+    mkdirSync(DATA_DIR, { recursive: true });
+    db = new (loadBetterSqlite3())(join(DATA_DIR, "legacy.db"));
+    migrate(db, [MIGRATIONS[0]]);
+    db.prepare("INSERT INTO routine_runs(routine_id, bot_id, started_at, finished_at, result) VALUES ('r1', 'b1', 1000, 2000, 'DONE')").run();
+    db.prepare("INSERT INTO routine_runs(routine_id, bot_id, started_at, finished_at, result) VALUES ('r1', 'b1', 3000, 4000, 'BLOCKED: x')").run();
+    db.prepare("INSERT INTO routine_runs(routine_id, bot_id, started_at) VALUES ('r1', 'b1', 5000)").run(); // crashed mid-run
+    expect(migrate(db)).toEqual([MIGRATIONS[1].name]);
+    const rows = db
+      .prepare<{ started_at: number; finished_at: number | null; status: string; result: string; attempt: number }>(
+        "SELECT started_at, finished_at, status, result, attempt FROM routine_runs ORDER BY seq",
+      )
+      .all();
+    expect(rows).toEqual([
+      { started_at: 1000, finished_at: 2000, status: "done", result: "DONE", attempt: 1 },
+      { started_at: 3000, finished_at: 4000, status: "blocked", result: "BLOCKED: x", attempt: 1 },
+      { started_at: 5000, finished_at: 5000, status: "interrupted", result: "interrupted: VelarixBot quit mid-run", attempt: 1 },
+    ]);
   });
 
   it("applies migrations transactionally and records completion once", () => {

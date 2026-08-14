@@ -114,8 +114,9 @@ describe("bots repository", () => {
       lastRunAt: null,
       lastResult: null,
       createdAt: Date.now(),
+      missedPolicy: "run-once",
     });
-    repos.routines.startRun({ id: "r1", botId: bot.id }, Date.now());
+    repos.routines.claimRun({ routineId: "r1", botId: bot.id, startedAt: Date.now(), leaseUntil: Date.now() + 60_000, kind: "manual" });
     repos.computerBindings.record(bot.id, "box-1");
 
     expect(repos.deleteBotCascade(bot.id)).toBe(true);

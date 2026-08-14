@@ -107,6 +107,35 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 2,
+    name: "routine-run-durability",
+    up(db) {
+      // P1.2: routine_runs becomes the durable run ledger — leases,
+      // attempts, idempotency keys, and an explicit status. Legacy rows are
+      // backfilled: a row a previous version left open can only be a run
+      // that died with the process, so it closes as interrupted.
+      db.exec(`
+        ALTER TABLE routine_runs ADD COLUMN scheduled_for INTEGER;
+        ALTER TABLE routine_runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'scheduled';
+        ALTER TABLE routine_runs ADD COLUMN status TEXT;
+        ALTER TABLE routine_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE routine_runs ADD COLUMN idempotency_key TEXT;
+        ALTER TABLE routine_runs ADD COLUMN lease_until INTEGER;
+        UPDATE routine_runs SET status = CASE
+          WHEN finished_at IS NULL THEN 'interrupted'
+          WHEN result = 'DONE' THEN 'done'
+          ELSE 'blocked' END
+        WHERE status IS NULL;
+        UPDATE routine_runs SET
+          result = COALESCE(result, 'interrupted: VelarixBot quit mid-run'),
+          finished_at = started_at
+        WHERE finished_at IS NULL;
+        CREATE UNIQUE INDEX routine_runs_idempotency
+          ON routine_runs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

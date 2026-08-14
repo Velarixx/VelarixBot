@@ -327,7 +327,7 @@ describe("harness HTTP API", () => {
     expect(ops.modelSelection.model).toBe("ghost-model");
   });
 
-  it("round-trips a daily routine create payload", async () => {
+  it("round-trips a daily routine create payload and stamps an explicit time zone", async () => {
     const { body } = await api("GET", "/api/bots");
     const bot = body.bots[0];
     const created = await api("POST", "/api/routines", {
@@ -337,10 +337,67 @@ describe("harness HTTP API", () => {
       schedule: { kind: "daily", time: "07:15" },
     });
     expect(created.status).toBe(201);
-    expect(created.body.routine.schedule).toEqual({ kind: "daily", time: "07:15" });
+    expect(created.body.routine.schedule).toMatchObject({ kind: "daily", time: "07:15" });
+    // clock schedules always carry the zone they were created in
+    expect(typeof created.body.routine.schedule.timeZone).toBe("string");
+    expect(created.body.routine.schedule.timeZone.length).toBeGreaterThan(0);
+    expect(created.body.routine.missedPolicy).toBe("run-once");
     const listed = await api("GET", "/api/routines");
     const found = listed.body.routines.find((r: { id: string }) => r.id === created.body.routine.id);
-    expect(found.schedule).toEqual({ kind: "daily", time: "07:15" });
+    expect(found.schedule).toEqual(created.body.routine.schedule);
+  });
+
+  it("round-trips the missed policy and rejects bad values", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const created = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "Catch-up routine",
+      prompt: "Catch up",
+      schedule: { kind: "interval", everyMinutes: 30 },
+      missedPolicy: "catch-up",
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.routine.missedPolicy).toBe("catch-up");
+    const patched = await api("PATCH", `/api/routines/${created.body.routine.id}`, { missedPolicy: "skip" });
+    expect(patched.status).toBe(200);
+    expect(patched.body.routine.missedPolicy).toBe("skip");
+    const rejected = await api("PATCH", `/api/routines/${created.body.routine.id}`, { missedPolicy: "whenever" });
+    expect(rejected.status).toBe(500);
+    expect(rejected.body.error).toMatch(/invalid missed policy/);
+  });
+
+  it("serves per-routine run history and records a manual test run", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const created = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "History probe",
+      prompt: "Probe",
+      schedule: { kind: "interval", everyMinutes: 60 },
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.routine.id as string;
+    const nextBefore = created.body.routine.nextRunAt as number;
+
+    const empty = await api("GET", `/api/routines/${id}/runs`);
+    expect(empty.status).toBe(200);
+    expect(empty.body.runs).toEqual([]);
+
+    // the manual run row is claimed synchronously inside the POST
+    const run = await api("POST", `/api/routines/${id}/run`);
+    expect(run.status).toBe(202);
+    const runs = await api("GET", `/api/routines/${id}/runs`);
+    expect(runs.body.runs).toHaveLength(1);
+    expect(runs.body.runs[0]).toMatchObject({ kind: "manual", attempt: 1 });
+    expect(["running", "blocked"]).toContain(runs.body.runs[0].status);
+
+    // a test run never consumes the scheduled occurrence
+    const after = await api("GET", "/api/routines");
+    expect(after.body.routines.find((r: { id: string }) => r.id === id).nextRunAt).toBe(nextBefore);
+
+    expect((await api("GET", "/api/routines/nope/runs")).status).toBe(404);
+    expect((await api("POST", "/api/routines/nope/run")).status).toBe(404);
   });
 
   it("round-trips a routine thenStartTurn trigger", async () => {
@@ -651,7 +708,8 @@ describe("harness HTTP API", () => {
     expect(routine.body.text).toMatch(/weekdays/i);
     const listed = await api("GET", "/api/routines");
     const standup = listed.body.routines.find((r: { name: string }) => r.name === "Standup");
-    expect(standup.schedule).toEqual({ kind: "weekdays", time: "09:00" });
+    expect(standup.schedule).toMatchObject({ kind: "weekdays", time: "09:00" });
+    expect(typeof standup.schedule.timeZone).toBe("string");
 
     const saved = await api(
       "POST",

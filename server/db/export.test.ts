@@ -53,9 +53,18 @@ function populate(repos: Repositories): void {
     lastRunAt: null,
     lastResult: null,
     createdAt: 1_700_000_000_000,
+    missedPolicy: "run-once",
   });
-  repos.routines.startRun({ id: "routine-1", botId: "bot-1" }, 1_000);
-  repos.routines.finishRun("routine-1", "DONE", 2_000);
+  const run = repos.routines.claimRun({
+    routineId: "routine-1",
+    botId: "bot-1",
+    startedAt: 1_000,
+    leaseUntil: 61_000,
+    kind: "scheduled",
+    scheduledFor: 1_000,
+    idempotencyKey: "routine-1@1000",
+  });
+  repos.routines.finishRun(run!.seq, "done", "DONE", 2_000);
   repos.computerBindings.record("bot-1", "box-1", 3_000);
   repos.snapshots.replaceApprovalRules([
     { scope: "bot-1", rule: { id: "rule-1", tool: "Bash", pattern: "git status", action: "allow", createdAt: 5, confirmed: true } },
