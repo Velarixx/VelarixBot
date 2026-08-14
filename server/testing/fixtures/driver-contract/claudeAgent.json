@@ -1,0 +1,484 @@
+{
+  "driverKind": "claudeAgent",
+  "scenarios": {
+    "start": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake claude"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake claude"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "title": "Bash"
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 12,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "ok": true
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": "end_turn",
+        "cost": 0.01
+      }
+    ],
+    "resume": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "sess-contract-1",
+        "model": "claude-fake"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake claude"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake claude"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "title": "Bash"
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 12,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "ok": true
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": "end_turn",
+        "cost": 0.01
+      }
+    ],
+    "cancel": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "runtime.error",
+        "message": "claude exited <code> before result"
+      },
+      {
+        "type": "turn.completed",
+        "ok": false,
+        "stopReason": "exit_before_result",
+        "cost": null
+      }
+    ],
+    "kill": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "runtime.error",
+        "message": "claude exited <code> before result"
+      },
+      {
+        "type": "turn.completed",
+        "ok": false,
+        "stopReason": "exit_before_result",
+        "cost": null
+      }
+    ],
+    "permission": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "request.opened",
+        "requestType": "permission",
+        "tool": "Bash",
+        "summary": "rm -rf scratch"
+      },
+      {
+        "type": "request.resolved",
+        "behavior": "allow",
+        "source": "user"
+      },
+      {
+        "type": "runtime.error",
+        "message": "claude exited <code> before result"
+      },
+      {
+        "type": "turn.completed",
+        "ok": false,
+        "stopReason": "exit_before_result",
+        "cost": null
+      }
+    ],
+    "question": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "request.opened",
+        "requestType": "question",
+        "tool": "ask_user",
+        "summary": "Which niche should the newsletter cover first?"
+      },
+      {
+        "type": "request.resolved",
+        "behavior": "answer",
+        "source": "user"
+      },
+      {
+        "type": "runtime.error",
+        "message": "claude exited <code> before result"
+      },
+      {
+        "type": "turn.completed",
+        "ok": false,
+        "stopReason": "exit_before_result",
+        "cost": null
+      }
+    ],
+    "tool-order": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake claude"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake claude"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "title": "Bash"
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 12,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "ok": true
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": "end_turn",
+        "cost": 0.01
+      }
+    ],
+    "partial-output": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "reasoning_text",
+        "delta": "hmm"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from "
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "fake claude"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake claude"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "title": "Bash"
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 12,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "ok": true
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": "end_turn",
+        "cost": 0.01
+      }
+    ],
+    "unknown-event": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake claude"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake claude"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "title": "Bash"
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 12,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "ok": true
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": "end_turn",
+        "cost": 0.01
+      }
+    ],
+    "usage": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake claude"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake claude"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "title": "Bash"
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 12,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "ok": true
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": "end_turn",
+        "cost": 0.01
+      }
+    ],
+    "malformed": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake claude"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake claude"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "title": "Bash"
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 12,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "ok": true
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": "end_turn",
+        "cost": 0.01
+      }
+    ],
+    "restart-mid-turn": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "partial "
+      },
+      {
+        "type": "runtime.error",
+        "message": "claude exited <code> before result: fake-claude: crashing mid-turn"
+      },
+      {
+        "type": "turn.completed",
+        "ok": false,
+        "stopReason": "exit_before_result",
+        "cost": null
+      },
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "<uuid>",
+        "model": "claude-fake"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake claude"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake claude"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "title": "Bash"
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 12,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tu-1",
+        "ok": true
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": "end_turn",
+        "cost": 0.01
+      }
+    ]
+  }
+}
