@@ -1,5 +1,6 @@
 // Bots CRUD (+ cards, per-bot memory, taught skills, teach sessions).
 import { parseAllowedToolkits } from "../composio-filter.ts";
+import type { ComputerRegistry } from "../computer/registry.ts";
 import type { AppConfig } from "../config.ts";
 import type { ProviderRegistry } from "../harness/registry.ts";
 import { readBotMemory, readWorkspace, writeBotMemory, writeWorkspace } from "../memory.ts";
@@ -15,10 +16,11 @@ export function createBotsRoutes(deps: {
   turns: TurnsService;
   teach: TeachService;
   registry: ProviderRegistry;
+  computers: ComputerRegistry;
   cfg: AppConfig;
   broadcast: Broadcast;
 }): RouteHandler {
-  const { bots, turns, teach, registry, cfg, broadcast } = deps;
+  const { bots, turns, teach, registry, computers, cfg, broadcast } = deps;
   return async ({ req, res, path, method }) => {
     // ── per-bot + shared workspace memory (local markdown; no embeddings) ──
     const memoryMatch = path.match(/^\/api\/bots\/([\w-]+)\/memory$/);
@@ -150,6 +152,17 @@ export function createBotsRoutes(deps: {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (patch.enabledApps !== undefined) patch.enabledApps = parseAllowedToolkits(patch.enabledApps);
+      // bot.computer is a provider BINDING — canonicalize (legacy "cloud" →
+      // the bundled box binding) and reject anything not registered, so a
+      // removed provider is an explicit 409, never a silent failover
+      if (patch.computer !== undefined) {
+        const binding = computers.resolveBinding(patch.computer);
+        if (!binding) {
+          json(res, 409, { error: `unknown computer provider "${String(patch.computer)}" — configure it in ~/.velarixbot/config.json, or choose local/off` });
+          return true;
+        }
+        patch.computer = binding;
+      }
       if (patch.computer === "local" && process.env.OMB_LOCAL_CUA_SUPPORTED === "0") {
         json(res, 409, { error: "local computer control is not available on Windows; choose Cloud box or Off" });
         return true;
@@ -168,12 +181,16 @@ export function createBotsRoutes(deps: {
           return true;
         }
       }
-      // Cloud mirror of the local 409: a bot whose EFFECTIVE mode would be
-      // cloud must sit on a driver that can actually mount/act on the box.
+      // Remote mirror of the local 409: a bot whose EFFECTIVE binding is a
+      // remote computer provider must sit on a driver that can actually
+      // mount/act on that machine.
       {
         const current = bots.bot(m[1]);
         const effectiveComputer = (patch.computer ?? current?.computer) as string | undefined;
-        if (effectiveComputer === "cloud" && (patch.computer === "cloud" || patch.modelSelection)) {
+        const remote = effectiveComputer && effectiveComputer !== "off" && effectiveComputer !== "local"
+          ? computers.get(effectiveComputer)
+          : null;
+        if (remote && (patch.computer !== undefined || patch.modelSelection)) {
           const selected = (patch.modelSelection ?? current?.modelSelection) as { instanceId?: string } | undefined;
           const selectedInstance = selected?.instanceId ? registry.get(selected.instanceId) : undefined;
           if (selectedInstance && selectedInstance.adapter.capabilities.cloudComputer !== true) {

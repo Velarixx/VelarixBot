@@ -129,7 +129,9 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
 
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
-      const boxId = turn.integrations?.computer?.boxId;
+      // provider-native machine handle — the harness resolved the bot's
+      // computer binding and attached the machine this turn runs ON
+      const boxId = turn.integrations?.computer?.handle?.machineId;
       if (!token) throw new Error('box not configured — add {"box":{"token":"…"}} to ~/.velarixbot/config.json');
       if (!boxId) throw new Error("this bot has no computer yet — open the Computer panel and provision one");
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");

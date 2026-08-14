@@ -2,6 +2,7 @@
 // SQLite behind server/repositories/ (see server/db/); this module owns the
 // shapes and the normalization every reader/importer shares, so a record
 // written by any past version of the app loads into a valid current record.
+import { normalizeComputerBinding } from "./computer/provider.ts";
 import type { ModelSelection, ThreadId } from "./contracts.ts";
 
 export type MausColor = "green" | "blue" | "red" | "orange" | "purple" | "cyan" | "pink" | "yellow" | "teal" | "coral";
@@ -26,7 +27,11 @@ export interface Message {
 export interface BotRecord {
   id: string; threadId: ThreadId; name: string; title: string; description: string; notifications: boolean; color: MausColor;
   mascotExpression?: MausExpression | null; iconShape?: IconShape; unread: boolean; modelSelection: ModelSelection; resumeCursors: Record<string, unknown>;
-  computer: "cloud" | "local" | "off"; pinned?: boolean; hidden?: boolean; busy: boolean; state: BotState; stateDetail?: string;
+  /** Computer provider BINDING: "off", "local", or a configured provider id
+   * (e.g. "box"). Legacy "cloud" records normalize to "box". A binding to a
+   * provider that is no longer configured stays on the record and simply
+   * resolves to nothing at runtime. */
+  computer: string; pinned?: boolean; hidden?: boolean; busy: boolean; state: BotState; stateDetail?: string;
   usage: Usage; currentTurnUsage?: Usage; createdAt: number; requireApproval?: boolean;
   /** Connected-app slugs this bot may use (Composio). Empty/missing = none. */
   enabledApps?: string[];
@@ -52,7 +57,9 @@ export interface RoutineRecord {
 
 export const COLORS: MausColor[] = ["green", "blue", "red", "orange", "purple", "cyan", "pink", "yellow", "teal", "coral"];
 export const STATES = new Set<BotState>(["IDLE", "RUNNING", "DONE", "BLOCKED", "NEEDS_INPUT"]);
-export const MODES = new Set(["cloud", "local", "off"]);
+/** Bindings that exist without any provider registry (the registry adds
+ * configured provider ids on top). Used only as the validation fallback. */
+export const BASE_COMPUTER_BINDINGS = ["local", "box"];
 export const zeroUsage = (): Usage => ({ input: 0, output: 0, cost: null });
 
 export function validUsage(v: unknown): Usage {
@@ -74,7 +81,7 @@ export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } 
     notifications: b.notifications !== false, color: COLORS.includes(b.color as MausColor) ? b.color! : "blue", mascotExpression: b.mascotExpression,
     iconShape: resolveIconShape(b.iconShape),
     unread: b.unread === true, modelSelection: b.modelSelection, resumeCursors: b.resumeCursors && typeof b.resumeCursors === "object" ? b.resumeCursors : {},
-    computer: MODES.has(String(b.computer)) ? b.computer! : "off", pinned: b.pinned, hidden: b.hidden, busy: crashed ? false : b.busy === true,
+    computer: normalizeComputerBinding(b.computer), pinned: b.pinned, hidden: b.hidden, busy: crashed ? false : b.busy === true,
     state: crashed ? "BLOCKED" : STATES.has(b.state as BotState) ? b.state! : "IDLE", ...(crashed ? { stateDetail: "interrupted" } : b.stateDetail ? { stateDetail: b.stateDetail } : {}),
     usage: validUsage(b.usage), currentTurnUsage: b.currentTurnUsage ? validUsage(b.currentTurnUsage) : undefined, createdAt: Number.isFinite(b.createdAt) ? b.createdAt! : Date.now(),
     ...(b.requireApproval === true ? { requireApproval: true } : {}),

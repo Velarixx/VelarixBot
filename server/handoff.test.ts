@@ -31,12 +31,17 @@ describe("credential handoff copy", () => {
     expect(classifyOpenedRequest("permission", "Bash", "ls").requestType).toBe("permission");
   });
 
-  it("skips Open desktop unless this bot has a configured cloud box", () => {
+  it("skips Open desktop unless this bot is bound to a configured remote computer", () => {
+    // provider BINDINGS (P1.1): "box" is the bundled remote provider and
+    // "cloud" remains the legacy alias for it
+    expect(shouldOfferDesktop("box", true)).toBe(true);
+    expect(shouldOfferDesktop("box", false)).toBe(false);
     expect(shouldOfferDesktop("cloud", true)).toBe(true);
     expect(shouldOfferDesktop("cloud", false)).toBe(false);
     expect(shouldOfferDesktop("local", true)).toBe(false);
     expect(shouldOfferDesktop("off", true)).toBe(false);
     expect(shouldOfferDesktop(undefined, true)).toBe(false);
+    expect(handoffSubtitle("box")).toBe(HANDOFF_SUBTITLE);
     expect(handoffSubtitle("cloud")).toBe(HANDOFF_SUBTITLE);
     expect(handoffSubtitle("local")).toBe(HANDOFF_SUBTITLE_LOCAL);
     expect(handoffSubtitle("off")).toBe(HANDOFF_SUBTITLE_LOCAL);

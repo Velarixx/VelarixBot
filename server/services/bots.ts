@@ -3,13 +3,14 @@
 // deletion cascade), now over the SQLite repositories.
 import { rmSync } from "node:fs";
 
+import { normalizeComputerBinding } from "../computer/provider.ts";
 import { botWorkspaceDir } from "../config.ts";
 import { newId, type ModelSelection } from "../contracts.ts";
 import type { Repositories } from "../repositories/index.ts";
 import {
+  BASE_COMPUTER_BINDINGS,
   COLORS,
   ICON_SHAPES,
-  MODES,
   STATES,
   onboardingCard,
   resolveIconShape,
@@ -42,8 +43,21 @@ export interface BotsService {
   patchMessage(threadId: string, id: string, patch: Partial<Message>): Message | null;
 }
 
-export function createBotsService(opts: { repos: Repositories; defaultSelection: () => ModelSelection }): BotsService {
+export function createBotsService(opts: {
+  repos: Repositories;
+  defaultSelection: () => ModelSelection;
+  /** Valid computer bindings besides "off" — the composition root wires the
+   * computer registry's provider ids; defaults to the base set. */
+  computerBindings?: () => Iterable<string>;
+}): BotsService {
   const { repos, defaultSelection } = opts;
+  const validComputerBinding = (binding: string): boolean => {
+    if (binding === "off") return true;
+    for (const id of opts.computerBindings ? opts.computerBindings() : BASE_COMPUTER_BINDINGS) {
+      if (id === binding) return true;
+    }
+    return false;
+  };
 
   const service: BotsService = {
     bots: () => repos.bots.list(),
@@ -83,9 +97,13 @@ export function createBotsService(opts: { repos: Repositories; defaultSelection:
     patchBot(id, patch) {
       const b = repos.bots.get(id);
       if (!b) return null;
-      if (patch.computer && !MODES.has(patch.computer)) throw new Error("invalid computer mode");
       if (patch.state && !STATES.has(patch.state as BotState)) throw new Error("invalid bot state");
       const next: Partial<BotRecord> = { ...patch };
+      if (patch.computer !== undefined) {
+        const binding = normalizeComputerBinding(patch.computer);
+        if (!validComputerBinding(binding)) throw new Error(`invalid computer binding "${binding}"`);
+        next.computer = binding;
+      }
       if (next.iconShape !== undefined) next.iconShape = resolveIconShape(next.iconShape);
       if (next.notifyEvents !== undefined) {
         const events = validNotifyEvents(next.notifyEvents);

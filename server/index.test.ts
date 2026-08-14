@@ -314,7 +314,8 @@ describe("harness HTTP API", () => {
       title: "Ops specialist",
       description: "Handles ops",
       model: "ghost-model",
-      computer: "cloud",
+      // the legacy "cloud" request resolves to the bundled box BINDING
+      computer: "box",
     });
     expect(created.body.bot.id).toBeTruthy();
     expect(JSON.stringify(created.body)).not.toContain(COMMS_TOKEN);

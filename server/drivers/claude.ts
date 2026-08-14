@@ -7,8 +7,8 @@
 // Integrations become MCP servers on the CLI:
 //   - Composio Connect (connected apps → tools) via server/composio-proxy.ts
 //     — per-bot allowed toolkits, key in env not argv
-//   - the bot's cloud computer (box.ascii.dev) via server/computer-proxy.ts
-//     — screenshot/exec/open_url, the CUA-on-the-box bridge
+//   - the bot's computer via the provider-built MCP spawn contract
+//     (integrations.computer.mcp) — screenshot/exec/open_url, mounted verbatim
 //   - remember / recall via server/memory-proxy.ts (token in env, never argv)
 
 import { existsSync, unlinkSync } from "node:fs";
@@ -59,7 +59,6 @@ const proxyPath = (basename: string) => {
   const ts = join(dirname(fileURLToPath(import.meta.url)), "..", `${basename}.ts`);
   return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
 };
-const PROXY_PATH = proxyPath("computer-proxy");
 const PERM_PROXY_PATH = proxyPath("permission-proxy");
 // in the packaged app process.execPath is the Electron binary — this env
 // makes it behave as plain node for the spawned MCP proxies (harmless in dev)
@@ -276,22 +275,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.composio = { ...turn.integrations.composio, env: { ...NODE_ENV_FLAG, ...turn.integrations.composio.env } };
         allowed.push("mcp__composio");
       }
-      if (turn.integrations?.computer) {
-        mcpServers.computer = {
-          command: process.execPath,
-          args: [PROXY_PATH],
-          env: {
-            ...NODE_ENV_FLAG,
-            OGB_BOX_ID: turn.integrations.computer.boxId,
-            OGB_BOX_TOKEN: turn.integrations.computer.token,
-          },
-        };
-        allowed.push("mcp__computer");
-      } else if (turn.integrations?.localComputer) {
-        // this Mac, via the Electron-owned cua-driver daemon (spawn config
-        // read from cua-connection.json — same "computer" name either way,
-        // the agent just sees a computer)
-        mcpServers.computer = { ...turn.integrations.localComputer };
+      if (turn.integrations?.computer?.mcp) {
+        // provider-built spawn contract (box proxy, local cua-driver, …) —
+        // mounted VERBATIM; the provider owns command/args/env, secrets
+        // ride env and the vendor URL never appears here
+        mcpServers.computer = { ...turn.integrations.computer.mcp };
         allowed.push("mcp__computer");
       }
       // peer-agent comms (list_bots/ask_bot/create_bot) — the harness builds the whole

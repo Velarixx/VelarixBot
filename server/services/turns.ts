@@ -3,8 +3,7 @@
 // pre-refactor behavior; state that used to be module globals now lives in
 // this service's closure and every dependency arrives through
 // createTurnsService (the composition root wires it).
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,8 +13,9 @@ import {
   autoResolvePermission,
   persistAllowRule,
 } from "../approvals.ts";
-import * as box from "../box.ts";
 import * as composio from "../composio.ts";
+import type { ComputerProvider } from "../computer/provider.ts";
+import type { ComputerRegistry } from "../computer/registry.ts";
 import {
   ASK_BUDGET_MS,
   COMMS_DEPTH_ERROR,
@@ -66,6 +66,7 @@ export interface StartTurnOpts {
 export interface TurnsServiceDeps {
   cfg: AppConfig;
   registry: ProviderRegistry;
+  computers: ComputerRegistry;
   bus: EventBus;
   repos: Repositories;
   bots: BotsService;
@@ -83,7 +84,7 @@ export interface TurnsService {
   askBotQueued(toBotId: string, message: string, depth: number, opts?: { visited?: string[]; groupThreadId?: string }): Promise<string>;
   handleWorkspaceTool(fromBotId: string, tool: string, args: Record<string, unknown>, depth: number): Promise<{ text?: string; error?: string }>;
   askUserAndWait(botId: string, input: { question: string; choices?: string[]; secret?: boolean; connectUrl?: string }): Promise<string>;
-  createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: "cloud" | "local" | "off" }): Promise<
+  createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: string }): Promise<
     NonNullable<ReturnType<BotsService["publicBot"]>>
   >;
   removeSidebarBot(id: string): Promise<{ ok: true; bot: { id: string; name: string } } | { error: string; status: number }>;
@@ -97,8 +98,15 @@ export interface TurnsService {
 }
 
 export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
-  const { cfg, registry, bus, repos, bots, teach, proactive, broadcast, port, commsToken } = deps;
+  const { cfg, registry, computers, bus, repos, bots, teach, proactive, broadcast, port, commsToken } = deps;
   const store = bots; // message + bot accessors (repository-backed)
+
+  /** The provider a bot.computer binding resolves to — null for off/unbound
+   * (including bindings whose provider was removed from config). */
+  function boundProvider(computer: string | undefined): ComputerProvider | null {
+    const binding = computers.resolveBinding(computer);
+    return binding && binding !== "off" ? computers.get(binding) : null;
+  }
 
   const agentsProxyPath = proxyPath("drivers", "agents-proxy.ts");
   const composioProxyPath = proxyPath("composio-proxy.ts");
@@ -321,14 +329,18 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   });
 
   // ── sidebar bot lifecycle (create/remove fan out on SSE) ──────────────
-  async function createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: "cloud" | "local" | "off" }) {
+  async function createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: string }) {
     const bot = bots.createBot();
+    // the requested binding must resolve to a registered provider — when it
+    // doesn't (e.g. "cloud" with Box removed from config), the bot simply
+    // stays off instead of failing creation
+    const computerBinding = init?.computer ? computers.resolveBinding(init.computer) : null;
     bots.patchBot(bot.id, {
       modelSelection: await selectionForModel(init?.model),
       ...(init?.name?.trim() ? { name: init.name.trim() } : {}),
       ...(typeof init?.title === "string" ? { title: init.title } : {}),
       ...(typeof init?.description === "string" ? { description: init.description } : {}),
-      ...(init?.computer ? { computer: init.computer } : {}),
+      ...(computerBinding && computerBinding !== "off" ? { computer: computerBinding } : {}),
     });
     const full = bots.publicBot(bot.id)!;
     broadcast({ kind: "bot.added", bot: full });
@@ -442,10 +454,17 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       }
       if (tool === "attach_to_chat") {
         const kind = String(args.kind ?? "").trim();
+        const provider = boundProvider(bot.computer);
         if (kind === "screenshot") {
           const polled = screenPollers.get(fromBotId)?.last;
-          const shot = polled ?? (bot.computer === "cloud" && box.boxConfigured(cfg) ? await box.screenshotBox(cfg, fromBotId).then((s) => ({ png: s.png, mime: "image/png" as const })) : null);
-          if (!shot) return { error: "no screenshot available — turn computer on (cloud box) first." };
+          const shot =
+            polled ??
+            (provider?.capabilities.screenshot
+              ? await provider
+                  .screenshot(fromBotId)
+                  .then((s) => ({ png: s.png, mime: s.format === "jpeg" ? ("image/jpeg" as const) : ("image/png" as const) }))
+              : null);
+          if (!shot) return { error: "no screenshot available — turn this bot's computer on first." };
           const message = store.appendMessage(bot.threadId, { role: "bot", kind: "screen", png: shot.png, mime: shot.mime });
           broadcast({ kind: "message", threadId: bot.threadId, message });
           return { text: "Attached the current computer screenshot to this chat." };
@@ -453,7 +472,10 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (kind === "file") {
           const filePath = String(args.path ?? "").trim();
           if (!filePath) return { error: "attach_to_chat file needs path." };
-          const read = await box.readBoxPath(cfg, fromBotId, filePath);
+          if (!provider?.capabilities.files) {
+            return { error: "this bot's computer cannot share files — give it a cloud computer first." };
+          }
+          const read = await provider.readFile(fromBotId, filePath);
           if (IMAGE_EXT.test(filePath)) {
             const message = store.appendMessage(bot.threadId, {
               role: "bot",
@@ -678,9 +700,10 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     }
   });
 
-  // ── live screen: poll the bot's box while it works ────────────────────
+  // ── live screen: poll the bot's computer while it works ───────────────
   // Frames stream to clients as SSE {kind:'screen'} (the "Bot's screen"
   // panel); the final frame is folded into the transcript on turn end.
+  // Only providers that declare the screenshot capability get a poller.
   type Frame = { png: string; mime: string };
   const screenPollers = new Map<
     string,
@@ -688,13 +711,15 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   >();
 
   function startScreenPoller(botId: string) {
-    if (screenPollers.has(botId) || !box.boxConfigured(cfg)) return;
+    if (screenPollers.has(botId)) return;
+    const provider = boundProvider(store.bot(botId)?.computer);
+    if (!provider?.capabilities.screenshot) return;
     let inFlight = false;
     const capture = async () => {
       if (inFlight) return;
       inFlight = true;
       try {
-        const { png, format } = await box.screenshotBox(cfg, botId);
+        const { png, format } = await provider.screenshot(botId);
         const frame = { png, mime: format === "jpeg" ? "image/jpeg" : "image/png" };
         entry.last = frame;
         appendTeachFrame(botId);
@@ -725,35 +750,6 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     clearInterval(entry.timer);
     screenPollers.delete(botId);
     return entry.last;
-  }
-
-  // Local computer-use contract written by Electron main on startup
-  // (app.getPath("userData")/cua-connection.json). Electron passes the exact
-  // location because that path is OS-specific. Read fresh each turn.
-  function cuaConnectionCandidates(): string[] {
-    if (process.env.OMB_USER_DATA) return [join(process.env.OMB_USER_DATA, "cua-connection.json")];
-    const root =
-      process.platform === "win32"
-        ? (process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"))
-        : process.platform === "darwin"
-          ? join(homedir(), "Library", "Application Support")
-          : (process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"));
-    return ["VelarixBot", "velarixbot", "OpenMausBot", "openmausbot", "OpenGrokBot", "opengrokbot"].map(
-      (dir) => join(root, dir, "cua-connection.json"),
-    );
-  }
-
-  function readCuaConnection(): { command: string; args: string[]; env: Record<string, string> } | null {
-    for (const p of cuaConnectionCandidates()) {
-      try {
-        const conn = JSON.parse(readFileSync(p, "utf8"));
-        if (!conn || conn.mode === "unavailable" || !conn.mcpCommand) continue;
-        return { command: conn.mcpCommand, args: conn.mcpArgs ?? ["mcp"], env: conn.mcpEnv ?? {} };
-      } catch {
-        /* try the next location */
-      }
-    }
-    return null;
   }
 
   // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
@@ -817,30 +813,40 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (cfg.composio?.key && bot.enabledApps?.length) {
           integrations.composio = composioIntegration(bot.enabledApps);
         }
-        const wants = bot.computer;
-        // Only drivers that can actually act on the box (mount the computer
-        // MCP tools, or run on the box itself) get integrations.computer —
-        // otherwise the "you have a cloud computer" prompt below would be a
-        // lie the model repeats to the user.
-        if (wants === "cloud" && box.boxConfigured(cfg) && instance.adapter.capabilities.cloudComputer === true) {
-          let b = await box.findBox(cfg, bot.id).catch(() => null);
-          // the Computer driver runs ON the box — provision it on first use
-          if (!b && instance.driverKind === "boxAgent") {
-            broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
-            await box.provisionBox(cfg, bot.id, bot.name);
-            b = await box.findBox(cfg, bot.id).catch(() => null);
-          }
-          if (b) {
-            integrations.computer = { boxId: b.id, token: cfg.box!.token! };
-            repos.computerBindings.record(bot.id, b.id);
+        // The bot's computer BINDING resolves to a provider; only drivers
+        // that can actually act on that machine (mount the provider-built
+        // computer MCP tools, or run on the machine itself) get
+        // integrations.computer — otherwise the "you have a computer"
+        // prompt below would be a lie the model repeats to the user.
+        const computerProvider = boundProvider(bot.computer);
+        if (computerProvider && bot.computer !== "local" && instance.adapter.capabilities.cloudComputer === true) {
+          const status = await computerProvider.status(bot.id).catch(() => null);
+          if (status?.configured) {
+            let machine = status.machine;
+            // drivers that run ON the machine (boxAgent) provision on first use
+            if (!machine && instance.driverKind === "boxAgent") {
+              broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
+              await computerProvider.provision({ id: bot.id, name: bot.name });
+              machine = (await computerProvider.status(bot.id).catch(() => null))?.machine ?? null;
+            }
+            if (machine) {
+              integrations.computer = {
+                provider: computerProvider.kind,
+                mcp: computerProvider.capabilities.mcp
+                  ? await computerProvider.mcpIntegration(bot.id, { machineId: machine.id })
+                  : null,
+                handle: { machineId: machine.id },
+              };
+              repos.computerBindings.record(bot.id, machine.id);
+            }
           }
         }
-        // local computer (this Mac) via the Electron-hosted cua-driver: the
-        // Electron main process owns the daemon (TCC attribution) and writes
-        // its spawn contract to cua-connection.json; the harness only reads it
-        if (wants === "local") {
-          const cua = readCuaConnection();
-          if (cua) integrations.localComputer = cua;
+        // local computer (this machine) via the Electron-hosted cua-driver:
+        // the Electron main process owns the daemon (TCC attribution); the
+        // local provider only reads its spawn contract from cua-connection.json
+        if (computerProvider && bot.computer === "local") {
+          const mcp = await computerProvider.mcpIntegration(bot.id);
+          if (mcp) integrations.computer = { provider: computerProvider.kind, mcp };
         }
         // peer-agent comms: give a user-initiated turn list_bots / ask_bot /
         // create_bot / delete_bot. Always mount at depth 0 so a lone bot can still create
@@ -882,11 +888,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
             memoryPrompt(bot.id) +
             turnGrounding(instance.driverKind) +
             (shouldAttachResponseOptions(instance.driverKind) ? responseOptionsPrompt : "") +
-            (integrations.computer && instance.driverKind !== "boxAgent"
-              ? " You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps."
-              : integrations.localComputer
-                ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
-                : "") +
+            // the provider owns its prompt line; boxAgent runs ON the
+            // machine and carries its own on-box grounding instead
+            (integrations.computer && instance.driverKind !== "boxAgent" && computerProvider?.turnPrompt
+              ? ` ${computerProvider.turnPrompt}`
+              : "") +
             (integrations.agents
               ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply — the reply stays in this transcript, do not ask the user to relay it. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. update_bot renames a bot or changes its title/description. delete_bot removes a sidebar bot by id — never the last bot in the workspace. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar. Never create or delete bots with the shell, PowerShell, or by writing scripts — only create_bot, update_bot, and delete_bot."
               : "") +
