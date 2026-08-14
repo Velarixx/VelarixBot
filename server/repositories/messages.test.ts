@@ -1,0 +1,127 @@
+// Message repository: append durability shape (O(1) appends, blobs on
+// disk), patch merge semantics, and the transactional thread delete.
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { DATA_DIR } from "../config.ts";
+import { blobsDir } from "../db/blobs.ts";
+import { defaultDbPath, openDatabase } from "../db/database.ts";
+import type { SqliteDatabase } from "../db/sqlite-native.ts";
+import { createEventLogRepository } from "./event-log.ts";
+import { createMessagesRepository } from "./messages.ts";
+
+const PNG_BASE64 = Buffer.from("not-really-a-png-but-bytes-are-bytes").toString("base64");
+
+describe("messages repository", () => {
+  let db: SqliteDatabase;
+  beforeEach(() => {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    db = openDatabase(defaultDbPath());
+  });
+  afterEach(() => {
+    try {
+      db.close();
+    } catch {
+      /* already closed */
+    }
+  });
+
+  it("appends, reads back in order, and persists across reopen", () => {
+    const messages = createMessagesRepository(db);
+    messages.append("t1", { role: "user", kind: "text", text: "one" });
+    const second = messages.append("t1", { role: "bot", kind: "text", text: "two" });
+    expect(messages.forThread("t1").map((m) => m.text)).toEqual(["one", "two"]);
+    expect(messages.find("t1", second.id)?.text).toBe("two");
+    db.close();
+    db = openDatabase(defaultDbPath());
+    expect(createMessagesRepository(db).forThread("t1").map((m) => m.text)).toEqual(["one", "two"]);
+  });
+
+  it("patches merge like the JSON store did (card kept unless replaced)", () => {
+    const messages = createMessagesRepository(db);
+    const m = messages.append("t1", {
+      role: "bot",
+      kind: "options",
+      card: { title: "T", subtitle: "S", options: ["a", "b"] },
+    });
+    const patched = messages.patch("t1", m.id, { text: "answered" });
+    expect(patched?.card?.options).toEqual(["a", "b"]);
+    expect(patched?.text).toBe("answered");
+    const answered = messages.patch("t1", m.id, { card: { ...m.card!, answered: "a" } });
+    expect(answered?.card?.answered).toBe("a");
+    expect(messages.patch("t1", "missing", {})).toBeNull();
+  });
+
+  it("stores screenshot bytes on disk, content-hash indexed — never in SQLite", () => {
+    const messages = createMessagesRepository(db);
+    const m = messages.append("t1", { role: "bot", kind: "screen", png: PNG_BASE64, mime: "image/png" });
+    const row = db.prepare<{ png_hash: string | null; data: string }>("SELECT png_hash, data FROM messages WHERE id = ?").get(m.id)!;
+    const expectedHash = createHash("sha256").update(Buffer.from(PNG_BASE64, "base64")).digest("hex");
+    expect(row.png_hash).toBe(expectedHash);
+    expect(row.data).not.toContain(PNG_BASE64);
+    expect(existsSync(join(blobsDir(), expectedHash))).toBe(true);
+    expect(readFileSync(join(blobsDir(), expectedHash)).toString("base64")).toBe(PNG_BASE64);
+    // reads rehydrate the payload transparently
+    expect(messages.forThread("t1")[0].png).toBe(PNG_BASE64);
+  });
+
+  it("append #100,001 does not rewrite the prior 100,000", () => {
+    const messages = createMessagesRepository(db);
+    const insertAll = db.transaction(() => {
+      for (let i = 1; i <= 100_000; i++) {
+        messages.append("big", { role: "user", kind: "text", text: `m${i}` });
+      }
+    });
+    insertAll();
+    expect(messages.countForThread("big")).toBe(100_000);
+    // settle everything into the main file, then hash it
+    db.pragma("wal_checkpoint(TRUNCATE)");
+    const path = defaultDbPath();
+    const before = createHash("sha256").update(readFileSync(path)).digest("hex");
+    messages.append("big", { role: "user", kind: "text", text: "m100001" });
+    // the append landed in the WAL; the 100,000 committed messages in the
+    // main database file were not rewritten — not a single byte
+    const after = createHash("sha256").update(readFileSync(path)).digest("hex");
+    expect(after).toBe(before);
+    expect(messages.countForThread("big")).toBe(100_001);
+  }, 60_000);
+
+  it("thread delete is transactional: an injected failure rolls everything back", () => {
+    const messages = createMessagesRepository(db);
+    const events = createEventLogRepository(db);
+    messages.append("t-del", { role: "user", kind: "text", text: "keep or drop together" });
+    messages.append("t-del", { role: "bot", kind: "screen", png: PNG_BASE64 });
+    events.append({
+      eventId: "ev-1",
+      provider: "fake",
+      threadId: "t-del",
+      createdAt: new Date().toISOString(),
+      type: "turn.started",
+    });
+    // injected failure on the LAST leg of the delete
+    db.exec("CREATE TRIGGER fail_delete BEFORE DELETE ON event_log BEGIN SELECT RAISE(ABORT, 'injected'); END;");
+    expect(() => messages.deleteThread("t-del")).toThrow(/injected/);
+    expect(messages.countForThread("t-del")).toBe(2);
+    expect(events.countForThread("t-del")).toBe(1);
+    expect(db.prepare("SELECT 1 FROM threads WHERE id = 't-del'").get()).toBeTruthy();
+
+    db.exec("DROP TRIGGER fail_delete;");
+    expect(messages.deleteThread("t-del")).toBe(true);
+    expect(messages.countForThread("t-del")).toBe(0);
+    expect(events.countForThread("t-del")).toBe(0);
+    expect(db.prepare("SELECT 1 FROM threads WHERE id = 't-del'").get()).toBeUndefined();
+  });
+
+  it("thread delete garbage-collects unreferenced blobs, keeps shared ones", () => {
+    const messages = createMessagesRepository(db);
+    messages.append("t-a", { role: "bot", kind: "screen", png: PNG_BASE64 });
+    messages.append("t-b", { role: "bot", kind: "screen", png: PNG_BASE64 });
+    const hash = createHash("sha256").update(Buffer.from(PNG_BASE64, "base64")).digest("hex");
+    messages.deleteThread("t-a");
+    expect(existsSync(join(blobsDir(), hash))).toBe(true); // t-b still refs it
+    messages.deleteThread("t-b");
+    expect(existsSync(join(blobsDir(), hash))).toBe(false);
+  });
+});

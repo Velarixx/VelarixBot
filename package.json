@@ -22,11 +22,13 @@
     "build:speech": "node scripts/build-speech-helper.mjs",
     "fetch:cua": "node scripts/fetch-cua-driver.mjs",
     "stage:cua-sdk": "node scripts/stage-cua-sdk.mjs",
-    "package:mac": "pnpm build && pnpm build:server && pnpm build:speech && pnpm fetch:cua && pnpm stage:cua-sdk && electron-builder --mac --arm64 --publish never",
-    "package:win": "pnpm build && pnpm build:server && electron-builder --win nsis --x64 --publish never"
+    "stage:sqlite": "node scripts/stage-sqlite.mjs",
+    "package:mac": "pnpm build && pnpm build:server && pnpm stage:sqlite && pnpm build:speech && pnpm fetch:cua && pnpm stage:cua-sdk && electron-builder --mac --arm64 --publish never",
+    "package:win": "pnpm build && pnpm build:server && pnpm stage:sqlite && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@trycua/cua-driver": "^0.19.3",
+    "better-sqlite3": "^13.0.3",
     "clsx": "^2.1.1",
     "lucide-react": "^0.539.0",
     "react": "^19.1.0",

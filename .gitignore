@@ -13,5 +13,6 @@ electron/resources/cua_driver_node_runtime.node
 electron/resources/libcua_driver_sdk.dylib
 electron/resources/cua-sdk/
 build/generated-cua-sdk/
+build/generated-server-deps/
 release
 eval-artifacts

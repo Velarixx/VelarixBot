@@ -17,7 +17,8 @@ describe("VelarixBot branding", () => {
     const config = read("server/config.ts");
     expect(config).toContain('".velarixbot"');
     expect(config).toContain('".openmausbot"');
-    const electron = read("server/index.ts");
+    // the cua-connection.json candidate list moved with turn dispatch (P0.5)
+    const electron = read("server/services/turns.ts");
     expect(electron).toContain('"VelarixBot"');
     expect(electron).toContain('"OpenMausBot"');
     expect(read("server/box.ts")).toContain('"openmausbot-workspace"');

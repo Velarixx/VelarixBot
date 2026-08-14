@@ -181,7 +181,8 @@ flowchart LR
 |---|---|---|
 | Drivers | `server/drivers/` | One per provider: Claude, Codex, and Grok Build over their local CLIs (stream-JSON / JSON-RPC / ACP), OpenRouter and OmniRouter over OpenAI-compatible chat completions (BYO key), plus a cloud-computer agent. Unknown drivers degrade to "unavailable", never crash the fleet. |
 | Harness | `server/harness/` | Registry (configs → live instances) and the fan-in event bus every client folds. |
-| API | `server/index.ts` | Bots, turns, approvals, model catalog, computer lifecycle, connectors, config — HTTP + SSE. |
+| API | `server/routes/` + `server/index.ts` | Bots, turns, approvals, model catalog, computer lifecycle, connectors, config — HTTP + SSE. `server/app.ts` is the composition root; `index.ts` only boots and listens. |
+| Store | `server/db/` + `server/repositories/` | One SQLite database (`~/.velarixbot/velarixbot.db`, WAL) behind repositories. Screenshots stay on disk as content-hash blobs; existing JSON stores import automatically (backed up first, originals untouched). |
 | App | `src/` | The chat shell. Server-backed store, one reducer, zero client-side transports. |
 | Desktop | `electron/` | macOS and Windows shell; dictation and local CUA are macOS-only in the first Windows release. |
 
@@ -213,8 +214,12 @@ VelarixBot includes **no product analytics or telemetry** and does not ask for o
 First-run completion is only a local browser-profile flag. Engine detection is local, and microphone permission is
 optional and requested only for on-device dictation.
 
-Bot definitions, transcripts, routines, configuration, and credentials are stored under `~/.velarixbot`. Desktop-only
-runtime files use Electron's OS-specific VelarixBot user-data directory. This is local-first, not per-user encryption:
+Bot definitions, transcripts, and routines live in one local SQLite database (`~/.velarixbot/velarixbot.db`, WAL —
+appends never rewrite history and a kill loses at most the in-flight message); screenshots are stored beside it as
+content-hash files under `~/.velarixbot/blobs`. Configuration, credentials, approval rules, memory notes, and skills
+also live under `~/.velarixbot`. On first launch after an update, existing JSON stores are imported into SQLite in one
+checksum-verified transaction — the originals are copied to `~/.velarixbot/backup/` first and never modified.
+Desktop-only runtime files use Electron's OS-specific VelarixBot user-data directory. This is local-first, not per-user encryption:
 anyone who can use the same OS account or read those directories can access the data. On a shared computer, use a
 separate OS account and do not configure credentials you are unwilling to share.
 Provider prompts still go directly to the explicitly selected CLI/provider under that provider's own privacy terms.

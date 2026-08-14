@@ -40,12 +40,12 @@ function fsyncDir(dir: string): void {
 
 /** Crash-safe replace: a reader always sees either the old or the new
  * content, never a torn file — even through a kill or power loss. */
-export function atomicWriteFileSync(path: string, data: string, opts: { backup?: boolean } = {}): void {
+export function atomicWriteFileSync(path: string, data: string | Buffer, opts: { backup?: boolean } = {}): void {
   const temp = `${path}.${process.pid}.tmp`;
   const fd = openSync(temp, "w", PRIVATE_FILE_MODE);
   try {
     let offset = 0;
-    const buf = Buffer.from(data, "utf8");
+    const buf = typeof data === "string" ? Buffer.from(data, "utf8") : data;
     while (offset < buf.length) offset += writeSync(fd, buf, offset);
     fsyncSync(fd);
   } finally {

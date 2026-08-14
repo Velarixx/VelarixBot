@@ -23,6 +23,7 @@ import {
   hashFile,
   packagedServerForkFromMain,
 } from "../scripts/verify-packaged-server.mjs";
+import { SOURCE_PACKAGE, prebuildName, stageSqlite } from "../scripts/stage-sqlite.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
@@ -57,6 +58,38 @@ describe("packaged server entry", () => {
     expect(read("CONTRIBUTING.md")).toMatch(/dist-server/);
   });
 
+  // The P0.4 packaging hazard: the installer ships no node_modules, so the
+  // ONE native dependency must be staged as extraResources and every
+  // package: script must actually run the staging. A config drift here is a
+  // ship-blocker (compiles in CI, crashes only in the installer).
+  it("stages better-sqlite3 into resources/server-deps on both packagers", () => {
+    const pkg = JSON.parse(read("package.json"));
+    expect(pkg.dependencies["better-sqlite3"]).toBeTruthy();
+    expect(pkg.scripts["stage:sqlite"]).toBe("node scripts/stage-sqlite.mjs");
+    for (const script of ["package:mac", "package:win"]) {
+      expect(pkg.scripts[script]).toContain("stage:sqlite");
+      expect(pkg.scripts[script].indexOf("stage:sqlite")).toBeLessThan(pkg.scripts[script].indexOf("electron-builder"));
+    }
+    const builder = read("electron-builder.yml");
+    expect(builder).toMatch(/from:\s*build\/generated-server-deps/);
+    expect(builder).toMatch(/to:\s*server-deps/);
+    // never rebuild repo node_modules against Electron: N-API needs no
+    // rebuild and the dev tree must stay loadable by plain node
+    expect(builder).toMatch(/npmRebuild:\s*false/);
+    expect(read(".gitignore").split(/\r?\n/)).toContain("build/generated-server-deps/");
+  });
+
+  it("stageSqlite copies a self-contained wrapper + one prebuild, and refuses a missing platform", () => {
+    scratch = mkdtempSync(join(tmpdir(), "omb-stage-sqlite-"));
+    const target = join(scratch, "better-sqlite3");
+    const staged = stageSqlite({ targetDir: target });
+    expect(staged.binary).toBe(prebuildName(process.platform, process.arch));
+    expect(readFileSync(join(target, "package.json"), "utf8")).toContain('"better-sqlite3"');
+    expect(readFileSync(join(SOURCE_PACKAGE, "prebuilds", staged.binary))).toEqual(readFileSync(join(target, "prebuilds", staged.binary)));
+    expect(() => stageSqlite({ targetDir: target, platform: "sunos", arch: "ia32" })).toThrow(/no prebuild for sunos-ia32/);
+    expect(() => stageSqlite({ targetDir: target, sourceDir: join(scratch, "missing") })).toThrow(/not installed/);
+  });
+
   it("fails a widened-rootDir tree that only has dist-server/server/index.js", () => {
     scratch = mkdtempSync(join(tmpdir(), "omb-packaged-server-"));
     mkdirSync(join(scratch, "server"), { recursive: true });
@@ -80,15 +113,21 @@ describe("packaged server entry", () => {
   });
 
   it("emits index.js (not server/index.js) when compiling with the build tsconfig", async () => {
+    // reproduce the EXACT packaged resources layout: server/ (compiled, no
+    // node_modules) with server-deps/better-sqlite3 staged as its sibling —
+    // the smoke below proves the packaged tree loads the native addon
     scratch = mkdtempSync(join(tmpdir(), "omb-tsc-emit-"));
+    const resources = join(scratch, "resources");
+    const distDir = join(resources, "server");
     const tsc = join(ROOT, "node_modules", "typescript", "bin", "tsc");
-    const result = spawnSync(process.execPath, [tsc, "-p", "tsconfig.server.build.json", "--outDir", scratch, "--pretty", "false"], {
+    const result = spawnSync(process.execPath, [tsc, "-p", "tsconfig.server.build.json", "--outDir", distDir, "--pretty", "false"], {
       cwd: ROOT,
       encoding: "utf8",
     });
     expect(result.status, result.stderr || result.stdout).toBe(0);
-    const built = assertBuiltServerEntry(scratch);
-    expect(built.entry).toBe(join(scratch, "index.js"));
+    stageSqlite({ targetDir: join(resources, "server-deps", "better-sqlite3") });
+    const built = assertBuiltServerEntry(distDir);
+    expect(built.entry).toBe(join(distDir, "index.js"));
     expect(readFileSync(built.entry, "utf8")).toMatch(/createServer|VelarixBot|OMB_PORT/);
     expect(readFileSync(built.entry, "utf8")).toContain(SERVER_SMOKE_STAMP);
     const smoked = await smokePackagedServer(built.entry);
@@ -114,6 +153,13 @@ describe("packaged server entry", () => {
     expect(win).toContain("smoke-packaged-server.mjs");
     expect(mac.indexOf("verify-packaged-server.mjs")).toBeLessThan(mac.indexOf("smoke-packaged-server.mjs"));
     expect(win.indexOf("verify-packaged-server.mjs")).toBeLessThan(win.indexOf("smoke-packaged-server.mjs"));
+    // the mac job inlines electron-builder (unlike windows' package:win), so
+    // it must stage the sqlite dep itself — after build:server, before the
+    // package step — or the DMG ships a server that crashes at boot
+    expect(mac).toContain("pnpm stage:sqlite");
+    expect(mac.indexOf("build:server")).toBeLessThan(mac.indexOf("stage:sqlite"));
+    expect(mac.indexOf("stage:sqlite")).toBeLessThan(mac.indexOf("electron-builder --mac"));
+    expect(win).toContain("package:win"); // package:win already runs stage:sqlite (pinned above)
     expect(mac).toContain("--arm64");
     expect(mac).not.toMatch(/--x64/);
     expect(workflow).toMatch(/needs:\s*\[mac, windows\]/);

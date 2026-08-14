@@ -52,6 +52,7 @@ jobs:
         run: pnpm version "${{ inputs.version }}" --no-git-tag-version
       - run: pnpm build
       - run: pnpm build:server
+      - run: pnpm stage:sqlite
       - run: pnpm build:speech
       - run: pnpm fetch:cua
       - run: pnpm stage:cua-sdk

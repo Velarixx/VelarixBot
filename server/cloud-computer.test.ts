@@ -17,7 +17,11 @@ import { GrokAgentDriver } from "./drivers/acp/grok.ts";
 import { GeminiAgentDriver } from "./drivers/acp/gemini.ts";
 import { HermesAgentDriver } from "./drivers/acp/hermes.ts";
 
-const indexSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "index.ts"), "utf8");
+// P0.5 split the harness: turn dispatch lives in services/turns.ts, the
+// bot PATCH gate in routes/bots.ts
+const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
+const turnsSrc = readFileSync(join(SERVER_DIR, "services", "turns.ts"), "utf8");
+const botsRoutesSrc = readFileSync(join(SERVER_DIR, "routes", "bots.ts"), "utf8");
 
 async function capabilityOf(driver: AnyProviderDriver): Promise<boolean | undefined> {
   let instance: ProviderInstance | undefined;
@@ -52,17 +56,17 @@ describe("cloudComputer capability matrix", () => {
 
 describe("harness attach/PATCH gates (source contract)", () => {
   it("attaches integrations.computer only when the adapter has cloudComputer", () => {
-    expect(indexSrc).toMatch(
+    expect(turnsSrc).toMatch(
       /wants === "cloud" && box\.boxConfigured\(cfg\) && instance\.adapter\.capabilities\.cloudComputer === true/,
     );
   });
 
   it("keeps the cloud-computer prompt line behind integrations.computer", () => {
-    expect(indexSrc).toMatch(/integrations\.computer && instance\.driverKind !== "boxAgent"\s*\?\s*" You have your own cloud computer/);
+    expect(turnsSrc).toMatch(/integrations\.computer && instance\.driverKind !== "boxAgent"\s*\?\s*" You have your own cloud computer/);
   });
 
   it("mirrors the local-computer 409 for computer:\"cloud\" PATCHes", () => {
-    expect(indexSrc).toContain('selectedInstance.adapter.capabilities.cloudComputer !== true');
-    expect(indexSrc).toContain("selected provider has no cloud computer tools");
+    expect(botsRoutesSrc).toContain('selectedInstance.adapter.capabilities.cloudComputer !== true');
+    expect(botsRoutesSrc).toContain("selected provider has no cloud computer tools");
   });
 });
