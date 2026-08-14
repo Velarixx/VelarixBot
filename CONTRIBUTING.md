@@ -45,13 +45,18 @@ Eval secrets (values stay in Actions / your env — never commit them): `CLAUDE_
 | `server/contracts.ts` | The driver SPI and canonical runtime event types. The whole architecture in one file — read it first. |
 | `server/drivers/` | One file per provider (Claude, Codex, Grok, cloud computer). Adding a provider = one file + one registration line in `builtIn.ts`. |
 | `server/harness/` | Registry (configs → live instances, unknown → shadow) and the fan-in event bus. |
-| `server/index.ts` | The HTTP + SSE API the app talks to. |
+| `server/db/` + `server/repositories/` | The one store: SQLite (better-sqlite3, WAL) behind repositories, plus the legacy-JSON importer and NDJSON export. `db/sqlite-native.ts` is the ONLY file allowed to load better-sqlite3 (packaging rule, test-enforced). |
+| `server/services/` | Domain services (turn dispatch, bots, routines scheduler, teach). Clock-injectable — schedulers take `now` and `tick()`, no timers inside. |
+| `server/routes/` | The HTTP + SSE API the app talks to. Routes call services and must not import persistence (test-enforced). |
+| `server/app.ts` + `server/index.ts` | `createApplication({repos, providers, clock, …})` is the composition root; `index.ts` reads env, opens the database, and listens. |
 | `server/testing/` | Test fakes: an in-memory driver, plus scripted fake `claude` / `codex` CLIs. |
 | `src/` | The React chat app. No transports of its own — HTTP commands out, one SSE stream in. |
 | `electron/` | Desktop shell: dictation, screen capture, local computer-use daemon. macOS-specific code lives here, gated. |
 | `dist-server/` | **Build output, gitignored.** Never hand-edit, never commit — `pnpm build:server` regenerates it at package/release time. |
 
-Data lives in `~/.velarixbot/` (bots, transcripts, per-thread NDJSON event logs, config with keys).
+Data lives in `~/.velarixbot/`: `velarixbot.db` (SQLite, WAL — bots, transcripts, routines, event log),
+`blobs/` (content-hash screenshot bytes; file bytes never go into SQLite), per-thread NDJSON event logs,
+and config with keys. Legacy JSON stores import automatically on boot (backed up first, originals untouched).
 
 ## Tests
 
