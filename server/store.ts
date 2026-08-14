@@ -1,8 +1,8 @@
-import { readFileSync, rmSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { atomicWriteFileSync, ensurePrivateDir } from "./atomic.ts";
-import { botWorkspaceDir, DATA_DIR } from "./config.ts";
-import { newId, type ModelSelection, type ThreadId } from "./contracts.ts";
+// Domain records + validation for the workspace store. Persistence lives in
+// SQLite behind server/repositories/ (see server/db/); this module owns the
+// shapes and the normalization every reader/importer shares, so a record
+// written by any past version of the app loads into a valid current record.
+import type { ModelSelection, ThreadId } from "./contracts.ts";
 
 export type MausColor = "green" | "blue" | "red" | "orange" | "purple" | "cyan" | "pink" | "yellow" | "teal" | "coral";
 export type MausExpression = string;
@@ -50,42 +50,31 @@ export interface RoutineRecord {
   skillId?: string;
 }
 
-const BOTS_FILE = join(DATA_DIR, "bots.json");
-const ROUTINES_FILE = join(DATA_DIR, "routines.json");
-const messagesFile = (id: string) => join(DATA_DIR, `messages-${id}.json`);
-const COLORS: MausColor[] = ["green", "blue", "red", "orange", "purple", "cyan", "pink", "yellow", "teal", "coral"];
-const STATES = new Set<BotState>(["IDLE", "RUNNING", "DONE", "BLOCKED", "NEEDS_INPUT"]);
-const MODES = new Set(["cloud", "local", "off"]);
-const zeroUsage = (): Usage => ({ input: 0, output: 0, cost: null });
+export const COLORS: MausColor[] = ["green", "blue", "red", "orange", "purple", "cyan", "pink", "yellow", "teal", "coral"];
+export const STATES = new Set<BotState>(["IDLE", "RUNNING", "DONE", "BLOCKED", "NEEDS_INPUT"]);
+export const MODES = new Set(["cloud", "local", "off"]);
+export const zeroUsage = (): Usage => ({ input: 0, output: 0, cost: null });
 
-// temp + fsync + rename + dir-fsync (+ .bak of the previous state): a crash
-// or kill mid-write always leaves a parseable prior state for readArray.
-function atomicWrite(path: string, value: unknown, preserveCurrent = true) {
-  ensurePrivateDir(DATA_DIR);
-  atomicWriteFileSync(path, JSON.stringify(value, null, 2), { backup: preserveCurrent });
-}
-function readArray(path: string): unknown[] {
-  try { const v: unknown = JSON.parse(readFileSync(path, "utf8")); if (!Array.isArray(v)) throw new Error("not array"); return v; }
-  catch {
-    try { const v: unknown = JSON.parse(readFileSync(`${path}.bak`, "utf8")); if (!Array.isArray(v)) throw new Error("not array"); atomicWrite(path, v, false); return v; }
-    catch { return []; }
-  }
-}
-function validUsage(v: unknown): Usage {
+export function validUsage(v: unknown): Usage {
   const x = v as Partial<Usage> | null;
   return { input: Number.isFinite(x?.input) ? Math.max(0, Number(x!.input)) : 0, output: Number.isFinite(x?.output) ? Math.max(0, Number(x!.output)) : 0, cost: Number.isFinite(x?.cost) ? Math.max(0, Number(x!.cost)) : null };
 }
-function migrateBot(v: unknown): BotRecord | null {
+
+/** Normalize any historical bot record into a valid current one; null when
+ * unrecognizable. `recoverInterrupted` flips a crashed RUNNING/busy record
+ * to BLOCKED/interrupted — boot-time recovery only, never on a live read
+ * (a live read of a RUNNING bot must stay RUNNING). */
+export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } = {}): BotRecord | null {
   if (!v || typeof v !== "object") return null;
   const b = v as Partial<BotRecord>;
   if (![b.id, b.threadId, b.name].every((x) => typeof x === "string") || !b.modelSelection || typeof b.modelSelection.instanceId !== "string" || typeof b.modelSelection.model !== "string") return null;
-  const crashed = b.state === "RUNNING" || b.busy === true;
+  const crashed = opts.recoverInterrupted === true && (b.state === "RUNNING" || b.busy === true);
   return {
     id: b.id!, threadId: b.threadId!, name: b.name!, title: typeof b.title === "string" ? b.title : "", description: typeof b.description === "string" ? b.description : "",
     notifications: b.notifications !== false, color: COLORS.includes(b.color as MausColor) ? b.color! : "blue", mascotExpression: b.mascotExpression,
     iconShape: resolveIconShape(b.iconShape),
     unread: b.unread === true, modelSelection: b.modelSelection, resumeCursors: b.resumeCursors && typeof b.resumeCursors === "object" ? b.resumeCursors : {},
-    computer: MODES.has(String(b.computer)) ? b.computer! : "off", pinned: b.pinned, hidden: b.hidden, busy: false,
+    computer: MODES.has(String(b.computer)) ? b.computer! : "off", pinned: b.pinned, hidden: b.hidden, busy: crashed ? false : b.busy === true,
     state: crashed ? "BLOCKED" : STATES.has(b.state as BotState) ? b.state! : "IDLE", ...(crashed ? { stateDetail: "interrupted" } : b.stateDetail ? { stateDetail: b.stateDetail } : {}),
     usage: validUsage(b.usage), currentTurnUsage: b.currentTurnUsage ? validUsage(b.currentTurnUsage) : undefined, createdAt: Number.isFinite(b.createdAt) ? b.createdAt! : Date.now(),
     ...(b.requireApproval === true ? { requireApproval: true } : {}),
@@ -95,6 +84,7 @@ function migrateBot(v: unknown): BotRecord | null {
     ...(validStringList(b.threadParticipants) ? { threadParticipants: validStringList(b.threadParticipants) } : {}),
   };
 }
+
 export function nextRunAt(schedule: RoutineSchedule, from = Date.now()): number {
   if (schedule.kind === "interval") {
     if (!Number.isFinite(schedule.everyMinutes) || schedule.everyMinutes <= 0) throw new Error("invalid interval");
@@ -146,7 +136,7 @@ export function parseRoutineSchedule(raw: unknown): RoutineSchedule {
   return { kind: "daily", time };
 }
 const NOTIFY_EVENT_KEYS = new Set(["request.opened", "turn.completed", "stall.nudge", "peer.reply"]);
-function validNotifyEvents(v: unknown): BotRecord["notifyEvents"] | undefined {
+export function validNotifyEvents(v: unknown): BotRecord["notifyEvents"] | undefined {
   if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
   const out: NonNullable<BotRecord["notifyEvents"]> = {};
   for (const [key, val] of Object.entries(v as Record<string, unknown>)) {
@@ -160,14 +150,16 @@ function validStringList(v: unknown): string[] | undefined {
   const out = v.map((x) => String(x).trim()).filter(Boolean);
   return out;
 }
-function validThenStartTurn(v: unknown): ThenStartTurn | undefined {
+export function validThenStartTurn(v: unknown): ThenStartTurn | undefined {
   if (!v || typeof v !== "object") return undefined;
   const t = v as Partial<ThenStartTurn>;
   if (typeof t.botId !== "string" || !t.botId.trim()) return undefined;
   if (typeof t.prompt !== "string" || !t.prompt.trim()) return undefined;
   return { botId: t.botId.trim(), prompt: t.prompt.trim() };
 }
-function migrateRoutine(v: unknown): RoutineRecord | null {
+
+/** Normalize any historical routine record; null when unrecognizable. */
+export function normalizeRoutine(v: unknown): RoutineRecord | null {
   if (!v || typeof v !== "object") return null; const r = v as Partial<RoutineRecord>;
   if (![r.id, r.botId, r.name, r.prompt].every((x) => typeof x === "string") || !r.schedule) return null;
   try {
@@ -185,93 +177,15 @@ function migrateRoutine(v: unknown): RoutineRecord | null {
   } catch { return null; }
 }
 
+export function normalizeMessage(v: unknown): Message | null {
+  if (!v || typeof v !== "object") return null;
+  const m = v as Partial<Message>;
+  if (typeof m.id !== "string") return null;
+  return { ...(m as Message), at: Number.isFinite(m.at) ? m.at! : Date.now() };
+}
+
 export function mentionedBots<T extends { name: string; hidden?: boolean }>(text: string, peers: T[]): T[] {
   const candidates=peers.filter(p=>!p.hidden&&p.name.trim()).sort((a,b)=>b.name.length-a.name.length), lower=text.toLowerCase(), found:T[]=[]; let at=-1;
   while((at=lower.indexOf("@",at+1))!==-1){if(at>0&&!/\s/.test(text[at-1]))continue;const hit=candidates.find(p=>lower.slice(at+1).startsWith(p.name.toLowerCase()));if(hit&&!found.includes(hit))found.push(hit);} return found;
 }
-const onboardingCard=():OptionCardData=>({title:"What do you mostly want help with?",subtitle:"Pick whatever's closest; we can always expand from there.",options:["Work & projects","Writing & research","Life admin","A bit of everything"]});
-
-export class Store {
-  bots: BotRecord[];
-  routines: RoutineRecord[];
-  /** Wired by the harness to SSE `{kind:"routine"}` / `routine.deleted`. */
-  onRoutine?: (routine: RoutineRecord) => void;
-  onRoutineDeleted?: (routineId: string) => void;
-  private messages = new Map<string, Message[]>();
-  private defaultSelection: () => ModelSelection;
-
-  constructor(defaultSelection: () => ModelSelection) {
-    this.defaultSelection = defaultSelection;
-    ensurePrivateDir(DATA_DIR);
-    this.bots = readArray(BOTS_FILE).map(migrateBot).filter((b): b is BotRecord => !!b);
-    this.routines = readArray(ROUTINES_FILE).map(migrateRoutine).filter((r): r is RoutineRecord => !!r);
-    if (this.bots.length) atomicWrite(BOTS_FILE, this.bots);
-    if (this.routines.length) atomicWrite(ROUTINES_FILE, this.routines);
-  }
-  private saveBots(){atomicWrite(BOTS_FILE,this.bots)} private saveRoutines(){atomicWrite(ROUTINES_FILE,this.routines)}
-  messagesFor(threadId:string):Message[]{let list=this.messages.get(threadId);if(!list){list=readArray(messagesFile(threadId)).filter((m):m is Message=>!!m&&typeof m==="object"&&typeof (m as Message).id==="string");this.messages.set(threadId,list);}return list;}
-  private saveMessages(id:string){atomicWrite(messagesFile(id),this.messagesFor(id))}
-  appendMessage(threadId:string,message:Omit<Message,"id"|"at">&{at?:number}):Message{const full={id:newId(),at:Date.now(),...message};this.messagesFor(threadId).push(full);this.saveMessages(threadId);return full;}
-  patchMessage(threadId:string,id:string,patch:Partial<Message>):Message|null{const list=this.messagesFor(threadId),i=list.findIndex(m=>m.id===id);if(i<0)return null;list[i]={...list[i],...patch,card:patch.card??list[i].card};this.saveMessages(threadId);return list[i];}
-  bot(id:string){return this.bots.find(b=>b.id===id)??null} botByThread(id:string){return this.bots.find(b=>b.threadId===id)??null}
-  createBot():BotRecord{const bot:BotRecord={id:newId(),threadId:newId(),name:"New Bot",title:"",description:"",notifications:true,color:COLORS[this.bots.length%COLORS.length],iconShape:ICON_SHAPES[this.bots.length%ICON_SHAPES.length],unread:false,modelSelection:this.defaultSelection(),resumeCursors:{},computer:"off",busy:false,state:"IDLE",usage:zeroUsage(),createdAt:Date.now()};this.bots.unshift(bot);this.saveBots();this.appendMessage(bot.threadId,{role:"bot",kind:"text",text:"Hey — I'm your new bot. Nice to meet you."});this.appendMessage(bot.threadId,{role:"bot",kind:"options",card:onboardingCard()});return bot;}
-  deleteBot(id:string){const b=this.bot(id);if(!b)return false;this.bots=this.bots.filter(x=>x.id!==id);this.routines=this.routines.filter(r=>r.botId!==id);this.saveBots();this.saveRoutines();this.messages.delete(b.threadId);try{unlinkSync(messagesFile(b.threadId))}catch{}try{unlinkSync(`${messagesFile(b.threadId)}.bak`)}catch{}try{rmSync(botWorkspaceDir(b.id),{recursive:true,force:true})}catch{}return true;}
-  patchBot(id:string,patch:Partial<BotRecord>){
-    const b=this.bot(id);if(!b)return null;if(patch.computer&&!MODES.has(patch.computer))throw new Error("invalid computer mode");if(patch.state&&!STATES.has(patch.state))throw new Error("invalid bot state");
-    const next: Partial<BotRecord> = { ...patch };
-    if (next.iconShape !== undefined) next.iconShape = resolveIconShape(next.iconShape);
-    if (next.notifyEvents !== undefined) {
-      const events = validNotifyEvents(next.notifyEvents);
-      if (events) next.notifyEvents = events;
-      else delete next.notifyEvents;
-    }
-    if (Object.prototype.hasOwnProperty.call(next, "skillId")) {
-      const skillId = typeof next.skillId === "string" ? next.skillId.trim() : "";
-      delete next.skillId;
-      if (skillId) b.skillId = skillId;
-      else delete b.skillId;
-    }
-    Object.assign(b,next);this.saveBots();return b;
-  }
-  clearSkillRefs(skillId:string){
-    for (const bot of this.bots) {
-      if (bot.skillId === skillId) delete bot.skillId;
-    }
-    let routinesChanged = false;
-    for (const routine of this.routines) {
-      if (routine.skillId === skillId) {
-        delete routine.skillId;
-        routinesChanged = true;
-      }
-    }
-    this.saveBots();
-    if (routinesChanged) this.saveRoutines();
-  }
-  setResumeCursor(id:string,instance:string,cursor:unknown){const b=this.bot(id);if(b){b.resumeCursors[instance]=cursor;this.saveBots();}}
-  recordTurnUsage(id:string,usage:Usage){const b=this.bot(id);if(!b)return;const u=validUsage(usage);b.currentTurnUsage=u;b.usage={input:b.usage.input+u.input,output:b.usage.output+u.output,cost:b.usage.cost===null&&u.cost===null?null:(b.usage.cost??0)+(u.cost??0)};this.saveBots();}
-  seedIfEmpty(){if(this.bots.length)return;const b=this.createBot();this.patchBot(b.id,{name:"Milind",color:"blue"});}
-  routine(id:string){return this.routines.find(r=>r.id===id)??null}
-  createRoutine(input:{botId:string;name:string;prompt:string;schedule:RoutineSchedule;thenStartTurn?:ThenStartTurn;skillId?:string}){if(!this.bot(input.botId))throw new Error("no such bot");if(!input.name.trim()||!input.prompt.trim())throw new Error("name and prompt required");const schedule=parseRoutineSchedule(input.schedule);const thenStartTurn=validThenStartTurn(input.thenStartTurn);const skillId=typeof input.skillId==="string"&&input.skillId.trim()?input.skillId.trim():undefined;const r:RoutineRecord={id:newId(),botId:input.botId,name:input.name.trim(),prompt:input.prompt.trim(),schedule,enabled:true,running:false,nextRunAt:nextRunAt(schedule),lastRunAt:null,lastResult:null,createdAt:Date.now(),...(thenStartTurn?{thenStartTurn}:{}),...(skillId?{skillId}:{})};this.routines.push(r);this.saveRoutines();return r;}
-  patchRoutine(id:string,patch:Pick<Partial<RoutineRecord>,"name"|"prompt"|"schedule"|"enabled"|"thenStartTurn"|"skillId">){
-    const r=this.routine(id);if(!r)return null;
-    const safe: Pick<Partial<RoutineRecord>,"name"|"prompt"|"schedule"|"enabled"|"thenStartTurn"|"skillId"> = {};
-    if (patch.name !== undefined) { if (!patch.name.trim()) throw new Error("name required"); safe.name = patch.name.trim(); }
-    if (patch.prompt !== undefined) { if (!patch.prompt.trim()) throw new Error("prompt required"); safe.prompt = patch.prompt.trim(); }
-    if (patch.schedule !== undefined) { safe.schedule = parseRoutineSchedule(patch.schedule); r.nextRunAt = nextRunAt(safe.schedule); }
-    if (patch.enabled !== undefined) safe.enabled = patch.enabled === true;
-    Object.assign(r,safe);
-    if (patch.thenStartTurn !== undefined) {
-      const thenStartTurn = validThenStartTurn(patch.thenStartTurn);
-      if (thenStartTurn) r.thenStartTurn = thenStartTurn;
-      else delete r.thenStartTurn;
-    }
-    if (patch.skillId !== undefined) {
-      const skillId = typeof patch.skillId === "string" ? patch.skillId.trim() : "";
-      if (skillId) r.skillId = skillId;
-      else delete r.skillId;
-    }
-    this.saveRoutines();return r;
-  }
-  markRoutine(id:string,patch:Pick<Partial<RoutineRecord>,"running"|"nextRunAt"|"lastRunAt"|"lastResult">){const r=this.routine(id);if(!r)return null;Object.assign(r,patch);this.saveRoutines();this.onRoutine?.(r);return r;}
-  deleteRoutine(id:string){if(!this.routine(id))return false;this.routines=this.routines.filter(r=>r.id!==id);this.saveRoutines();this.onRoutineDeleted?.(id);return true;}
-}
+export const onboardingCard=():OptionCardData=>({title:"What do you mostly want help with?",subtitle:"Pick whatever's closest; we can always expand from there.",options:["Work & projects","Writing & research","Life admin","A bit of everything"]});
