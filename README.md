@@ -47,9 +47,10 @@ backed by local agent CLIs and optional per-bot cloud computers.
   events live in `~/.velarixbot`, not a cloud.
 - **Explicit routing.** You choose the provider and model for each bot. If that engine is unavailable, the bot
   reports a blocked state; VelarixBot does not silently fail over to another provider or model.
-- **Agents with hands.** Each bot can use its own persistent Box cloud computer, visible while it works — two
-  cloud bots can run at once. On macOS, a bot can instead use the local Mac after explicit approval. Composio
-  Connect adds optional app integrations, mounted per bot.
+- **Agents with hands.** Each bot binds to a computer *provider*: on macOS the local Mac (core, approval-gated),
+  or an optional per-bot Box cloud computer, visible while it works — two cloud bots can run at once. Box is
+  bundled but removable via config; nothing on first run needs a Box token. Composio Connect adds optional app
+  integrations, mounted per bot.
 
 ## Features
 
@@ -67,11 +68,15 @@ providers dimmed with the reason. Switch a bot's model mid-conversation.
 </td>
 <td width="50%" valign="top">
 
-### 🖥️ Per-bot cloud computer
+### 🖥️ Per-bot computer, provider-based
 
-Open the Computer panel to give this bot its own persistent Box cloud desktop. You can watch it work
-or open the desktop in your browser. Two cloud bots do not share a VM. On macOS, you can explicitly
-switch a bot to *this Mac* instead.
+Open the Computer panel to give this bot its own persistent cloud desktop (the bundled Box provider).
+You can watch it work or open the desktop in your browser. Two cloud bots do not share a VM. On macOS,
+you can explicitly switch a bot to *this Mac* instead. Under the hood `bot.computer` is a **provider
+binding** — `off`, `local`, or a configured provider id like `box` — behind one `ComputerProvider`
+interface (`server/computer/`), so dropping or swapping the cloud vendor is a config edit, not surgery:
+an authored `{"computer":{"providers":{…}}}` map in `~/.velarixbot/config.json` replaces the bundled
+default (`{}` removes Box entirely; local mode always stays).
 
 <img src="docs/screenshots/computer-panel.png" alt="Computer panel with live screen preview" width="100%">
 
@@ -173,13 +178,14 @@ flowchart LR
     BUS -- "one SSE stream" --> UI
     REG --> CL & CX & GR
     CL & CX & GR -- "MCP" --> BROKER
-    server -- "Box API" --> BOX[("Per-bot cloud computer<br/>box.ascii.dev")]
+    server -- "ComputerProvider (box)" --> BOX[("Per-bot cloud computer<br/>box.ascii.dev — optional")]
     server -- "Composio Connect" --> APPS[("Gmail · Slack · GitHub · …")]
 ```
 
 | Layer | Where | What it does |
 |---|---|---|
 | Drivers | `server/drivers/` | One per provider: Claude, Codex, and Grok Build over their local CLIs (stream-JSON / JSON-RPC / ACP), OpenRouter and OmniRouter over OpenAI-compatible chat completions (BYO key), plus a cloud-computer agent. Unknown drivers degrade to "unavailable", never crash the fleet. |
+| Computers | `server/computer/` | The `ComputerProvider` SPI (provision / execute / connectScreen / suspend / destroy + declared capabilities) and the first-party providers: `local` (core), `box` (bundled, removable via config), `fake` (conformance). A conformance suite every provider must pass; unknown kinds degrade to "unavailable". |
 | Harness | `server/harness/` | Registry (configs → live instances) and the fan-in event bus every client folds. |
 | API | `server/routes/` + `server/index.ts` | Bots, turns, approvals, model catalog, computer lifecycle, connectors, config — HTTP + SSE. `server/app.ts` is the composition root; `index.ts` only boots and listens. |
 | Store | `server/db/` + `server/repositories/` | One SQLite database (`~/.velarixbot/velarixbot.db`, WAL) behind repositories. Screenshots stay on disk as content-hash blobs; existing JSON stores import automatically (backed up first, originals untouched). |
@@ -206,7 +212,7 @@ Optional, pasted once in **App Settings** (gear in the sidebar footer):
 |---|---|
 | Composio Connect key (`ck_…`) | The connected-apps marketplace |
 | Composio API key (`ak_…`) | The full 500+ app catalog with official logos |
-| Box token ([box.ascii.dev](https://box.ascii.dev)) | Per-bot cloud computers |
+| Box token ([box.ascii.dev](https://box.ascii.dev)) | Per-bot cloud computers via the bundled (optional) Box provider |
 
 ## Privacy and data storage
 

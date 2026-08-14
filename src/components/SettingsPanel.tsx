@@ -324,6 +324,8 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               Where this bot's computer runs{bot.computer ? "" : " (currently: auto)"}
             </div>
             <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
+              {/* "cloud" is the legacy alias the server resolves to the
+                  configured remote provider binding (the bundled "box") */}
               {(["cloud", "local", "off"] as const).map((mode, i) => (
                 <button
                   key={mode}
@@ -331,7 +333,9 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                   className={cn(
                     "flex-1 py-1.5 text-[13px] capitalize",
                     i > 0 && "border-l border-hairline/40",
-                    bot.computer === mode
+                    (mode === "cloud"
+                      ? Boolean(bot.computer) && bot.computer !== "local" && bot.computer !== "off"
+                      : bot.computer === mode)
                       ? "bg-raised text-ink"
                       : "text-ink-secondary hover:bg-raised/60 hover:text-ink",
                   )}
