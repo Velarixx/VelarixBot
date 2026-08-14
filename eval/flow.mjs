@@ -162,7 +162,7 @@ async function chat(page, baseUrl, spec, shots) {
   let allowClicked = false;
   const working = page.getByPlaceholder(`${spec.name} is working`);
   const pulse = page.locator(".animate-pulse");
-  const allow = page.getByRole("button", { name: "Allow", exact: true });
+  const allow = page.getByRole("button", { name: "Allow once", exact: true });
   const deadline = Date.now() + TURN_MS;
 
   while (Date.now() < deadline) {

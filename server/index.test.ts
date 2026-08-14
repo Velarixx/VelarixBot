@@ -509,6 +509,33 @@ describe("harness HTTP API", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("reconfirms a quarantined rule via PATCH and rejects other patches", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const dir = join(home, ".velarixbot", "approvals");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `${bot.id}.json`),
+      JSON.stringify([
+        { id: "rule-paused", tool: "shell", pattern: "*", action: "allow", createdAt: 1, disabled: true, quarantined: true },
+      ]),
+    );
+    const listed = await api("GET", `/api/bots/${bot.id}/approvals`);
+    expect(listed.body.rules[0]).toMatchObject({ id: "rule-paused", disabled: true, quarantined: true });
+
+    const badPatch = await api("PATCH", `/api/bots/${bot.id}/approvals/rule-paused`, { pattern: "*" });
+    expect(badPatch.status).toBe(400);
+
+    const confirmed = await api("PATCH", `/api/bots/${bot.id}/approvals/rule-paused`, { confirmed: true });
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.rule).toMatchObject({ id: "rule-paused", confirmed: true });
+    expect(confirmed.body.rule.disabled).toBeUndefined();
+    expect(confirmed.body.rule.quarantined).toBeUndefined();
+
+    const missing = await api("PATCH", `/api/bots/${bot.id}/approvals/nope`, { confirmed: true });
+    expect(missing.status).toBe(404);
+  });
+
   it("broadcasts routine SSE frames when markRoutine and delete run", async () => {
     const { body } = await api("GET", "/api/bots");
     const bot = body.bots[0];
