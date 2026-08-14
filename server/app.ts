@@ -93,8 +93,11 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     }
   });
 
-  // boot recovery: a bot that died mid-turn reloads as BLOCKED/interrupted
+  // boot recovery: a bot that died mid-turn reloads as BLOCKED/interrupted,
+  // and any routine run the dead process left open closes as interrupted
+  // (single process — a running row at boot cannot have a live owner)
   repos.bots.recoverInterrupted();
+  repos.routines.recoverInterrupted(clock.now());
 
   // computer providers: local is core; box is the bundled default and an
   // authored config map can remove it — nothing here needs a Box token

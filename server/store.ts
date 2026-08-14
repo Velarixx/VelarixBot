@@ -4,6 +4,7 @@
 // written by any past version of the app loads into a valid current record.
 import { normalizeComputerBinding } from "./computer/provider.ts";
 import type { ModelSelection, ThreadId } from "./contracts.ts";
+import { isValidTimeZone, zonedNextClockRun } from "./timezone.ts";
 
 export type MausColor = "green" | "blue" | "red" | "orange" | "purple" | "cyan" | "pink" | "yellow" | "teal" | "coral";
 export type MausExpression = string;
@@ -44,13 +45,23 @@ export interface BotRecord {
 }
 export type RoutineSchedule =
   | { kind: "interval"; everyMinutes: number }
-  | { kind: "daily"; time: string }
-  | { kind: "weekdays"; time: string }
+  | { kind: "daily"; time: string; timeZone?: string }
+  | { kind: "weekdays"; time: string; timeZone?: string }
   | { kind: "listener"; source: "github" | "slack"; everyMinutes?: number };
 export interface ThenStartTurn { botId: string; prompt: string }
+/** What the scheduler does with occurrences that came due while VelarixBot
+ * was closed or asleep: drop them (skip), coalesce them into one run
+ * (run-once — the historical behavior and the default), or run each missed
+ * occurrence in order (catch-up). */
+export type MissedPolicy = "skip" | "run-once" | "catch-up";
+export const MISSED_POLICIES: MissedPolicy[] = ["skip", "run-once", "catch-up"];
+export function parseMissedPolicy(v: unknown): MissedPolicy | null {
+  return MISSED_POLICIES.includes(v as MissedPolicy) ? (v as MissedPolicy) : null;
+}
 export interface RoutineRecord {
   id: string; botId: string; name: string; prompt: string; schedule: RoutineSchedule; enabled: boolean; running: boolean;
   nextRunAt: number; lastRunAt: number | null; lastResult: string | null; createdAt: number;
+  missedPolicy: MissedPolicy;
   thenStartTurn?: ThenStartTurn;
   skillId?: string;
 }
@@ -104,6 +115,9 @@ export function nextRunAt(schedule: RoutineSchedule, from = Date.now()): number 
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.time)) throw new Error("invalid daily time");
   const [h, m] = schedule.time.split(":").map(Number);
   const weekdaysOnly = schedule.kind === "weekdays";
+  // explicit-zone schedules resolve wall time (and DST) in their stored
+  // zone; legacy records without a zone keep the process-local behavior
+  if (schedule.timeZone) return zonedNextClockRun(schedule.timeZone, schedule.time, weekdaysOnly, from);
   const d = new Date(from);
   d.setHours(h, m, 0, 0);
   for (let i = 0; i < 8; i++) {
@@ -116,7 +130,7 @@ export function nextRunAt(schedule: RoutineSchedule, from = Date.now()): number 
   throw new Error("invalid clock schedule");
 }
 
-export function parseRoutineSchedule(raw: unknown): RoutineSchedule {
+export function parseRoutineSchedule(raw: unknown, opts: { strictTimeZone?: boolean } = {}): RoutineSchedule {
   if (!raw || typeof raw !== "object") throw new Error("schedule required");
   const s = raw as Record<string, unknown>;
   if (s.kind === "listener") {
@@ -135,12 +149,16 @@ export function parseRoutineSchedule(raw: unknown): RoutineSchedule {
     return { kind: "interval", everyMinutes };
   }
   const time = String(s.time ?? "").slice(0, 5);
-  if (s.kind === "weekdays") {
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error("invalid daily time");
-    return { kind: "weekdays", time };
-  }
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error("invalid daily time");
-  return { kind: "daily", time };
+  // strict (create/edit) rejects a bad zone; lenient (loading a stored
+  // record on a host whose ICU no longer knows the zone) drops it so the
+  // routine survives with process-local wall-clock behavior
+  let timeZone: string | undefined;
+  if (s.timeZone !== undefined && s.timeZone !== null && s.timeZone !== "") {
+    if (isValidTimeZone(s.timeZone)) timeZone = s.timeZone;
+    else if (opts.strictTimeZone) throw new Error("invalid time zone");
+  }
+  return { kind: s.kind === "weekdays" ? "weekdays" : "daily", time, ...(timeZone ? { timeZone } : {}) };
 }
 const NOTIFY_EVENT_KEYS = new Set(["request.opened", "turn.completed", "stall.nudge", "peer.reply"]);
 export function validNotifyEvents(v: unknown): BotRecord["notifyEvents"] | undefined {
@@ -178,6 +196,8 @@ export function normalizeRoutine(v: unknown): RoutineRecord | null {
       running: false, nextRunAt: next, lastRunAt: Number.isFinite(r.lastRunAt) ? r.lastRunAt! : null,
       lastResult: typeof r.lastResult === "string" ? r.lastResult : null,
       createdAt: Number.isFinite(r.createdAt) ? r.createdAt! : Date.now(),
+      // run-once is the historical behavior, so legacy records keep it
+      missedPolicy: parseMissedPolicy(r.missedPolicy) ?? "run-once",
       ...(thenStartTurn ? { thenStartTurn } : {}),
       ...(typeof r.skillId === "string" && r.skillId.trim() ? { skillId: r.skillId.trim() } : {}),
     };

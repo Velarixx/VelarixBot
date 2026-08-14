@@ -1,4 +1,4 @@
-// Persistent routines CRUD + manual run.
+// Persistent routines CRUD + manual test run + run history.
 import type { RoutinesService } from "../services/routines.ts";
 import { json, readBody, type RouteHandler } from "./context.ts";
 
@@ -17,6 +17,7 @@ export function createRoutinesRoutes(deps: { routines: RoutinesService }): Route
           name: String(body.name ?? ""),
           prompt: String(body.prompt ?? ""),
           schedule: body.schedule,
+          missedPolicy: body.missedPolicy,
           thenStartTurn: body.thenStartTurn,
           skillId: body.skillId,
         }),
@@ -31,6 +32,7 @@ export function createRoutinesRoutes(deps: { routines: RoutinesService }): Route
         prompt: body.prompt,
         schedule: body.schedule,
         enabled: body.enabled,
+        missedPolicy: body.missedPolicy,
         thenStartTurn: body.thenStartTurn,
         skillId: body.skillId,
       });
@@ -43,10 +45,32 @@ export function createRoutinesRoutes(deps: { routines: RoutinesService }): Route
       else json(res, 404, { error: "no such routine" });
       return true;
     }
+    match = path.match(/^\/api\/routines\/([\w-]+)\/runs$/);
+    if (match && method === "GET") {
+      if (!routines.routine(match[1])) {
+        json(res, 404, { error: "no such routine" });
+        return true;
+      }
+      json(res, 200, {
+        runs: routines.runs(match[1]).map((run) => ({
+          seq: run.seq,
+          startedAt: run.started_at,
+          finishedAt: run.finished_at,
+          scheduledFor: run.scheduled_for,
+          kind: run.kind,
+          status: run.status,
+          attempt: run.attempt,
+          result: run.result,
+        })),
+      });
+      return true;
+    }
     match = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
     if (match && method === "POST") {
-      await routines.runRoutine(match[1]);
-      json(res, 202, { ok: true });
+      const outcome = await routines.runRoutine(match[1]);
+      if (outcome.started) json(res, 202, { ok: true });
+      else if (outcome.reason === "no such routine") json(res, 404, { error: outcome.reason });
+      else json(res, 409, { error: outcome.reason ?? "not started" });
       return true;
     }
     return false;

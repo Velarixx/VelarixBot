@@ -22,7 +22,10 @@ export const EXPORT_TABLES: Array<{ table: string; columns: string[] }> = [
   { table: "messages", columns: ["seq", "id", "thread_id", "at", "png_hash", "data"] },
   { table: "event_log", columns: ["seq", "event_id", "thread_id", "type", "created_at", "data"] },
   { table: "routines", columns: ["seq", "id", "bot_id", "created_at", "data"] },
-  { table: "routine_runs", columns: ["seq", "routine_id", "bot_id", "started_at", "finished_at", "result"] },
+  {
+    table: "routine_runs",
+    columns: ["seq", "routine_id", "bot_id", "started_at", "finished_at", "result", "scheduled_for", "kind", "status", "attempt", "idempotency_key", "lease_until"],
+  },
   { table: "approval_rules", columns: ["scope", "id", "tool", "pattern", "action", "created_at", "disabled", "quarantined", "confirmed"] },
   { table: "approval_audit", columns: ["seq", "at", "bot", "tool", "matcher", "decision", "rule_id"] },
   { table: "skills", columns: ["id", "name", "bot_id", "markdown", "created_at"] },

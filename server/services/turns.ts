@@ -434,7 +434,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         });
         broadcast({ kind: "routine", routine });
         return {
-          text: `Created routine ${routine.name} (id: ${routine.id}, ${routine.schedule.kind}${routine.schedule.kind === "listener" ? ` ${routine.schedule.source}` : ""}). It runs while the harness is up.`,
+          text: `Created routine ${routine.name} (id: ${routine.id}, ${routine.schedule.kind}${routine.schedule.kind === "listener" ? ` ${routine.schedule.source}` : ""}). It runs while VelarixBot is open.`,
         };
       }
       if (tool === "save_skill") {
