@@ -7,6 +7,10 @@
 //   FAKE_CLAUDE_MODE   happy (default) | exit-early | hang | malformed
 //                      | stream (partial-message text deltas before the
 //                        whole-message frame, plus subagent noise to drop)
+//                      | unknown-event (frames a future CLI might add — the
+//                        driver must skip them, then complete normally)
+//                      | crash-mid-turn (init + a partial delta, then exit 9
+//                        without a result — the restart-mid-turn shape)
 //   FAKE_CLAUDE_DUMP   path to write {argv, env, prompt} as JSON, so the
 //                      test can assert on argv shape and env hygiene
 //
@@ -66,8 +70,20 @@ process.stdin.on("end", () => {
     return;
   }
 
+  if (mode === "crash-mid-turn") {
+    out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "partial " } } });
+    process.stderr.write("fake-claude: crashing mid-turn\n");
+    process.exit(9);
+  }
+
   if (mode === "malformed") {
     process.stdout.write("this is not json\n{broken\n");
+  }
+
+  if (mode === "unknown-event") {
+    // frames a future CLI might add — the driver must skip them, not crash
+    out({ type: "sparkline", data: [1, 2, 3] });
+    out({ type: "system", subtype: "future_subtype", detail: "ignore me" });
   }
 
   if (mode === "stream") {

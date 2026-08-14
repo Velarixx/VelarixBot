@@ -17,6 +17,14 @@
 //                     | permissions (item/permissions/requestApproval)
 //                     | command-approval (item/commandExecution/requestApproval)
 //                     | unknown-method (unsupported server→client method)
+//                     | hang (turn/start acknowledged, item/started, then
+//                       nothing — lets tests exercise interrupt/stopAll)
+//                     | malformed (garbage lines mid-protocol, then a
+//                       normal completion — the driver must skip them)
+//                     | unknown-event (notifications a future app-server
+//                       might add — the driver must ignore them)
+//                     | crash-mid-turn (item/started, then exit 9 without
+//                       turn/completed — the restart-mid-turn shape)
 //                     | exit-zero (assistant text, then process.exit(0)
 //                       without turn/completed)
 //                     | exit-early (crash with code 3 before a turn)
@@ -236,6 +244,21 @@ process.stdin.on("data", (chunk) => {
               ],
             },
           });
+        } else if (mode === "hang") {
+          // leave the turn open — the keepalive interval below holds the
+          // process while a test interrupts or kills the fleet
+        } else if (mode === "malformed") {
+          process.stdout.write("this is not json\n{broken\n");
+          finishTurn();
+        } else if (mode === "unknown-event") {
+          // notifications a future app-server might add — fire-and-forget,
+          // no reply expected; the driver must skip them, not crash
+          notify("turn/sparkline/updated", { spark: [1, 2, 3] });
+          notify("item/confetti", { itemId: "i1" });
+          finishTurn();
+        } else if (mode === "crash-mid-turn") {
+          process.stderr.write("fake-codex: crashing mid-turn\n");
+          process.exit(9);
         } else if (mode === "exit-zero") {
           notify("item/completed", { item: { id: "i1", type: "commandExecution", status: "completed" } });
           notify("item/completed", { item: { id: "m1", type: "agentMessage", text: "done from fake codex" } });
