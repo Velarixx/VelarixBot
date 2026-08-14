@@ -13,9 +13,10 @@
 // idempotently, so a reconfirmed rule is never re-quarantined. Every
 // decision lands in an append-only audit log. Secrets are stripped before
 // a matcher hits disk or logs. No cloud policy.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { atomicWriteFileSync, ensurePrivateDir, PRIVATE_FILE_MODE } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import { isCredentialAsk } from "./handoff.ts";
@@ -43,7 +44,7 @@ const AUDIT_FILE = "audit.jsonl";
 export const WORKSPACE_SCOPE = "_workspace";
 
 function rulesPath(scope: string): string {
-  mkdirSync(RULES_DIR, { recursive: true });
+  ensurePrivateDir(RULES_DIR);
   return join(RULES_DIR, `${scope}.json`);
 }
 
@@ -70,7 +71,7 @@ function isRule(v: unknown): v is ApprovalRule {
 }
 
 function saveRules(scope: string, rules: ApprovalRule[]): void {
-  writeFileSync(rulesPath(scope), JSON.stringify(rules, null, 2));
+  atomicWriteFileSync(rulesPath(scope), JSON.stringify(rules, null, 2));
 }
 
 /** Strip values that look like keys/tokens before they hit disk or logs. */
@@ -281,7 +282,7 @@ export interface AuditEntry {
 
 /** One line per decision: bot, tool, redacted matcher, decision, ruleId. */
 export function appendAudit(entry: Omit<AuditEntry, "at">): void {
-  mkdirSync(RULES_DIR, { recursive: true });
+  ensurePrivateDir(RULES_DIR);
   const line: AuditEntry = {
     at: Date.now(),
     bot: entry.bot,
@@ -290,7 +291,7 @@ export function appendAudit(entry: Omit<AuditEntry, "at">): void {
     decision: entry.decision,
     ...(entry.ruleId ? { ruleId: entry.ruleId } : {}),
   };
-  appendFileSync(join(RULES_DIR, AUDIT_FILE), JSON.stringify(line) + "\n");
+  appendFileSync(join(RULES_DIR, AUDIT_FILE), JSON.stringify(line) + "\n", { mode: PRIVATE_FILE_MODE });
 }
 
 export function readAudit(): AuditEntry[] {
