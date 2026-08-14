@@ -1,0 +1,510 @@
+{
+  "driverKind": "hermesAgent",
+  "scenarios": {
+    "start": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake acp"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "title": "run"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "ok": true
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 10,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake acp"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": null,
+        "cost": null
+      }
+    ],
+    "resume": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake acp"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "title": "run"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "ok": true
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 10,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake acp"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": null,
+        "cost": null
+      }
+    ],
+    "cancel": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": "cancelled",
+        "cost": null
+      }
+    ],
+    "kill": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "runtime.error",
+        "message": "hermesAgent exited <code> before the prompt result"
+      },
+      {
+        "type": "turn.completed",
+        "ok": false,
+        "stopReason": "exit_before_result",
+        "cost": null
+      }
+    ],
+    "permission": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake acp"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "title": "run"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "ok": true
+      },
+      {
+        "type": "request.opened",
+        "requestType": "permission",
+        "tool": "shell",
+        "summary": "echo hi"
+      },
+      {
+        "type": "request.resolved",
+        "behavior": "allow",
+        "source": "user"
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 10,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake acp"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": null,
+        "cost": null
+      }
+    ],
+    "tool-order": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake acp"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "title": "run"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "ok": true
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 10,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake acp"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": null,
+        "cost": null
+      }
+    ],
+    "partial-output": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake acp"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "title": "run"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "ok": true
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 10,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake acp"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": null,
+        "cost": null
+      }
+    ],
+    "unknown-event": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake acp"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "title": "run"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "ok": true
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 10,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake acp"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": null,
+        "cost": null
+      }
+    ],
+    "usage": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake acp"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "title": "run"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "ok": true
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 10,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake acp"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": null,
+        "cost": null
+      }
+    ],
+    "malformed": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake acp"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "title": "run"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "ok": true
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 10,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake acp"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": null,
+        "cost": null
+      }
+    ],
+    "drift": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake acp"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "title": "run"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "ok": true
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 10,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake acp"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": null,
+        "cost": null
+      }
+    ],
+    "restart-mid-turn": [
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "partial "
+      },
+      {
+        "type": "runtime.error",
+        "message": "hermesAgent exited <code> before the prompt result: fake-acp: crashing mid-turn"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "partial "
+      },
+      {
+        "type": "turn.completed",
+        "ok": false,
+        "stopReason": "exit_before_result",
+        "cost": null
+      },
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "session.started",
+        "sessionId": "fake-acp-session",
+        "model": "fake-acp-model"
+      },
+      {
+        "type": "content.delta",
+        "streamKind": "assistant_text",
+        "delta": "hello from fake acp"
+      },
+      {
+        "type": "item.started",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "title": "run"
+      },
+      {
+        "type": "item.completed",
+        "itemType": "tool",
+        "itemId": "tc-1",
+        "ok": true
+      },
+      {
+        "type": "thread.token-usage.updated",
+        "input": 10,
+        "output": 5
+      },
+      {
+        "type": "item.completed",
+        "itemType": "assistant_text",
+        "text": "hello from fake acp"
+      },
+      {
+        "type": "turn.completed",
+        "ok": true,
+        "stopReason": null,
+        "cost": null
+      }
+    ]
+  }
+}

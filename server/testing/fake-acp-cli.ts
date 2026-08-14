@@ -7,6 +7,16 @@
 //
 //   FAKE_ACP_MODE   happy (default) | exit-early | hang | no-auth | permission
 //                   | credential (permission ask that is a sign-in handoff)
+//                   | malformed (garbage lines mid-protocol, then a normal
+//                     completion — the driver must skip them)
+//                   | unknown-event (an unknown notification method and an
+//                     unknown sessionUpdate kind — the driver must ignore both)
+//                   | unknown-request (a server→client request with an
+//                     unknown method — the driver must reply with a JSON-RPC
+//                     error, never a fabricated approval; the reply lands in
+//                     the dump as unknownRequestReply)
+//                   | crash-mid-turn (one chunk, then exit 9 without the
+//                     prompt result — the restart-mid-turn shape)
 //                   | auth-error (authenticate RPC errors — a dead login)
 //                   | expired-token (authenticate succeeds, then
 //                     session/prompt fails with ACP auth_required -32000 —
@@ -64,7 +74,12 @@ const result = (id: unknown, res: unknown) => out({ jsonrpc: "2.0", id, result: 
 
 // pending server→client permission request id → resolver
 let pendingPermissionId: number | null = null;
-let onPermissionAnswered: (() => void) | null = null;
+let onPermissionAnswered: ((reply?: any) => void) | null = null;
+
+// hang mode: the prompt left open, so session/cancel can resolve it the way
+// real ACP agents do (stopReason "cancelled") instead of leaving the client
+// to time out
+let hungPromptId: unknown = null;
 
 // ask-peer mode: the "agents" MCP server entry from session/new's mcpServers
 type McpEntry = { command: string; args?: string[]; env?: Array<{ name: string; value: string }> };
@@ -148,7 +163,7 @@ function handle(msg: any) {
   // client's response to our permission request
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && msg.id === pendingPermissionId) {
     pendingPermissionId = null;
-    onPermissionAnswered?.();
+    onPermissionAnswered?.(msg);
     return;
   }
   if (!msg.method) return;
@@ -206,9 +221,19 @@ function handle(msg: any) {
         return;
       }
       if (mode === "hang") {
-        // never resolve the prompt — lets tests exercise interrupt
+        // never resolve the prompt on our own — lets tests exercise
+        // interrupt; session/cancel resolves it as cancelled (see below)
+        hungPromptId = msg.id;
         setInterval(() => {}, 1_000);
         return;
+      }
+      if (mode === "crash-mid-turn") {
+        out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "partial " } } } });
+        process.stderr.write("fake-acp: crashing mid-turn\n");
+        process.exit(9);
+      }
+      if (mode === "malformed") {
+        process.stdout.write("this is not json\n{broken\n");
       }
       const complete = () =>
         result(msg.id, { stopReason: "end_turn", _meta: { inputTokens: 10, outputTokens: 5 } });
@@ -258,6 +283,23 @@ function handle(msg: any) {
         }
       }
       playTurn();
+      if (mode === "unknown-event") {
+        // a vendor side-channel notification and a future sessionUpdate
+        // kind — the driver must ignore both, not crash the turn
+        out({ jsonrpc: "2.0", method: "vendor/heartbeat", params: { ok: true } });
+        out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "sparkline_report", spark: [1, 2, 3] } } });
+      }
+      if (mode === "unknown-request") {
+        // a server→client request the client cannot know — it must answer
+        // with a JSON-RPC error (never a fabricated approval) or we'd hang
+        pendingPermissionId = 9002;
+        onPermissionAnswered = (reply) => {
+          writeDump({ unknownRequestReply: { result: reply?.result ?? null, error: reply?.error ?? null } });
+          complete();
+        };
+        out({ jsonrpc: "2.0", id: pendingPermissionId, method: "session/mystery_probe", params: { probe: true } });
+        return;
+      }
       if (mode === "permission" || mode === "credential") {
         // ask the client to approve a tool, then complete once answered
         pendingPermissionId = 9001;
@@ -285,7 +327,11 @@ function handle(msg: any) {
       break;
     }
     case "session/cancel":
-      // the interrupted prompt resolves as cancelled
+      // the interrupted prompt resolves as cancelled, like real ACP agents
+      if (hungPromptId !== null) {
+        result(hungPromptId, { stopReason: "cancelled" });
+        hungPromptId = null;
+      }
       break;
     default:
       if (msg.id !== undefined) out({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });

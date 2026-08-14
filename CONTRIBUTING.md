@@ -68,7 +68,13 @@ The suite is colocated (`server/**/*.test.ts`) and runs with `pnpm test`. Three 
   [`codex.test.ts`](server/drivers/codex.test.ts) spawn the scripted fake CLIs in `server/testing/`
   and assert the canonical event stream, argv/env hygiene, interrupts, and the permission broker.
   Failure modes are toggled by env var (`FAKE_CLAUDE_MODE=exit-early`, etc.) — extend those fakes
-  rather than mocking `child_process`.
+  rather than mocking `child_process`. On top of the per-driver quirks, every CLI-backed driver
+  runs through the shared conformance suite in
+  [`driver-contract.test.ts`](server/drivers/driver-contract.test.ts)
+  (`runProviderDriverContract` in [`server/testing/driver-contract.ts`](server/testing/driver-contract.ts)):
+  thirteen scenarios against recorded transcripts in `server/testing/fixtures/driver-contract/`.
+  After an intentional behavior change, re-record with
+  `DRIVER_CONTRACT_RECORD=1 pnpm test server/drivers/driver-contract.test.ts` and commit the JSON.
 - **API smoke** — [`index.test.ts`](server/index.test.ts) boots the real server against a throwaway
   home directory and exercises the HTTP surface.
 
