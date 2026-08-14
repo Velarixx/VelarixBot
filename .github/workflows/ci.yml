@@ -1,7 +1,9 @@
 name: CI
 
 # One Ubuntu job. typecheck, test, and the production UI build run together
-# on the same runner. macOS/Windows stay on the manual Portable workflow.
+# on the same runner, with the P0.6 gates (secret scan, dependency audit) as
+# named steps in the SAME job — a PR cannot go green if any gate fails.
+# macOS/Windows stay on the manual Portable workflow.
 #
 # PRs only. A merge to main already passed these checks on the PR, so a
 # second run on push would just burn fair-use minutes.
@@ -34,6 +36,13 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # exits 1 on any credential-shaped string in tracked files
+      # (scripts/secret-scan.mjs, behavior pinned by server/secret-scan.test.ts)
+      - name: secret scan
+        run: node scripts/secret-scan.mjs
+      # exits 1 on a known high/critical advisory in the lockfile
+      - name: dependency audit
+        run: pnpm audit --audit-level=high
       - name: typecheck, test, production UI build
         run: |
           pnpm typecheck
