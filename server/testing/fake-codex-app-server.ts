@@ -28,11 +28,19 @@
 //                     | exit-zero (assistant text, then process.exit(0)
 //                       without turn/completed)
 //                     | exit-early (crash with code 3 before a turn)
+//                     | not-app-server (an outdated/shadowed codex: answers
+//                       --version and debug models but treats "app-server"
+//                       as noise — plain text, usage on stderr, exit 0 with
+//                       ZERO protocol traffic; the issue #9 / rc.12 shape)
+//                     | stdin-close (replies to initialize but closes its
+//                       stdin first, then stays alive — the client's next
+//                       write hits a closed pipe: async EPIPE, which must be
+//                       handled, never an unhandled 'error' server crash)
 //   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision,
 //                     threadStartConfig, threadResumeConfig} as JSON
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
-import { writeFileSync } from "node:fs";
+import { closeSync, writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 const mode = process.env.FAKE_CODEX_MODE ?? "happy";
@@ -86,6 +94,14 @@ if (argv[0] === "debug" && argv[1] === "models") {
   process.exit(0);
 }
 
+if (mode === "not-app-server") {
+  // never reads stdin, never a JSON-RPC byte — exits 0 like an old CLI that
+  // shrugged at an unknown subcommand
+  process.stdout.write("app-server: unknown command — starting interactive prompt\n");
+  process.stderr.write("usage: codex [exec|apply|login] ...\n");
+  process.exit(0);
+}
+
 const finishTurn = () => {
   notify("item/completed", { item: { id: "i1", type: "commandExecution", status: "completed" } });
   if (mode === "stream") {
@@ -128,6 +144,20 @@ process.stdin.on("data", (chunk) => {
         if (mode === "exit-early") {
           process.stderr.write("fake-codex: simulated crash before result\n");
           process.exit(3);
+        }
+        if (mode === "stdin-close") {
+          // close our read end BEFORE replying: the client's follow-up write
+          // is then causally after the close and must surface as a handled
+          // stdin 'error' (EPIPE), never an unhandled crash. Stay alive so
+          // the failure is the write itself, not our exit. destroy() alone
+          // is not enough — libuv holds a duplicate — closing fd 0 is what
+          // actually breaks the pipe.
+          process.stdin.destroy();
+          try {
+            closeSync(0);
+          } catch {
+            /* already closed */
+          }
         }
         out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
         break;

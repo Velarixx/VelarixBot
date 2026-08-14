@@ -21,6 +21,10 @@ import { recordEvents, type EventRecorder } from "../../testing/events.ts";
 import { HermesAgentDriver } from "./hermes.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
+// Strict-grammar hermes: rejects any argv that isn't exactly what hermes.ts
+// emits (usage + exit 2, like a real CLI), then speaks ACP. The rc.12 field
+// failure shipped because only accept-anything fakes ever saw the argv.
+const STRICT_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-hermes-cli.ts");
 
 describe("Hermes decodeConfig", () => {
   it("defaults to the hermes binary", () => {
@@ -195,6 +199,19 @@ describe("Hermes turns (fake CLI)", () => {
     expect(instance.adapter.hasSession("t-hermes-expired")).toBe(false);
   });
 
+  it("a write to a closed child stdin settles the turn — never an unhandled EPIPE crash (rc.12)", async () => {
+    // the fake replies to initialize but closes its stdin first, so the
+    // driver's next write (authenticate) lands on a closed pipe. Without a
+    // stdin 'error' listener that async EPIPE killed the whole server.
+    await create({ mode: "stdin-close" });
+    await instance.adapter.sendTurn({ threadId: "t-hermes-epipe", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "stdin_error" });
+    const err = recorder.events.find((e) => e.type === "runtime.error")!;
+    expect(err.message).toContain("stdin write failed");
+    expect(instance.adapter.hasSession("t-hermes-epipe")).toBe(false);
+  });
+
   it("interrupt settles a hung turn", async () => {
     await create({ mode: "hang" });
     await instance.adapter.sendTurn({ threadId: "t-hermes-int", text: "go" });
@@ -243,6 +260,74 @@ describe("Hermes turns (fake CLI)", () => {
     expect(loadNames).toEqual(expect.arrayContaining(["composio", "memory"]));
     expect(JSON.stringify(resumed.argv)).not.toContain(composioKey);
     expect(JSON.stringify(resumed.argv)).not.toContain(memoryToken);
+  });
+});
+
+describe("Hermes spawn grammar (strict fake CLI)", () => {
+  let instance: ProviderInstance;
+  let recorder: EventRecorder;
+
+  const createStrict = async (opts: { fullAuto?: boolean; reject?: boolean } = {}) => {
+    instance = await HermesAgentDriver.create({
+      instanceId: "hermes-strict",
+      displayName: "Hermes Strict",
+      environment: {
+        FAKE_ACP_AUTH_IDS: "chatgpt-oauth",
+        ...(opts.reject ? { FAKE_HERMES_GRAMMAR: "reject" } : {}),
+      },
+      enabled: true,
+      config: { cli: STRICT_CLI, fullAuto: opts.fullAuto === true },
+    });
+    recorder = recordEvents(instance.adapter);
+  };
+
+  afterEach(async () => {
+    recorder?.stop();
+    await instance?.dispose();
+  });
+
+  it("the exact argv the driver emits (with -m) is accepted and completes a turn", async () => {
+    await createStrict();
+    await instance.adapter.sendTurn({ threadId: "t-strict-model", text: "hi", model: "gpt-5.6-sol" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true, stopReason: null });
+  });
+
+  it("the fullAuto / no-model argv is accepted too", async () => {
+    await createStrict({ fullAuto: true });
+    await instance.adapter.sendTurn({ threadId: "t-strict-auto", text: "hi" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true, stopReason: null });
+  });
+
+  it("a hermes that rejects the argv (the field binary) fails the turn loudly, never silently", async () => {
+    await createStrict({ reject: true });
+    await instance.adapter.sendTurn({ threadId: "t-strict-reject", text: "hi", model: "gpt-5.6-sol" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "exit_before_result" });
+    expect(recorder.events.some((e) => e.type === "turn.completed" && (e as any).ok)).toBe(false);
+    const err = recorder.events.find((e) => e.type === "runtime.error")!;
+    expect(err.message).toContain("exited 2");
+    expect(err.message).toContain("orchestrator"); // the CLI's own usage catalog, surfaced
+  });
+
+  it("one-shot generateText uses the accepted `exec -p` grammar", async () => {
+    await createStrict();
+    expect(await instance.generateText!("distill")).toBe("fake hermes one-shot");
+  });
+
+  it("snapshot verifies protocol identity: the field binary is unavailable with path + version", async () => {
+    await createStrict({ reject: true });
+    const snap = await instance.snapshot();
+    expect(snap.state).toBe("unavailable");
+    expect(snap.reason).toContain("does not speak ACP");
+    expect(snap.reason).toContain("fake-hermes 0.9.0"); // --version alone no longer means available
+    expect(snap.reason).toContain("fake-hermes-cli"); // resolved path — which binary is this?
+  });
+
+  it("snapshot stays available when the binary accepts the argv and speaks ACP", async () => {
+    await createStrict();
+    expect(await instance.snapshot()).toMatchObject({ state: "available", version: "fake-hermes 0.9.0" });
   });
 });
 

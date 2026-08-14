@@ -812,4 +812,65 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     const error = recorder.events.find((e) => e.type === "runtime.error")!;
     expect(error.message).toContain("codex exited 3");
   });
+
+  it("exit 0 with ZERO protocol traffic fails loudly — never an invisible ok DONE (rc.12)", async () => {
+    // an outdated/shadowed codex on PATH (issue #9 class): plain text, exit 0,
+    // never a JSON-RPC byte. Mapping that to success is the silent
+    // DONE+empty+0-tokens field failure — it must be a visible error instead.
+    await create({ mode: "not-app-server" });
+    await instance.adapter.sendTurn({ threadId: "t-not-app-server", text: "hello?" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "protocol_mismatch" });
+    expect(recorder.events.some((e) => e.type === "turn.completed" && (e as any).ok)).toBe(false);
+    const error = recorder.events.find((e) => e.type === "runtime.error")!;
+    expect(error.message).toContain("without speaking the app-server protocol");
+    expect(error.message).toContain("usage: codex"); // the stderr tail is surfaced
+  });
+
+  it("a write to a closed child stdin settles the turn — never an unhandled EPIPE crash (rc.12)", async () => {
+    // the fake replies to initialize but closes its stdin first, so the
+    // driver's follow-up write lands on a closed pipe. Without a stdin
+    // 'error' listener that async EPIPE killed the whole server process.
+    await create({ mode: "stdin-close" });
+    await instance.adapter.sendTurn({ threadId: "t-stdin-close", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "stdin_error" });
+    const error = recorder.events.find((e) => e.type === "runtime.error")!;
+    expect(error.message).toContain("stdin write failed");
+    expect(instance.adapter.hasSession("t-stdin-close")).toBe(false);
+  });
+});
+
+posixOnly("CodexDriver snapshot protocol identity", () => {
+  let instance: ProviderInstance;
+
+  afterEach(async () => {
+    delete process.env.FAKE_CODEX_MODE;
+    await instance?.dispose();
+  });
+
+  const createWith = async (mode?: string) => {
+    if (mode) process.env.FAKE_CODEX_MODE = mode;
+    instance = await CodexDriver.create({
+      instanceId: "codex-identity",
+      displayName: "Codex Identity",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+  };
+
+  it("a binary that speaks app-server is available", async () => {
+    await createWith();
+    expect(await instance.snapshot()).toMatchObject({ state: "available", version: "fake-codex 0.144.4" });
+  });
+
+  it("a --version-only impostor is unavailable with resolved path + version, not silently available", async () => {
+    await createWith("not-app-server");
+    const snap = await instance.snapshot();
+    expect(snap.state).toBe("unavailable");
+    expect(snap.reason).toContain("does not speak the app-server protocol");
+    expect(snap.reason).toContain("fake-codex 0.144.4"); // version
+    expect(snap.reason).toContain("fake-codex-app-server"); // resolved path
+  });
 });

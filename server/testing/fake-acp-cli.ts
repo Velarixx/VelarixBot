@@ -21,6 +21,10 @@
 //                   | expired-token (authenticate succeeds, then
 //                     session/prompt fails with ACP auth_required -32000 —
 //                     the token-expired-mid-session shape)
+//                   | stdin-close (replies to initialize but closes its
+//                     stdin first, then stays alive — the client's next
+//                     write hits a closed pipe: async EPIPE, which must be
+//                     handled, never an unhandled 'error' server crash)
 //                   | ask-peer (spawn the injected "agents" MCP server from
 //                     session/new's mcpServers, call list_bots + ask_bot on a
 //                     peer, and reply with what the peer said — the comms e2e)
@@ -41,7 +45,7 @@
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { closeSync, readFileSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_ACP_MODE ?? "happy";
 const AUTH_REQUIRED_CODE = -32000; // ACP's designated auth_required error code
@@ -173,6 +177,21 @@ function handle(msg: any) {
       if (mode === "exit-early") {
         process.stderr.write("fake-acp: simulated crash before result\n");
         process.exit(3);
+      }
+      if (mode === "stdin-close") {
+        // close our read end BEFORE replying: the client's follow-up write
+        // is then causally after the close and must surface as a handled
+        // stdin 'error' (EPIPE), never an unhandled crash. Stay alive so
+        // the failure is the write itself, not our exit. destroy() alone
+        // is not enough — libuv holds a duplicate — closing fd 0 is what
+        // actually breaks the pipe.
+        process.stdin.destroy();
+        try {
+          closeSync(0);
+        } catch {
+          /* already closed */
+        }
+        setInterval(() => {}, 1_000);
       }
       const authIds = (process.env.FAKE_ACP_AUTH_IDS ?? "cached_token")
         .split(",")
