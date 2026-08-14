@@ -1,8 +1,9 @@
-import { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, ipcMain, nativeImage, session, shell, systemPreferences, utilityProcess } from "electron";
+import { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, ipcMain, nativeImage, safeStorage, session, shell, systemPreferences, utilityProcess } from "electron";
 import path, { basename, join } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { mintApiToken, serverUrlFilter, withAuthHeader } from "./api-auth.mjs";
+import { createSecretBrokerHandler } from "./secret-broker.mjs";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
 import { startSpeech, stopSpeech } from "./speech.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
@@ -36,8 +37,18 @@ let serverReady = true;
 // env; the renderer never sees it — main injects the header at the network
 // layer (registerApiAuth below), which also covers EventSource/SSE.
 const API_TOKEN = mintApiToken();
+// P1.5 SecretStore: safeStorage lives here in main only — the forked server
+// brokers encrypt/decrypt over its parent port (see secret-broker.mjs).
+const handleSecretMessage = createSecretBrokerHandler({
+  encryptString: (s) => safeStorage.encryptString(s),
+  decryptString: (b) => safeStorage.decryptString(b),
+});
+
 async function startServerOn(port) {
   const entry = path.join(process.resourcesPath, "server", "index.js");
+  // isEncryptionAvailable is false on Linux without a secret store — the
+  // server then uses its documented file fallback instead of the broker.
+  const safeStorageReady = safeStorage.isEncryptionAvailable();
   const proc = utilityProcess.fork(entry, [], {
     env: {
       ...process.env,
@@ -46,8 +57,18 @@ async function startServerOn(port) {
       OMB_USER_DATA: app.getPath("userData"),
       OMB_LOCAL_CUA_SUPPORTED: IS_MAC ? "1" : "0",
       VELARIX_API_TOKEN: API_TOKEN,
+      VELARIX_SAFE_STORAGE: safeStorageReady ? "1" : "0",
     },
     stdio: "inherit",
+  });
+  proc.on("message", (msg) => {
+    const reply = handleSecretMessage(msg);
+    if (!reply) return;
+    try {
+      proc.postMessage(reply);
+    } catch {
+      /* child already gone */
+    }
   });
   let exited = false;
   proc.once("exit", () => {
