@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, ipcMain, nativ
 import path, { basename, join } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { mintApiToken, serverUrlFilter, withAuthHeader } from "./api-auth.mjs";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
 import { startSpeech, stopSpeech } from "./speech.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
@@ -30,6 +31,11 @@ let trayUnread = 0;
 // our API shape, not just a 200).
 let serverProc = null;
 let serverReady = true;
+// One capability token per app launch: every /api/* call (except the
+// /api/health identity probe) requires it. The forked server learns it via
+// env; the renderer never sees it — main injects the header at the network
+// layer (registerApiAuth below), which also covers EventSource/SSE.
+const API_TOKEN = mintApiToken();
 async function startServerOn(port) {
   const entry = path.join(process.resourcesPath, "server", "index.js");
   const proc = utilityProcess.fork(entry, [], {
@@ -39,6 +45,7 @@ async function startServerOn(port) {
       OMB_PORT: String(port),
       OMB_USER_DATA: app.getPath("userData"),
       OMB_LOCAL_CUA_SUPPORTED: IS_MAC ? "1" : "0",
+      VELARIX_API_TOKEN: API_TOKEN,
     },
     stdio: "inherit",
   });
@@ -318,7 +325,19 @@ app.whenReady().then(async () => {
   // connection descriptor on first render. Never blocks window creation on
   // failure — computer use degrades to "unavailable", the rest still works.
   startCua().catch((e) => console.error("[cua] start failed:", e));
-  if (app.isPackaged) serverReady = await startServerPackaged();
+  if (app.isPackaged) {
+    serverReady = await startServerPackaged();
+    // Inject the launch token on every renderer request to the server —
+    // registered AFTER port fallback settles so the filter matches the port
+    // the window actually loads from. Covers fetch AND EventSource (SSE),
+    // which cannot set its own headers.
+    if (serverReady) {
+      session.defaultSession.webRequest.onBeforeSendHeaders(
+        { urls: serverUrlFilter(SERVER_PORT) },
+        (details, callback) => callback({ requestHeaders: withAuthHeader(details.requestHeaders, API_TOKEN) }),
+      );
+    }
+  }
   trayEnabled = loadTrayEnabled();
   if (trayEnabled) {
     try {

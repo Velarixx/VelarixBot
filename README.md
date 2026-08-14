@@ -237,12 +237,18 @@ These commands are for changing VelarixBot, not installing it for normal use:
 ```sh
 git clone https://github.com/Velarixx/VelarixBot && cd VelarixBot
 pnpm install
+export VELARIX_DEV_TOKEN=$(openssl rand -hex 32)   # PowerShell: $env:VELARIX_DEV_TOKEN = ...
 pnpm dev:server    # harness server → 127.0.0.1:8799
-pnpm dev           # app → http://127.0.0.1:5199
+pnpm dev           # app → http://127.0.0.1:5199 (proxy injects the dev token)
 pnpm dev:desktop   # Electron shell
 pnpm typecheck     # app + server
 pnpm build         # typecheck + production build
 ```
+
+Every `/api/*` route except `/api/health` requires a per-launch bearer token. The packaged app mints one per
+launch in Electron main and injects it on every renderer request (including the SSE stream). In dev, export the
+same `VELARIX_DEV_TOKEN` for both `pnpm dev:server` and `pnpm dev` — there is no way to switch auth off: without
+a token in env the server mints one nobody holds and stays locked.
 
 Development requires macOS or Windows, Node 24+, and pnpm. GitHub Actions, not developer machines, builds the
 downloadable release artifacts.

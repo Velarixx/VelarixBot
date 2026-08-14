@@ -5,6 +5,7 @@
 // Never logs or writes secret values. Temp HOME only — never ~/.velarixbot.
 
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,6 +19,8 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const REPO = join(ROOT, "..");
 const PORT = Number(process.env.OMB_PORT || 8799);
 const BASE = `http://127.0.0.1:${PORT}`;
+// Per-launch API token for the eval server (never logged, never persisted).
+const API_TOKEN = randomBytes(32).toString("hex");
 
 function redact(text, values) {
   let out = String(text ?? "");
@@ -127,6 +130,7 @@ async function main() {
     OMB_PORT: String(PORT),
     OMB_STATIC_DIR: dist,
     ELECTRON_SKIP_BINARY_DOWNLOAD: "1",
+    VELARIX_DEV_TOKEN: API_TOKEN,
   };
   if (found.claude) serverEnv[SECRET_NAMES.claude] = process.env[SECRET_NAMES.claude];
   // Codex secret is written to CODEX_HOME/auth.json only — never forwarded as env,
@@ -169,6 +173,7 @@ async function main() {
     const result = await runFlow({
       baseUrl: BASE,
       artifactsDir,
+      apiToken: API_TOKEN,
       includeGrok: found.grok,
       includeHermes: found.hermes,
       includeCodexMcp: found.codex,

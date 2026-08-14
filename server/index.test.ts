@@ -15,6 +15,7 @@ const ROOT = join(SERVER_DIR, "..");
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
 const BASE = `http://127.0.0.1:${PORT}`;
 const COMMS_TOKEN = "test-create-bot-token";
+const API_TOKEN = "test-public-api-token";
 
 let child: ChildProcess;
 let home: string;
@@ -25,6 +26,7 @@ const api = async (method: string, path: string, body?: unknown, headers?: Recor
     method,
     headers: {
       ...(body ? { "content-type": "application/json" } : {}),
+      authorization: `Bearer ${API_TOKEN}`,
       ...headers,
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -38,7 +40,7 @@ async function openSse(): Promise<{
   until: (pred: (frames: any[]) => boolean) => Promise<void>;
   close: () => void;
 }> {
-  const res = await fetch(`${BASE}/api/events`);
+  const res = await fetch(`${BASE}/api/events`, { headers: { authorization: `Bearer ${API_TOKEN}` } });
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -115,6 +117,7 @@ beforeAll(async () => {
         USERPROFILE: home,
         OMB_PORT: String(PORT),
         OMB_COMMS_TOKEN: COMMS_TOKEN,
+        VELARIX_DEV_TOKEN: API_TOKEN,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

@@ -98,8 +98,12 @@ async function waitFor(predicate, { timeout, label }) {
   throw new Error(`timed out waiting for ${label}`);
 }
 
+// Per-launch API token (VELARIX_DEV_TOKEN on the eval server). Node-side
+// fetches attach it here; page requests get it via extraHTTPHeaders.
+let API_AUTH_HEADERS = {};
+
 async function apiBots(baseUrl) {
-  const res = await fetch(`${baseUrl}/api/bots`);
+  const res = await fetch(`${baseUrl}/api/bots`, { headers: API_AUTH_HEADERS });
   if (!res.ok) throw new Error(`GET /api/bots ${res.status}`);
   return res.json();
 }
@@ -226,18 +230,24 @@ async function assignInstance(baseUrl, botName, prefer, instances) {
   if (!hit) return;
   await fetch(`${baseUrl}/api/bots/${bot.id}`, {
     method: "PATCH",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...API_AUTH_HEADERS },
     body: JSON.stringify({ modelSelection: { instanceId: hit.instanceId, model: hit.models?.default ?? hit.models?.options?.[0]?.id } }),
   });
 }
 
-export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, includeHermes = false, includeCodexMcp = false, maxTurns = 40 }) {
+export async function runFlow({ baseUrl, artifactsDir, apiToken = "", includeGrok = false, includeHermes = false, includeCodexMcp = false, maxTurns = 40 }) {
   const shots = [];
   shots.dir = join(artifactsDir, "screenshots");
   mkdirSync(shots.dir, { recursive: true });
 
+  API_AUTH_HEADERS = apiToken ? { authorization: `Bearer ${apiToken}` } : {};
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 800 },
+    // the packaged app injects the launch token from Electron main; the
+    // eval browser injects it here (covers fetch AND the EventSource stream)
+    ...(apiToken ? { extraHTTPHeaders: { authorization: `Bearer ${apiToken}` } } : {}),
+  });
   const mechanical = {
     serverUp: true,
     uiReachable: false,
@@ -261,7 +271,9 @@ export async function runFlow({ baseUrl, artifactsDir, includeGrok = false, incl
     await completeOnboarding(page, shots);
     mechanical.onboardingCompleted = true;
 
-    const instances = await fetch(`${baseUrl}/api/instances`).then((r) => r.json()).then((d) => d.instances ?? []);
+    const instances = await fetch(`${baseUrl}/api/instances`, { headers: API_AUTH_HEADERS })
+      .then((r) => r.json())
+      .then((d) => d.instances ?? []);
     const roster = [...BOTS];
     if (includeCodexMcp) roster.push(MCP_BOT);
     else console.log(`Skipping Codex MCP on-request scenario (no ${SECRET_NAMES.codex}).`);

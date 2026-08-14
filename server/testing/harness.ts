@@ -67,12 +67,13 @@ export async function stopChild(child: ChildProcess | undefined): Promise<void> 
   });
 }
 
-export function apiAt(base: string) {
+export function apiAt(base: string, token?: string) {
   return async (method: string, path: string, body?: unknown, headers?: Record<string, string>): Promise<ApiResult> => {
     const res = await fetch(`${base}${path}`, {
       method,
       headers: {
         ...(body ? { "content-type": "application/json" } : {}),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
         ...headers,
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -99,8 +100,10 @@ export interface SseRecorder {
   close(): void;
 }
 
-export async function connectSse(base: string): Promise<SseRecorder> {
-  const res = await fetch(`${base}/api/events`);
+export async function connectSse(base: string, token?: string): Promise<SseRecorder> {
+  const res = await fetch(`${base}/api/events`, {
+    headers: token ? { authorization: `Bearer ${token}` } : undefined,
+  });
   if (!res.ok || !res.body) throw new Error(`SSE ${res.status}`);
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -197,6 +200,8 @@ export async function untilFile(path: string, pred: (text: string) => boolean, t
 export interface BootedHarness {
   base: string;
   home: string;
+  /** Per-launch API token every /api/* call (except /api/health) requires. */
+  token: string;
   api: ReturnType<typeof apiAt>;
   sse: SseRecorder;
   stop(): Promise<void>;
@@ -210,11 +215,12 @@ export async function bootHarness(opts: {
   const port = opts.port ?? 18800 + Math.floor(Math.random() * 10_000);
   const base = `http://127.0.0.1:${port}`;
   const home = mkdtempSync(join(tmpdir(), "omb-harness-"));
+  const token = `test-api-token-${port}`;
   writeHarnessConfig(home, opts.instances);
   let stderr = "";
   const child = spawn(process.execPath, [SERVER_ENTRY], {
     cwd: join(SERVER_DIR, "..", ".."),
-    env: harnessEnv(home, { OMB_PORT: String(port), ...opts.env }),
+    env: harnessEnv(home, { OMB_PORT: String(port), VELARIX_DEV_TOKEN: token, ...opts.env }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stderr!.on("data", (c) => (stderr += c));
@@ -225,11 +231,12 @@ export async function bootHarness(opts: {
     bestEffortRm(home);
     throw e;
   }
-  const sse = await connectSse(base);
+  const sse = await connectSse(base, token);
   return {
     base,
     home,
-    api: apiAt(base),
+    token,
+    api: apiAt(base, token),
     sse,
     async stop() {
       sse.close();

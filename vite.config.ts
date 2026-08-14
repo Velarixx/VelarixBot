@@ -31,10 +31,18 @@ export default defineConfig({
       ignored: ["**/release/**", "**/build/**", "**/dist/**", "**/dist-server/**", "**/electron/resources/**"],
     },
     // the harness server owns every provider process; the app only ever
-    // talks to /api — clients hold no transports
+    // talks to /api — clients hold no transports. The server requires a
+    // per-launch token on /api/*: in dev, start both sides with the SAME
+    // VELARIX_DEV_TOKEN and the proxy injects it (there is no silent-off —
+    // without it the dev server mints a token nobody holds and stays locked).
+    // changeOrigin so the Host header matches the server's loopback bind.
     proxy: {
       "/api": {
         target: `http://127.0.0.1:${process.env.OGB_PORT || 8799}`,
+        changeOrigin: true,
+        ...(process.env.VELARIX_DEV_TOKEN
+          ? { headers: { authorization: `Bearer ${process.env.VELARIX_DEV_TOKEN}` } }
+          : {}),
       },
     },
   },

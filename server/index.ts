@@ -9,6 +9,7 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { attachmentPathRefs, expandAttachmentPaths } from "./attachments.ts";
+import { requireApiAuth, resolveApiToken } from "./auth.ts";
 import {
   appendAudit,
   argumentPattern,
@@ -105,6 +106,11 @@ bus.attach(registry.instances());
 // agents-proxy and memory-proxy call; regenerated each boot (the proxy
 // gets it via env).
 const COMMS_TOKEN = process.env.OMB_COMMS_TOKEN || randomBytes(24).toString("hex");
+// Per-launch capability for the public /api surface (separate from
+// COMMS_TOKEN): Electron main mints it and injects it on every renderer
+// request; dev sets VELARIX_DEV_TOKEN. Without either, the minted token is
+// never shared — fail closed, never silent-off. /api/health stays open.
+const API_TOKEN = resolveApiToken();
 // Cap message chains: depth 0 = a user-initiated turn (may ask a peer);
 // a peer invoked via ask_bot runs at depth 1 and may ask once more;
 // depth 2 gets NO agents tool. A visited-set blocks A→B→A loops.
@@ -1296,6 +1302,27 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { text: recallMemory(fromBotId, query) });
       }
       return json(res, 404, { error: "unknown internal endpoint" });
+    }
+
+    // ── launch-token gate for everything else under /api ──────────────
+    // 401 without/with a wrong or stale token; Host must be the loopback
+    // bind (DNS-rebinding guard); browser Origins are rejected on state
+    // changes. /api/health is exempt (port-fallback probe + release smoke).
+    if (path.startsWith("/api/")) {
+      const denied = requireApiAuth(
+        {
+          path,
+          method,
+          headers: {
+            authorization: req.headers.authorization,
+            host: req.headers.host,
+            origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+          },
+        },
+        API_TOKEN,
+        PORT,
+      );
+      if (denied) return json(res, denied.status, { error: denied.error });
     }
 
     // ── events stream ──
