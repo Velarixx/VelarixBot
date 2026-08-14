@@ -19,7 +19,7 @@ const IMAGE_EXT: Record<string, string> = {
 export function isSecretConfigPath(filePath: string): boolean {
   const norm = filePath.replace(/\\/g, "/").toLowerCase();
   return (
-    /\/\.velarixbot\/config\.json$/.test(norm) ||
+    /\/\.velarixbot\/(config|secrets)\.json$/.test(norm) ||
     /\/\.openmausbot\/config\.json$/.test(norm) ||
     /\/\.opengrokbot\/config\.json$/.test(norm)
   );

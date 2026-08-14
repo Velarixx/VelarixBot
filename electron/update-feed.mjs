@@ -76,8 +76,38 @@ export function tokenConfigured(token) {
   return Boolean(token && String(token).trim());
 }
 
-/** File token wins over env, matching server/config.ts merge order. */
-export function readGithubToken(env, fileText) {
+const SECRET_REF_PREFIX = "secret://";
+
+/** Resolve a `secret://<id>` reference against ~/.velarixbot/secrets.json
+ * content (P1.5 SecretStore). `secrets.decrypt` is the caller-injected
+ * safeStorage decryptor (main process only); "file"-backend entries are
+ * base64 of the value and need no keychain. Unresolvable → "" (honest
+ * unconfigured), never a throw. */
+export function resolveSecretRef(ref, secrets) {
+  const id = String(ref ?? "").slice(SECRET_REF_PREFIX.length);
+  let entry = null;
+  try {
+    const parsed = JSON.parse(secrets?.fileText || "null");
+    entry = parsed?.entries?.[id] ?? null;
+  } catch {
+    return "";
+  }
+  if (!entry || typeof entry.data !== "string") return "";
+  try {
+    if (entry.backend === "file") return Buffer.from(entry.data, "base64").toString("utf8");
+    if (entry.backend === "safeStorage" && typeof secrets?.decrypt === "function") {
+      return String(secrets.decrypt(Buffer.from(entry.data, "base64")) ?? "");
+    }
+  } catch {
+    /* keychain refused or corrupt entry — fall through */
+  }
+  return "";
+}
+
+/** File token wins over env, matching server/config.ts merge order.
+ * A `secret://` reference in config.json resolves through `secrets`
+ * ({ fileText, decrypt }) — see resolveSecretRef. */
+export function readGithubToken(env, fileText, secrets) {
   let fromFile = "";
   try {
     const cfg = JSON.parse(fileText || "null");
@@ -87,6 +117,7 @@ export function readGithubToken(env, fileText) {
   } catch {
     /* missing or invalid config — env fallback below */
   }
+  if (fromFile.startsWith(SECRET_REF_PREFIX)) fromFile = resolveSecretRef(fromFile, secrets);
   const fromEnv = env?.GITHUB_TOKEN || env?.GH_TOKEN || "";
   return String(fromFile || fromEnv || "").trim();
 }

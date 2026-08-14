@@ -1,12 +1,14 @@
 // Packaged-app updater: GitHub Releases for Velarixx/VelarixBot.
 // The token is read from ~/.velarixbot/config.json or GH_TOKEN / GITHUB_TOKEN
 // and used only as an Authorization header — never argv, logs, asar, or IPC.
+// P1.5: config.json holds a secret:// reference; the value is unsealed from
+// ~/.velarixbot/secrets.json (safeStorage entries decrypt here in main).
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
-import { app, ipcMain, shell } from "electron";
+import { app, ipcMain, safeStorage, shell } from "electron";
 import {
   DEV_NOOP_MESSAGE,
   NO_TOKEN_MESSAGE,
@@ -28,14 +30,27 @@ function configPath() {
   return join(homedir(), ".velarixbot", "config.json");
 }
 
+function secretsPath() {
+  return join(homedir(), ".velarixbot", "secrets.json");
+}
+
 function currentToken() {
   let fileText = "";
+  let secretsText = "";
   try {
     fileText = readFileSync(configPath(), "utf8");
   } catch {
     /* first run */
   }
-  return readGithubToken(process.env, fileText);
+  try {
+    secretsText = readFileSync(secretsPath(), "utf8");
+  } catch {
+    /* no stored secrets yet */
+  }
+  return readGithubToken(process.env, fileText, {
+    fileText: secretsText,
+    decrypt: (sealed) => (safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(sealed) : ""),
+  });
 }
 
 function emit() {

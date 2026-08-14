@@ -115,9 +115,14 @@ The SPI in [`server/contracts.ts`](server/contracts.ts) is deliberately small. A
 
 ## Secrets
 
-API keys are write-only: they land in `~/.velarixbot/config.json` via `PUT /api/config` and the API
-only ever reports `configured` booleans. Keep it that way — no logging keys, no echoing them in
-responses or events, no baking them into argv where another local process could read them.
+API keys are write-only: `PUT /api/config` seals them into the SecretStore (`server/secrets.ts` —
+Electron `safeStorage` in the packaged app, a documented 0600-file fallback when headless) and
+`~/.velarixbot/config.json` only ever holds `secret://` references. The API only ever reports
+`configured` booleans. Keep it that way — no plaintext secrets in `config.json`, no logging keys,
+no echoing them in responses or events, no baking them into argv where another local process could
+read them. Subprocess env gets only the secret(s) that driver actually needs (see
+`instanceConfigs`), never the whole ring. Test secrets are clearly-fake canaries constructed at
+runtime — never commit a credential-shaped literal.
 
 ## Before you open the PR
 
