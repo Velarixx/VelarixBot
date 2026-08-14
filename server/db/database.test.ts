@@ -70,7 +70,7 @@ describe("database + migrations", () => {
     db.prepare("INSERT INTO routine_runs(routine_id, bot_id, started_at, finished_at, result) VALUES ('r1', 'b1', 1000, 2000, 'DONE')").run();
     db.prepare("INSERT INTO routine_runs(routine_id, bot_id, started_at, finished_at, result) VALUES ('r1', 'b1', 3000, 4000, 'BLOCKED: x')").run();
     db.prepare("INSERT INTO routine_runs(routine_id, bot_id, started_at) VALUES ('r1', 'b1', 5000)").run(); // crashed mid-run
-    expect(migrate(db)).toEqual([MIGRATIONS[1].name]);
+    expect(migrate(db)).toEqual(MIGRATIONS.slice(1).map((m) => m.name));
     const rows = db
       .prepare<{ started_at: number; finished_at: number | null; status: string; result: string; attempt: number }>(
         "SELECT started_at, finished_at, status, result, attempt FROM routine_runs ORDER BY seq",
