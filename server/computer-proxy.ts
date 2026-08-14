@@ -1,7 +1,9 @@
 // computer-proxy — a minimal MCP stdio server the claude CLI spawns
 // (agentcal's permission-proxy pattern, dedicated entry file so there is
 // no argv-dispatch fork-bomb hazard). It gives the agent its bot's cloud
-// computer (box.ascii.dev) as CUA-grade tools.
+// computer as CUA-grade tools. The vendor lives behind the ComputerProvider
+// SPI: the Box provider builds this proxy's spawn contract and passes the
+// API base as OGB_BOX_URL — nothing here hardcodes a vendor URL.
 //
 // Transport: every action goes through the box's REST run-command
 // endpoint (no inbound port on the box, no tunnel). On the box, actions
@@ -11,11 +13,19 @@
 // CUA itself uses on Linux.
 //
 // stdout is the MCP channel — never console.log here.
-const BOX_API = "https://ascii.dev/api/box/v1";
+const BOX_API = (process.env.OGB_BOX_URL ?? "").replace(/\/$/, "");
 const boxId = process.env.OGB_BOX_ID ?? "";
 const token = process.env.OGB_BOX_TOKEN ?? "";
 
 async function runOnBox(command: string, timeoutMs = 60_000) {
+  if (!BOX_API || !boxId || !token) {
+    return {
+      ok: false,
+      exitCode: null,
+      stdout: "",
+      stderr: "computer provider not configured (missing OGB_BOX_URL / OGB_BOX_ID / OGB_BOX_TOKEN)",
+    };
+  }
   const res = await fetch(`${BOX_API}/boxes/${boxId}/commands`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -74,6 +84,7 @@ async function displayGeometry() {
 }
 
 async function readBoxFile(path: string): Promise<string | null> {
+  if (!BOX_API || !boxId || !token) return null;
   const res = await fetch(
     `${BOX_API}/boxes/${boxId}/files?path=${encodeURIComponent(path)}&encoding=base64`,
     { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) },

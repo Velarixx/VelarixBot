@@ -15,10 +15,14 @@ import type { AppConfig } from "./config.ts";
 const BOX_API = "https://ascii.dev/api/box/v1";
 const READY = new Set(["idle", "ready", "running"]);
 
-function apiBase(cfg: AppConfig) {
+/** Effective Box API base — the vendor URL lives HERE (and in config),
+ * behind the ComputerProvider interface; nothing outside the box provider
+ * may hardcode it. */
+export function boxApiBase(cfg: AppConfig): string {
   const url = cfg.box?.url?.trim();
   return (url || BOX_API).replace(/\/$/, "");
 }
+const apiBase = boxApiBase;
 
 function boxFetch(cfg: AppConfig, path: string, opts: RequestInit = {}) {
   return fetch(`${apiBase(cfg)}${path}`, {
