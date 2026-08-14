@@ -19,12 +19,14 @@ import { createApprovalsRoutes } from "./routes/approvals.ts";
 import { createBotsRoutes } from "./routes/bots.ts";
 import { createComputersRoutes } from "./routes/computers.ts";
 import { json, type RouteCtx, type RouteHandler } from "./routes/context.ts";
+import { createDiagnosticsRoutes } from "./routes/diagnostics.ts";
 import { createEventsRoutes } from "./routes/events.ts";
 import { createHealthRoutes } from "./routes/health.ts";
 import { createIntegrationsRoutes } from "./routes/integrations.ts";
 import { createRoutinesRoutes } from "./routes/routines.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
 import { createBotsService, type BotsService } from "./services/bots.ts";
+import { createDiagnosticsService } from "./services/diagnostics.ts";
 import { createSseHub, type SseHub } from "./services/events.ts";
 import { createRoutinesService, type RoutinesService } from "./services/routines.ts";
 import { createTeachService, type TeachService } from "./services/teach.ts";
@@ -170,6 +172,10 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   bots.seedIfEmpty();
   teach.restoreTeachSubscriptions();
 
+  // P1.7: the redacted support bundle + verified profile backup — reads the
+  // same repositories/registries as everything else, never message content
+  const diagnostics = createDiagnosticsService({ repos, providers: registry, computers, stamp });
+
   const integrations = createIntegrationsRoutes({
     bots,
     turns,
@@ -189,6 +195,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     createBotsRoutes({ bots, turns, teach, registry, computers, cfg, broadcast }),
     createTurnsRoutes({ turns }),
     createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
+    createDiagnosticsRoutes({ diagnostics }),
     integrations.api,
     createComputersRoutes({ bots, computers, recordBinding: (botId, machineId) => repos.computerBindings.record(botId, machineId) }),
   ];
