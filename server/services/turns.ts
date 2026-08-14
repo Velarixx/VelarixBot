@@ -1,0 +1,1023 @@
+// Turn dispatch + event folding + the CoS workspace tools — the runtime
+// heart of the harness, extracted from index.ts (P0.5). Behavior is the
+// pre-refactor behavior; state that used to be module globals now lives in
+// this service's closure and every dependency arrives through
+// createTurnsService (the composition root wires it).
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  appendAudit,
+  argumentPattern,
+  autoResolvePermission,
+  persistAllowRule,
+} from "../approvals.ts";
+import * as box from "../box.ts";
+import * as composio from "../composio.ts";
+import {
+  ASK_BUDGET_MS,
+  COMMS_DEPTH_ERROR,
+  MAX_COMMS_DEPTH,
+  uniqueIds,
+} from "../comms.ts";
+import type { AppConfig } from "../config.ts";
+import { ensureBotWorkspace, EVENTS_DIR, NATIVE_DIR } from "../config.ts";
+import { newId, type ModelSelection, type RuntimeEvent } from "../contracts.ts";
+import { fetchPage, webSearch } from "../web.ts";
+import { turnGrounding } from "../grounding.ts";
+import type { EventBus } from "../harness/bus.ts";
+import type { ProviderRegistry } from "../harness/registry.ts";
+import { HANDOFF_CONTINUE, HANDOFF_TITLE, classifyOpenedRequest, handoffSubtitle, isCredentialAsk } from "../handoff.ts";
+import {
+  deleteBotMemory,
+  distillMemory,
+  fleetGenerateText,
+  turnTextFromMessages,
+  memoryPrompt,
+} from "../memory.ts";
+import { createPeerQueue } from "../peer-queue.ts";
+import type { Proactive } from "../proactive.ts";
+import type { Repositories } from "../repositories/index.ts";
+import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "../response-options.ts";
+import { LAST_BOT_ERROR, mentionedBots, wouldEmptyWorkspace, type Message, type Usage } from "../store.ts";
+import { appendTeachFrame, deleteSkillsForBot, getSkill, saveSkill, skillSystemNote } from "../teach.ts";
+import type { Broadcast } from "./events.ts";
+import type { BotsService } from "./bots.ts";
+import type { RoutinesService } from "./routines.ts";
+import type { TeachService } from "./teach.ts";
+
+const SERVICES_DIR = dirname(fileURLToPath(import.meta.url));
+export const SECRET_CARD_ANSWER = "••••";
+
+function proxyPath(...segments: string[]): string {
+  const ts = join(SERVICES_DIR, "..", ...segments);
+  return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
+}
+
+export interface StartTurnOpts {
+  commsDepth?: number;
+  attachments?: Array<{ path: string; mime?: string }>;
+  visited?: string[];
+  groupThreadId?: string;
+}
+
+export interface TurnsServiceDeps {
+  cfg: AppConfig;
+  registry: ProviderRegistry;
+  bus: EventBus;
+  repos: Repositories;
+  bots: BotsService;
+  routines(): RoutinesService;
+  teach: TeachService;
+  proactive: Proactive;
+  broadcast: Broadcast;
+  port: number;
+  commsToken: string;
+}
+
+export interface TurnsService {
+  startTurn(botId: string, text: string, opts?: StartTurnOpts): Promise<void>;
+  /** ask_bot with the per-target peer queue in front (internal comms). */
+  askBotQueued(toBotId: string, message: string, depth: number, opts?: { visited?: string[]; groupThreadId?: string }): Promise<string>;
+  handleWorkspaceTool(fromBotId: string, tool: string, args: Record<string, unknown>, depth: number): Promise<{ text?: string; error?: string }>;
+  askUserAndWait(botId: string, input: { question: string; choices?: string[]; secret?: boolean; connectUrl?: string }): Promise<string>;
+  createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: "cloud" | "local" | "off" }): Promise<
+    NonNullable<ReturnType<BotsService["publicBot"]>>
+  >;
+  removeSidebarBot(id: string): Promise<{ ok: true; bot: { id: string; name: string } } | { error: string; status: number }>;
+  respond(botId: string, requestId: string, body: { behavior?: unknown; message?: unknown; always?: unknown; persistScope?: unknown }): Promise<
+    { ok: true } | { error: string; status: number }
+  >;
+  interrupt(botId: string): Promise<{ ok: true } | { error: string; status: number }>;
+  defaultSelection(): Promise<ModelSelection>;
+  selectionForModel(model?: string): Promise<ModelSelection>;
+  lastScreenFrame(botId: string): { png: string; mime: string } | null;
+}
+
+export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
+  const { cfg, registry, bus, repos, bots, teach, proactive, broadcast, port, commsToken } = deps;
+  const store = bots; // message + bot accessors (repository-backed)
+
+  const agentsProxyPath = proxyPath("drivers", "agents-proxy.ts");
+  const composioProxyPath = proxyPath("composio-proxy.ts");
+  const memoryProxyPath = proxyPath("memory-proxy.ts");
+  const workspaceProxyPath = proxyPath("workspace-proxy.ts");
+  // in the packaged app process.execPath is Electron — run the proxy as node
+  const AGENTS_NODE_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
+
+  function agentsIntegration(botId: string, depth: number, visited: string[] = [], groupThreadId?: string) {
+    return {
+      command: process.execPath,
+      args: [agentsProxyPath],
+      env: {
+        ...AGENTS_NODE_FLAG,
+        OMB_HARNESS_URL: `http://127.0.0.1:${port}`,
+        OMB_BOT_ID: botId,
+        OMB_COMMS_TOKEN: commsToken,
+        OMB_TURN_DEPTH: String(depth),
+        OMB_VISITED: visited.join(","),
+        ...(groupThreadId ? { OMB_GROUP_THREAD_ID: groupThreadId } : {}),
+      },
+    };
+  }
+
+  function composioIntegration(allowedApps: string[]) {
+    return {
+      command: process.execPath,
+      args: [composioProxyPath],
+      env: {
+        ...AGENTS_NODE_FLAG,
+        OMB_COMPOSIO_URL: cfg.composio?.url || "",
+        OMB_COMPOSIO_KEY: cfg.composio!.key!,
+        OMB_ALLOWED_TOOLKITS: allowedApps.join(","),
+      },
+    };
+  }
+
+  function memoryIntegration(botId: string) {
+    return {
+      command: process.execPath,
+      args: [memoryProxyPath],
+      env: {
+        ...AGENTS_NODE_FLAG,
+        OMB_HARNESS_URL: `http://127.0.0.1:${port}`,
+        OMB_BOT_ID: botId,
+        OMB_COMMS_TOKEN: commsToken,
+      },
+    };
+  }
+
+  function workspaceIntegration(botId: string, depth: number) {
+    return {
+      command: process.execPath,
+      args: [workspaceProxyPath],
+      env: {
+        ...AGENTS_NODE_FLAG,
+        OMB_HARNESS_URL: `http://127.0.0.1:${port}`,
+        OMB_BOT_ID: botId,
+        OMB_COMMS_TOKEN: commsToken,
+        OMB_TURN_DEPTH: String(depth),
+      },
+    };
+  }
+
+  // ── ask a peer bot and wait for its reply ─────────────────────────────
+  function askBotAndWait(
+    targetBotId: string,
+    message: string,
+    depth: number,
+    opts?: { visited?: string[]; groupThreadId?: string },
+  ): Promise<string> {
+    const target = store.bot(targetBotId);
+    if (!target) return Promise.resolve("(no such bot)");
+    const threadId = target.threadId;
+    const groupThreadId = opts?.groupThreadId;
+    return new Promise((resolve) => {
+      let text = "";
+      let done = false;
+      const finish = (out: string) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        unsub();
+        if (groupThreadId && out && !out.startsWith("(couldn't start") && !out.startsWith("(timed out") && !out.startsWith("(no such")) {
+          const note = store.appendMessage(groupThreadId, {
+            role: "bot",
+            kind: "text",
+            text: `@${target.name}: ${out}`,
+          });
+          broadcast({ kind: "message", threadId: groupThreadId, message: note });
+          const owner = store.botByThread(groupThreadId);
+          if (owner) {
+            store.patchBot(owner.id, { unread: true });
+            broadcast({ kind: "bot", bot: store.bot(owner.id) });
+            broadcast({ kind: "peer.reply", botId: owner.id, fromBotId: target.id, fromName: target.name });
+          }
+        }
+        resolve(out);
+      };
+      const unsub = bus.subscribe((e: RuntimeEvent) => {
+        if (e.threadId !== threadId) return;
+        if (e.type === "item.completed" && e.itemType === "assistant_text") {
+          const reply = parseResponseOptions(e.text);
+          if (reply.text) text += (text ? "\n" : "") + reply.text;
+        } else if (e.type === "turn.completed") {
+          finish(text || "(the bot finished without a text reply)");
+        }
+      });
+      const timer = setTimeout(() => finish(text || "(timed out waiting for the bot to reply)"), ASK_BUDGET_MS);
+      service
+        .startTurn(targetBotId, message, {
+          commsDepth: depth + 1,
+          visited: uniqueIds([...(opts?.visited ?? []), targetBotId]),
+          groupThreadId,
+        })
+        .catch((err) => finish(`(couldn't start that bot: ${err instanceof Error ? err.message : String(err)})`));
+    });
+  }
+
+  // default selection for new bots: first available instance, codex preferred over claude
+  async function defaultSelection(): Promise<ModelSelection> {
+    const described = await registry.describe();
+    const available = described.filter((d) => d.snapshot.state === "available");
+    const pick = available.find((d) => d.driverKind === "codex") ?? available.find((d) => d.driverKind === "claudeAgent") ?? available[0] ?? described[0];
+    return { instanceId: pick?.instanceId ?? "claude", model: pick?.models.default || "claude-sonnet-5" };
+  }
+
+  async function selectionForModel(model?: string): Promise<ModelSelection> {
+    const selection = await defaultSelection();
+    const slug = model?.trim();
+    if (!slug) return selection;
+    const described = await registry.describe();
+    const available = described.filter((d) => d.snapshot.state === "available");
+    const pool = available.length ? available : described;
+    const hit =
+      pool.find((d) => d.models.options.some((o) => o.id === slug)) ??
+      pool.find((d) => d.models.default === slug) ??
+      pool.find((d) => d.instanceId === selection.instanceId) ??
+      pool[0];
+    return { instanceId: hit?.instanceId ?? selection.instanceId, model: slug };
+  }
+
+  // ── user asks (ask_choice / ask_secret / connect_app cards) ───────────
+  const pendingAskByRequest = new Map<string, { botId: string; tool: string; summary: string; requestType: string }>();
+  const userAskWaiters = new Map<
+    string,
+    { resolve: (text: string) => void; reject: (error: Error) => void; secret: boolean; botId: string }
+  >();
+
+  function settleUserAsk(requestId: string, text: string): boolean {
+    const waiter = userAskWaiters.get(requestId);
+    if (!waiter) return false;
+    userAskWaiters.delete(requestId);
+    waiter.resolve(text);
+    return true;
+  }
+
+  function askUserAndWait(
+    botId: string,
+    input: { question: string; choices?: string[]; secret?: boolean; connectUrl?: string },
+  ): Promise<string> {
+    const bot = store.bot(botId);
+    if (!bot) return Promise.reject(new Error("no such bot"));
+    const requestId = newId();
+    const secret = input.secret === true;
+    const message = store.appendMessage(bot.threadId, {
+      role: "bot",
+      kind: "options",
+      card: {
+        title: secret ? "Secret needed" : input.connectUrl ? "Connect an app" : "Your bot has a question",
+        subtitle: input.question,
+        options: input.connectUrl ? ["Done"] : (input.choices ?? []).filter(Boolean).slice(0, 5),
+        requestId,
+        requestType: secret ? "secret" : "question",
+        ...(input.connectUrl ? { connectUrl: input.connectUrl } : {}),
+      },
+    });
+    broadcast({ kind: "message", threadId: bot.threadId, message });
+    store.patchBot(bot.id, { state: "NEEDS_INPUT" });
+    proactive.noteState(bot.id, "NEEDS_INPUT");
+    broadcast({ kind: "bot", bot: store.bot(bot.id) });
+    pendingAskByRequest.set(requestId, {
+      botId: bot.id,
+      tool: secret ? "ask_secret" : input.connectUrl ? "connect_app" : "ask_choice",
+      summary: input.question,
+      requestType: secret ? "secret" : "question",
+    });
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!userAskWaiters.delete(requestId)) return;
+        reject(new Error("timed out waiting for the user"));
+      }, ASK_BUDGET_MS);
+      timer.unref?.();
+      userAskWaiters.set(requestId, {
+        resolve: (text) => {
+          clearTimeout(timer);
+          resolve(text);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+        secret,
+        botId: bot.id,
+      });
+    });
+  }
+
+  const idleListeners = new Set<(botId: string) => void>();
+  function notifyIdle(botId: string) {
+    for (const listener of [...idleListeners]) listener(botId);
+  }
+  const peerQueue = createPeerQueue({
+    isBusy: (botId) => store.bot(botId)?.busy === true,
+    onIdle: (listener) => {
+      idleListeners.add(listener);
+      return () => idleListeners.delete(listener);
+    },
+    budgetMs: ASK_BUDGET_MS,
+  });
+
+  // ── sidebar bot lifecycle (create/remove fan out on SSE) ──────────────
+  async function createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: "cloud" | "local" | "off" }) {
+    const bot = bots.createBot();
+    bots.patchBot(bot.id, {
+      modelSelection: await selectionForModel(init?.model),
+      ...(init?.name?.trim() ? { name: init.name.trim() } : {}),
+      ...(typeof init?.title === "string" ? { title: init.title } : {}),
+      ...(typeof init?.description === "string" ? { description: init.description } : {}),
+      ...(init?.computer ? { computer: init.computer } : {}),
+    });
+    const full = bots.publicBot(bot.id)!;
+    broadcast({ kind: "bot.added", bot: full });
+    return full;
+  }
+
+  async function removeSidebarBot(id: string): Promise<{ ok: true; bot: { id: string; name: string } } | { error: string; status: number }> {
+    const bot = store.bot(id);
+    if (!bot) return { error: "no such bot", status: 404 };
+    if (wouldEmptyWorkspace(bots.count())) return { error: LAST_BOT_ERROR, status: 409 };
+    await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
+    stopScreenPoller(bot.id);
+    teach.release(bot.id);
+    deleteBotMemory(bot.id);
+    deleteSkillsForBot(bot.id);
+    bots.deleteBot(bot.id);
+    for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
+      try {
+        unlinkSync(join(dir, `${bot.threadId}.ndjson`));
+      } catch {}
+    }
+    broadcast({ kind: "bot.deleted", botId: bot.id });
+    return { ok: true, bot: { id: bot.id, name: bot.name } };
+  }
+
+  const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
+
+  async function handleWorkspaceTool(
+    fromBotId: string,
+    tool: string,
+    args: Record<string, unknown>,
+    depth: number,
+  ): Promise<{ text?: string; error?: string }> {
+    const bot = store.bot(fromBotId);
+    if (!bot) return { error: "no such bot" };
+    if (depth >= MAX_COMMS_DEPTH && (tool === "ask_choice" || tool === "ask_secret" || tool === "create_routine")) {
+      return { error: COMMS_DEPTH_ERROR };
+    }
+    try {
+      if (tool === "web_search") {
+        return { text: await webSearch(String(args.query ?? "")) };
+      }
+      if (tool === "fetch_page") {
+        return { text: await fetchPage(String(args.url ?? "")) };
+      }
+      if (tool === "ask_choice") {
+        const question = String(args.question ?? "").trim();
+        const choices = (Array.isArray(args.choices) ? args.choices : []).map((c) => String(c).trim()).filter(Boolean).slice(0, 5);
+        if (!question || choices.length < 2) return { error: "ask_choice needs a question and at least two choices." };
+        const answer = await askUserAndWait(fromBotId, { question, choices });
+        return { text: answer };
+      }
+      if (tool === "ask_secret") {
+        const prompt = String(args.prompt ?? "").trim();
+        if (!prompt) return { error: "ask_secret needs a prompt." };
+        const value = await askUserAndWait(fromBotId, { question: prompt, secret: true });
+        return { text: value };
+      }
+      if (tool === "create_routine") {
+        const name = String(args.name ?? "").trim();
+        const prompt = String(args.prompt ?? "").trim();
+        if (!name || !prompt) return { error: "create_routine needs name and prompt." };
+        const listener = String(args.listener ?? "").trim().toLowerCase();
+        const everyMinutes = Number(args.every_minutes);
+        const time = String(args.time ?? "").trim().slice(0, 5);
+        let schedule: Parameters<RoutinesService["createRoutine"]>[0]["schedule"];
+        if (listener === "github" || listener === "slack") {
+          const status = cfg.composio?.key
+            ? await composio.connectionStatus(cfg, [listener]).catch(() => ({ [listener]: { connected: false } }))
+            : { [listener]: { connected: false } };
+          if (!status[listener]?.connected) {
+            return {
+              error: `${listener} is not connected. Call connect_app with slug ${listener} first. Never ask the user to paste a token in chat.`,
+            };
+          }
+          schedule = { kind: "listener", source: listener, everyMinutes: Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15 };
+        } else if (Number.isFinite(everyMinutes) && everyMinutes > 0) {
+          schedule = { kind: "interval", everyMinutes };
+        } else if (time) {
+          schedule = args.every_day === true ? { kind: "daily", time } : { kind: "weekdays", time };
+        } else {
+          return { error: "create_routine needs time (HH:MM), every_minutes, or listener=github|slack." };
+        }
+        const skillId = String(args.skill_id ?? "").trim();
+        const routine = deps.routines().createRoutine({
+          botId: fromBotId,
+          name,
+          prompt,
+          schedule,
+          ...(skillId ? { skillId } : {}),
+        });
+        broadcast({ kind: "routine", routine });
+        return {
+          text: `Created routine ${routine.name} (id: ${routine.id}, ${routine.schedule.kind}${routine.schedule.kind === "listener" ? ` ${routine.schedule.source}` : ""}). It runs while the harness is up.`,
+        };
+      }
+      if (tool === "save_skill") {
+        const name = String(args.name ?? "").trim();
+        const steps = String(args.steps ?? "").trim();
+        if (!name || !steps) return { error: "save_skill needs name and steps." };
+        const skill = saveSkill({ name, botId: fromBotId, markdown: steps });
+        bots.patchBot(fromBotId, { skillId: skill.id });
+        broadcast({ kind: "bot", bot: store.bot(fromBotId) });
+        return { text: `Saved skill ${skill.name} (id: ${skill.id}). Run it with run_skill using that id.` };
+      }
+      if (tool === "run_skill") {
+        const skillId = String(args.skill_id ?? "").trim();
+        const skill = getSkill(skillId);
+        if (!skill) return { error: "no such skill" };
+        return { text: `Follow these saved steps now:\n\n${skill.markdown}` };
+      }
+      if (tool === "attach_to_chat") {
+        const kind = String(args.kind ?? "").trim();
+        if (kind === "screenshot") {
+          const polled = screenPollers.get(fromBotId)?.last;
+          const shot = polled ?? (bot.computer === "cloud" && box.boxConfigured(cfg) ? await box.screenshotBox(cfg, fromBotId).then((s) => ({ png: s.png, mime: "image/png" as const })) : null);
+          if (!shot) return { error: "no screenshot available — turn computer on (cloud box) first." };
+          const message = store.appendMessage(bot.threadId, { role: "bot", kind: "screen", png: shot.png, mime: shot.mime });
+          broadcast({ kind: "message", threadId: bot.threadId, message });
+          return { text: "Attached the current computer screenshot to this chat." };
+        }
+        if (kind === "file") {
+          const filePath = String(args.path ?? "").trim();
+          if (!filePath) return { error: "attach_to_chat file needs path." };
+          const read = await box.readBoxPath(cfg, fromBotId, filePath);
+          if (IMAGE_EXT.test(filePath)) {
+            const message = store.appendMessage(bot.threadId, {
+              role: "bot",
+              kind: "screen",
+              png: read.content,
+              mime: filePath.toLowerCase().endsWith(".jpg") || filePath.toLowerCase().endsWith(".jpeg") ? "image/jpeg" : "image/png",
+            });
+            broadcast({ kind: "message", threadId: bot.threadId, message });
+            return { text: `Attached ${filePath} to this chat.` };
+          }
+          const decoded = Buffer.from(read.content, "base64").toString("utf8").slice(0, 8_000);
+          const message = store.appendMessage(bot.threadId, {
+            role: "bot",
+            kind: "text",
+            text: `File from computer (${filePath}):\n${decoded}`,
+          });
+          broadcast({ kind: "message", threadId: bot.threadId, message });
+          return { text: `Attached text from ${filePath} to this chat.` };
+        }
+        return { error: "attach_to_chat kind must be screenshot or file." };
+      }
+      if (tool === "connect_app") {
+        const slug = String(args.slug ?? "").trim().toLowerCase();
+        if (!slug) return { error: "connect_app needs a catalog slug (e.g. github)." };
+        if (!cfg.composio?.key) {
+          return {
+            error:
+              "Composio Connect is not configured. The user must add a Connect key in App Settings. Never ask them to paste a token in chat.",
+          };
+        }
+        const auth = await composio.authorizeService(cfg, slug);
+        const url = typeof auth?.url === "string" ? auth.url : "";
+        if (!url) return { error: `could not start connect for ${slug}` };
+        const enabled = Array.from(new Set([...(bot.enabledApps ?? []), slug]));
+        bots.patchBot(fromBotId, { enabledApps: enabled });
+        broadcast({ kind: "bot", bot: store.bot(fromBotId) });
+        const answer = await askUserAndWait(fromBotId, {
+          question: `Connect ${slug} in the browser, then come back here.`,
+          connectUrl: url,
+        });
+        return { text: `Connect flow for ${slug} finished (${answer}). Tools for that app mount on the next turn.` };
+      }
+      return { error: `unknown workspace tool ${tool}` };
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (tool === "ask_secret" || /token|secret|password/i.test(message)) return { error: "couldn't complete that request" };
+      return { error: message };
+    }
+  }
+
+  // ── server-side event folding (upstream's ingestion worker, miniature) ──
+  // The canonical stream is the source of truth; the persisted transcript
+  // and every client view are projections of it.
+  const toolMessageByItem = new Map<string, string>(); // itemId -> messageId
+  const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
+  const turnUsage = new Map<string, Usage>();
+  const responseOptionsByTurn = new Map<string, string[]>();
+
+  bus.subscribe((event: RuntimeEvent) => {
+    broadcast({ kind: "runtime", event });
+    const bot = store.botByThread(event.threadId);
+    if (!bot) return;
+
+    const pushMessage = (m: Omit<Message, "id" | "at">) => {
+      const message = store.appendMessage(event.threadId, m);
+      broadcast({ kind: "message", threadId: event.threadId, message });
+      return message;
+    };
+
+    switch (event.type) {
+      case "session.started":
+        if (event.sessionId && event.providerInstanceId) {
+          bots.setResumeCursor(bot.id, event.providerInstanceId, event.sessionId);
+        }
+        break;
+      case "turn.started":
+        if (event.turnId) turnUsage.delete(event.turnId);
+        bots.patchBot(bot.id, { busy: true, state: "RUNNING", stateDetail: undefined });
+        proactive.noteState(bot.id, "RUNNING");
+        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        break;
+      case "thread.token-usage.updated":
+        if (event.turnId) turnUsage.set(event.turnId, { input: event.input, output: event.output, cost: null });
+        break;
+      case "item.completed":
+        if (event.itemType === "assistant_text") {
+          const reply = parseResponseOptions(event.text);
+          if (reply.text) pushMessage({ role: "bot", kind: "text", text: reply.text });
+          if (event.turnId && shouldAttachResponseOptions(event.provider)) {
+            responseOptionsByTurn.set(event.turnId, reply.options);
+          }
+        } else if (event.itemType === "tool" && event.itemId) {
+          const messageId = toolMessageByItem.get(event.itemId);
+          if (messageId) {
+            const patched = store.patchMessage(event.threadId, messageId, {
+              tool: { name: store.messagesFor(event.threadId).find((m) => m.id === messageId)?.tool?.name ?? "tool", ok: event.ok },
+            });
+            if (patched) broadcast({ kind: "message.patch", threadId: event.threadId, message: patched });
+            toolMessageByItem.delete(event.itemId);
+          }
+          // the bot just finished acting — refresh its screen preview now
+          pokeScreenPoller(bot.id);
+        }
+        break;
+      case "item.started":
+        if (event.itemType === "tool") {
+          const message = pushMessage({ role: "bot", kind: "activity", tool: { name: event.title ?? "tool" } });
+          if (event.itemId) toolMessageByItem.set(event.itemId, message.id);
+        }
+        break;
+      case "request.opened": {
+        if (event.requestId) {
+          pendingAskByRequest.set(event.requestId, {
+            botId: bot.id,
+            tool: event.tool,
+            summary: event.summary,
+            requestType: event.requestType,
+          });
+        }
+        if (event.requestType === "permission" && event.requestId && !isCredentialAsk(event.requestType, event.tool, event.summary)) {
+          const auto = autoResolvePermission(bot, event.tool, event.summary);
+          if (auto) {
+            const instance = registry.get(bot.modelSelection.instanceId);
+            if (instance) {
+              void instance.adapter
+                .respondToRequest(event.threadId, event.requestId, { behavior: auto.behavior, source: auto.source })
+                .catch(() => {});
+              break;
+            }
+          }
+        }
+        const permission = event.requestType === "permission";
+        const opened = classifyOpenedRequest(event.requestType, event.tool, event.summary, event.choices);
+        const credential = opened.requestType === "credential";
+        const message = pushMessage({
+          role: "bot",
+          kind: "options",
+          card: {
+            title: credential ? HANDOFF_TITLE : permission && !credential ? "Approval needed" : "Your bot has a question",
+            subtitle: credential
+              ? opened.summary || handoffSubtitle(bot.computer)
+              : event.summary,
+            options: opened.choices?.length
+              ? opened.choices
+              : credential
+                ? [HANDOFF_CONTINUE]
+                : permission
+                  ? ["Allow once", "Deny"]
+                  : [],
+            requestId: event.requestId,
+            requestType: opened.requestType,
+          },
+        });
+        if (event.requestId) askMessageByRequest.set(event.requestId, message.id);
+        bots.patchBot(bot.id, { state: "NEEDS_INPUT" });
+        proactive.noteState(bot.id, "NEEDS_INPUT");
+        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        break;
+      }
+      case "request.resolved": {
+        const messageId = event.requestId ? askMessageByRequest.get(event.requestId) : null;
+        if (messageId) {
+          const existing = store.messagesFor(event.threadId).find((m) => m.id === messageId);
+          if (existing?.card && !existing.card.answered) {
+            const patched = store.patchMessage(event.threadId, messageId, {
+              card: { ...existing.card, answered: event.behavior, dismissed: event.source !== "user" },
+            });
+            if (patched) broadcast({ kind: "message.patch", threadId: event.threadId, message: patched });
+          }
+          if (event.requestId) askMessageByRequest.delete(event.requestId);
+        }
+        if (event.requestId) pendingAskByRequest.delete(event.requestId);
+        bots.patchBot(bot.id, { state: "RUNNING" });
+        proactive.noteState(bot.id, "RUNNING");
+        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        break;
+      }
+      case "runtime.error":
+        if (event.turnId) responseOptionsByTurn.delete(event.turnId);
+        pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
+        bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
+        proactive.noteState(bot.id, "BLOCKED");
+        notifyIdle(bot.id);
+        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        break;
+      case "turn.completed": {
+        // the last live frame becomes a settled inline screen message —
+        // the screenshot-in-chat moment
+        const frame = stopScreenPoller(bot.id);
+        if (frame) pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
+        const tokens = (event.turnId ? turnUsage.get(event.turnId) : undefined) ?? { input: 0, output: 0, cost: null };
+        bots.recordTurnUsage(bot.id, { ...tokens, cost: event.cost ?? null });
+        if (event.turnId) turnUsage.delete(event.turnId);
+        const options = event.turnId ? responseOptionsByTurn.get(event.turnId) : undefined;
+        if (event.turnId) responseOptionsByTurn.delete(event.turnId);
+        if (event.ok && options?.length) {
+          pushMessage({
+            role: "bot",
+            kind: "options",
+            card: {
+              title: "What would you like to do?",
+              subtitle: "Choose a next step, or type your own response.",
+              options,
+            },
+          });
+        }
+        bots.patchBot(bot.id, { busy: false, unread: true, state: event.ok ? "DONE" : "BLOCKED", stateDetail: event.stopReason ?? undefined });
+        proactive.noteState(bot.id, event.ok ? "DONE" : "BLOCKED");
+        notifyIdle(bot.id);
+        const thenStartTurn = deps.routines().settleTurn(event.threadId, event.ok, event.stopReason);
+        if (thenStartTurn) proactive.routineCompleted(thenStartTurn);
+        if (event.ok) {
+          void distillMemory({
+            botId: bot.id,
+            turnText: turnTextFromMessages(store.messagesFor(event.threadId)),
+            generateText: fleetGenerateText(registry.instances(), bot.modelSelection.instanceId),
+          });
+        }
+        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        break;
+      }
+    }
+  });
+
+  // ── live screen: poll the bot's box while it works ────────────────────
+  // Frames stream to clients as SSE {kind:'screen'} (the "Bot's screen"
+  // panel); the final frame is folded into the transcript on turn end.
+  type Frame = { png: string; mime: string };
+  const screenPollers = new Map<
+    string,
+    { timer: ReturnType<typeof setInterval>; capture: () => Promise<void>; last: Frame | null }
+  >();
+
+  function startScreenPoller(botId: string) {
+    if (screenPollers.has(botId) || !box.boxConfigured(cfg)) return;
+    let inFlight = false;
+    const capture = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const { png, format } = await box.screenshotBox(cfg, botId);
+        const frame = { png, mime: format === "jpeg" ? "image/jpeg" : "image/png" };
+        entry.last = frame;
+        appendTeachFrame(botId);
+        broadcast({ kind: "screen", botId, ...frame });
+      } catch {
+        /* box asleep or mid-command — try again next tick */
+      } finally {
+        inFlight = false;
+      }
+    };
+    const entry = {
+      timer: setInterval(capture, 4000),
+      capture,
+      last: null as Frame | null,
+    };
+    screenPollers.set(botId, entry);
+  }
+
+  /** Event-driven refresh: capture NOW (the bot just acted on its screen)
+   * instead of waiting for the next interval tick. */
+  function pokeScreenPoller(botId: string) {
+    void screenPollers.get(botId)?.capture();
+  }
+
+  function stopScreenPoller(botId: string): Frame | null {
+    const entry = screenPollers.get(botId);
+    if (!entry) return null;
+    clearInterval(entry.timer);
+    screenPollers.delete(botId);
+    return entry.last;
+  }
+
+  // Local computer-use contract written by Electron main on startup
+  // (app.getPath("userData")/cua-connection.json). Electron passes the exact
+  // location because that path is OS-specific. Read fresh each turn.
+  function cuaConnectionCandidates(): string[] {
+    if (process.env.OMB_USER_DATA) return [join(process.env.OMB_USER_DATA, "cua-connection.json")];
+    const root =
+      process.platform === "win32"
+        ? (process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"))
+        : process.platform === "darwin"
+          ? join(homedir(), "Library", "Application Support")
+          : (process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"));
+    return ["VelarixBot", "velarixbot", "OpenMausBot", "openmausbot", "OpenGrokBot", "opengrokbot"].map(
+      (dir) => join(root, dir, "cua-connection.json"),
+    );
+  }
+
+  function readCuaConnection(): { command: string; args: string[]; env: Record<string, string> } | null {
+    for (const p of cuaConnectionCandidates()) {
+      try {
+        const conn = JSON.parse(readFileSync(p, "utf8"));
+        if (!conn || conn.mode === "unavailable" || !conn.mcpCommand) continue;
+        return { command: conn.mcpCommand, args: conn.mcpArgs ?? ["mcp"], env: conn.mcpEnv ?? {} };
+      } catch {
+        /* try the next location */
+      }
+    }
+    return null;
+  }
+
+  // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
+  async function startTurn(botId: string, text: string, opts?: StartTurnOpts): Promise<void> {
+    const bot = store.bot(botId);
+    if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
+    if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
+    proactive.reset(botId);
+    const commsDepth = opts?.commsDepth ?? 0;
+    const visited = uniqueIds([...(opts?.visited ?? []), bot.id]);
+    const groupThreadId = opts?.groupThreadId ?? (commsDepth === 0 ? bot.threadId : undefined);
+
+    const instance = registry.get(bot.modelSelection.instanceId);
+    if (!instance) {
+      throw Object.assign(
+        new Error(`provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`),
+        { status: 409 },
+      );
+    }
+    if (bot.computer === "local" && instance.adapter.capabilities.localComputerMcp !== true) {
+      throw Object.assign(new Error("selected provider does not support guarded local computer control"), { status: 409 });
+    }
+    const configured = cfg.instances?.[bot.modelSelection.instanceId];
+    const fullAuto = configured?.config && typeof configured.config === "object" && (configured.config as { fullAuto?: unknown }).fullAuto === true;
+    if (bot.computer === "local" && fullAuto) {
+      bots.patchBot(bot.id, { state: "BLOCKED", stateDetail: "local computer cannot be combined with provider full-auto" });
+      proactive.noteState(bot.id, "BLOCKED");
+      throw Object.assign(new Error("unsafe configuration: local computer cannot be combined with provider full-auto"), { status: 409 });
+    }
+
+    const userMessage = store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
+    broadcast({ kind: "message", threadId: bot.threadId, message: userMessage });
+
+    // transcript for API-backed drivers: settled text turns only
+    const transcript = store
+      .messagesFor(bot.threadId)
+      .filter((m) => m.kind === "text" && m.text && m.id !== userMessage.id)
+      .slice(-40)
+      .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: m.text! }));
+
+    const attachedSkill = bot.skillId ? getSkill(bot.skillId) : null;
+    const persona = [
+      `You are ${bot.name}, a personal bot in VelarixBot.`,
+      bot.title && `Role: ${bot.title}.`,
+      bot.description && `About: ${bot.description}`,
+      "Stay in that character. Coordinate in this VelarixBot workspace; do not implement the user's repo or run a coding audit unless they explicitly ask for code. Do not dump a feature tour or A/B/C onboarding.",
+    ]
+      .filter(Boolean)
+      .join(" ") + skillSystemNote(attachedSkill);
+
+    // busy flips immediately so the composer locks; the dispatch itself runs
+    // in the background — box provisioning can take ~90s and must never
+    // hang the HTTP request
+    bots.patchBot(bot.id, { busy: true, unread: false, state: "RUNNING", stateDetail: undefined });
+    proactive.noteState(bot.id, "RUNNING");
+    broadcast({ kind: "bot", bot: store.bot(bot.id) });
+
+    void (async () => {
+      try {
+        const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
+        if (cfg.composio?.key && bot.enabledApps?.length) {
+          integrations.composio = composioIntegration(bot.enabledApps);
+        }
+        const wants = bot.computer;
+        // Only drivers that can actually act on the box (mount the computer
+        // MCP tools, or run on the box itself) get integrations.computer —
+        // otherwise the "you have a cloud computer" prompt below would be a
+        // lie the model repeats to the user.
+        if (wants === "cloud" && box.boxConfigured(cfg) && instance.adapter.capabilities.cloudComputer === true) {
+          let b = await box.findBox(cfg, bot.id).catch(() => null);
+          // the Computer driver runs ON the box — provision it on first use
+          if (!b && instance.driverKind === "boxAgent") {
+            broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
+            await box.provisionBox(cfg, bot.id, bot.name);
+            b = await box.findBox(cfg, bot.id).catch(() => null);
+          }
+          if (b) {
+            integrations.computer = { boxId: b.id, token: cfg.box!.token! };
+            repos.computerBindings.record(bot.id, b.id);
+          }
+        }
+        // local computer (this Mac) via the Electron-hosted cua-driver: the
+        // Electron main process owns the daemon (TCC attribution) and writes
+        // its spawn contract to cua-connection.json; the harness only reads it
+        if (wants === "local") {
+          const cua = readCuaConnection();
+          if (cua) integrations.localComputer = cua;
+        }
+        // peer-agent comms: give a user-initiated turn list_bots / ask_bot /
+        // create_bot / delete_bot. Always mount at depth 0 so a lone bot can still create
+        // sidebar peers. A comms-invoked turn (depth ≥ cap) gets none — hard
+        // recursion stop. Only drivers that mount the tools get the integration
+        // (and the prompt hint). Any bot can still be the TARGET of ask_bot.
+        if (commsDepth < MAX_COMMS_DEPTH && instance.adapter.capabilities.agentsMcp === true) {
+          integrations.agents = agentsIntegration(bot.id, commsDepth, visited, groupThreadId);
+        }
+        if (instance.adapter.capabilities.agentsMcp === true) {
+          integrations.memory = memoryIntegration(bot.id);
+          integrations.workspace = workspaceIntegration(bot.id, commsDepth);
+        }
+        // @mentions in the user's message (the composer's tagging UI) become
+        // an explicit delegation nudge — the agent still does the ask_bot call
+        // itself, so the harness stays the single owner of turns/permissions
+        const tagged = integrations.agents
+          ? mentionedBots(
+              text,
+              bots.bots().filter((b) => b.id !== bot.id),
+            )
+          : [];
+        if (tagged.length) {
+          bots.patchBot(bot.id, {
+            threadParticipants: uniqueIds([bot.id, ...(bot.threadParticipants ?? []), ...tagged.map((t) => t.id)]),
+          });
+        }
+
+        await instance.adapter.sendTurn({
+          threadId: bot.threadId,
+          text,
+          model: bot.modelSelection.model,
+          resumeCursor: bot.resumeCursors[bot.modelSelection.instanceId],
+          transcript,
+          attachments: opts?.attachments,
+          cwd: ensureBotWorkspace(bot.id),
+          system:
+            persona +
+            memoryPrompt(bot.id) +
+            turnGrounding(instance.driverKind) +
+            (shouldAttachResponseOptions(instance.driverKind) ? responseOptionsPrompt : "") +
+            (integrations.computer && instance.driverKind !== "boxAgent"
+              ? " You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps."
+              : integrations.localComputer
+                ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
+                : "") +
+            (integrations.agents
+              ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply — the reply stays in this transcript, do not ask the user to relay it. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. update_bot renames a bot or changes its title/description. delete_bot removes a sidebar bot by id — never the last bot in the workspace. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar. Never create or delete bots with the shell, PowerShell, or by writing scripts — only create_bot, update_bot, and delete_bot."
+              : "") +
+            (integrations.memory
+              ? " You have remember and recall tools. remember saves a lasting note for this bot (or the shared workspace). recall reads those notes. Prefer remember for durable facts instead of relying on chat history."
+              : "") +
+            (integrations.workspace
+              ? " Workspace tools: web_search and fetch_page look things up (you have no in-app browser). ask_choice asks the user a multiple-choice question. ask_secret asks for a password/code — the value never appears in chat; never ask them to paste a token in the transcript. create_routine schedules work (weekdays by default; GitHub/Slack listeners need connect_app first). save_skill / run_skill store and follow step recipes. attach_to_chat puts a computer screenshot or file into this thread. connect_app starts installing a catalog app (github, slack, …) via a user connect card."
+              : "") +
+            (tagged.length
+              ? ` The user tagged ${tagged
+                  .map((t) => `@${t.name} (ask_bot bot_id ${t.id})`)
+                  .join(" and ")} in their message — bring them into this group thread with ask_bot. Their replies belong in this transcript; do not route handoffs through the user.`
+              : ""),
+          integrations,
+          requireApproval: bot.requireApproval === true,
+        });
+        if (integrations.computer) startScreenPoller(bot.id);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        const failure = store.appendMessage(bot.threadId, {
+          role: "bot",
+          kind: "activity",
+          tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
+        });
+        broadcast({ kind: "message", threadId: bot.threadId, message: failure });
+        bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: message.slice(0, 160) });
+        proactive.noteState(bot.id, "BLOCKED");
+        notifyIdle(bot.id);
+        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+      }
+    })();
+  }
+
+  // ── user response to a pending ask / permission card ──────────────────
+  async function respond(
+    botId: string,
+    requestId: string,
+    body: { behavior?: unknown; message?: unknown; always?: unknown; persistScope?: unknown },
+  ): Promise<{ ok: true } | { error: string; status: number }> {
+    const bot = store.bot(botId);
+    if (!bot) return { error: "no such bot", status: 404 };
+    const waiter = userAskWaiters.get(requestId);
+    if (waiter) {
+      const secret = waiter.secret;
+      const raw = String(body.message ?? "").trim() || String(body.behavior ?? "");
+      const display = secret ? SECRET_CARD_ANSWER : raw || "ok";
+      const messageId = askMessageByRequest.get(requestId);
+      if (messageId) {
+        const existing = store.messagesFor(bot.threadId).find((msg) => msg.id === messageId);
+        if (existing?.card) {
+          const patched = store.patchMessage(bot.threadId, messageId, {
+            card: { ...existing.card, answered: display },
+          });
+          if (patched) broadcast({ kind: "message.patch", threadId: bot.threadId, message: patched });
+        }
+      } else {
+        const existing = store.messagesFor(bot.threadId).find((msg) => msg.card?.requestId === requestId);
+        if (existing?.card) {
+          const patched = store.patchMessage(bot.threadId, existing.id, {
+            card: { ...existing.card, answered: display },
+          });
+          if (patched) broadcast({ kind: "message.patch", threadId: bot.threadId, message: patched });
+        }
+      }
+      pendingAskByRequest.delete(requestId);
+      settleUserAsk(requestId, secret ? raw : display);
+      return { ok: true };
+    }
+    const instance = registry.get(bot.modelSelection.instanceId);
+    if (!instance) return { error: "provider unavailable", status: 409 };
+    const pending = pendingAskByRequest.get(requestId);
+    if (pending?.requestType === "permission") {
+      // A rule persists ONLY on an explicit Always-allow (`always: true`).
+      // Plain Allow-once persists nothing; Deny and credential asks never
+      // persist; scope defaults to this bot — "workspace" is the explicit
+      // Advanced: all-bots consent.
+      const persisted = persistAllowRule({
+        botId: bot.id,
+        tool: pending.tool,
+        summary: pending.summary,
+        behavior: String(body.behavior ?? ""),
+        always: body.always === true,
+        scope: body.persistScope === "workspace" ? "workspace" : "bot",
+        requestType: pending.requestType,
+      });
+      appendAudit({
+        bot: bot.id,
+        tool: pending.tool,
+        matcher: argumentPattern(pending.summary),
+        decision: `user.${String(body.behavior ?? "")}${body.always === true ? ".always" : ""}`,
+        ...(persisted ? { ruleId: persisted.id } : {}),
+      });
+    }
+    await instance.adapter.respondToRequest(bot.threadId, requestId, {
+      behavior: body.behavior as "allow" | "deny" | "answer",
+      message: typeof body.message === "string" ? body.message : undefined,
+      always: body.always === true,
+      source: "user",
+    });
+    return { ok: true };
+  }
+
+  async function interrupt(botId: string): Promise<{ ok: true } | { error: string; status: number }> {
+    const bot = store.bot(botId);
+    if (!bot) return { error: "no such bot", status: 404 };
+    const instance = registry.get(bot.modelSelection.instanceId);
+    await instance?.adapter.interruptTurn(bot.threadId);
+    bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
+    proactive.noteState(bot.id, "BLOCKED");
+    notifyIdle(bot.id);
+    broadcast({ kind: "bot", bot: store.bot(bot.id) });
+    return { ok: true };
+  }
+
+  const service: TurnsService = {
+    startTurn,
+    askBotQueued(toBotId, message, depth, opts) {
+      return peerQueue.enqueue(toBotId, () => askBotAndWait(toBotId, message, depth, opts));
+    },
+    handleWorkspaceTool,
+    askUserAndWait,
+    createSidebarBot,
+    removeSidebarBot,
+    respond,
+    interrupt,
+    defaultSelection,
+    selectionForModel,
+    lastScreenFrame(botId) {
+      return screenPollers.get(botId)?.last ?? null;
+    },
+  };
+  return service;
+}

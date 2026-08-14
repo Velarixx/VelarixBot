@@ -52,6 +52,10 @@ describe("server import hygiene (no-node_modules packaging rule)", () => {
     expect(files.length).toBeGreaterThan(30);
     expect(files.some((f) => f.endsWith(`${sep}index.ts`))).toBe(true);
     expect(files.some((f) => f.includes(`${sep}drivers${sep}`))).toBe(true);
+    expect(files.some((f) => f.includes(`${sep}routes${sep}`))).toBe(true);
+    expect(files.some((f) => f.includes(`${sep}services${sep}`))).toBe(true);
+    expect(files.some((f) => f.includes(`${sep}db${sep}`))).toBe(true);
+    expect(files.some((f) => f.includes(`${sep}repositories${sep}`))).toBe(true);
     expect(files.some((f) => f.endsWith(`hermes.ts`))).toBe(true);
     expect(files.some((f) => f.endsWith(".test.ts"))).toBe(false);
     expect(files.some((f) => f.includes(`${sep}testing${sep}`))).toBe(false);
@@ -67,6 +71,38 @@ describe("server import hygiene (no-node_modules packaging rule)", () => {
       }
     }
     expect(violations, `bare imports would crash the packaged server (ships without node_modules):\n${violations.join("\n")}`).toEqual([]);
+  });
+
+  // ── P0.4: the native-addon exception is ONE isolated module ──────────
+  // better-sqlite3 is the single justified non-builtin dependency. Exactly
+  // one file (db/sqlite-native.ts) may reference it, via createRequire —
+  // never a static import (the regex gate above already rejects those).
+  it("isolates better-sqlite3 behind db/sqlite-native.ts", () => {
+    const referencing = files.filter((file) => readFileSync(file, "utf8").includes("better-sqlite3"));
+    expect(referencing.map((f) => relative(SERVER_DIR, f))).toEqual([join("db", "sqlite-native.ts")]);
+    const loader = readFileSync(join(SERVER_DIR, "db", "sqlite-native.ts"), "utf8");
+    expect(loader).toContain("createRequire");
+    for (const spec of importSpecifiers(loader)) {
+      expect(ALLOWED.test(spec), `sqlite-native.ts static import "${spec}" must stay node:/relative`).toBe(true);
+    }
+  });
+
+  // ── P0.5: routes must not import persistence ──────────────────────────
+  // Route modules talk to services; the composition root (app.ts) is the
+  // only place repositories are handed out.
+  it("routes import no persistence (db/, repositories/, sqlite)", () => {
+    const routeFiles = files.filter((f) => f.includes(`${sep}routes${sep}`));
+    expect(routeFiles.length).toBeGreaterThanOrEqual(8);
+    const violations: string[] = [];
+    for (const file of routeFiles) {
+      for (const spec of importSpecifiers(readFileSync(file, "utf8"))) {
+        const normalized = spec.replaceAll("\\", "/");
+        if (normalized.includes("/db/") || normalized.includes("/repositories/") || normalized.includes("better-sqlite3")) {
+          violations.push(`${relative(SERVER_DIR, file)} → "${spec}"`);
+        }
+      }
+    }
+    expect(violations, `routes must stay persistence-free (services own the repositories):\n${violations.join("\n")}`).toEqual([]);
   });
 
   it("catches the failure shapes it exists for", () => {

@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import { CHAT_ONLY_GROUNDING, CODEX_GROUNDING, HERMES_GROUNDING, turnGrounding } from "./grounding.ts";
 
-const indexSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "index.ts"), "utf8");
+// turn dispatch moved to services/turns.ts in the P0.5 split
+const indexSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "services", "turns.ts"), "utf8");
 
 describe("turnGrounding", () => {
   it("always grounds Codex, including when agents MCP is not mounted", () => {

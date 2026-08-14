@@ -1,0 +1,242 @@
+// Composition root (P0.5). createApplication wires repositories, providers,
+// the event bus, and a clock into services, then mounts the route modules.
+// index.ts only reads the environment, opens the database, and listens —
+// tests can build the whole application against fakes.
+import { readFileSync } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { extname, join } from "node:path";
+
+import { requireApiAuth } from "./auth.ts";
+import type { AppConfig } from "./config.ts";
+import type { RuntimeEvent } from "./contracts.ts";
+import type { EventBus } from "./harness/bus.ts";
+import type { ProviderRegistry } from "./harness/registry.ts";
+import { createProactive, type Proactive } from "./proactive.ts";
+import type { Repositories } from "./repositories/index.ts";
+import { createApprovalsRoutes } from "./routes/approvals.ts";
+import { createBotsRoutes } from "./routes/bots.ts";
+import { createComputersRoutes } from "./routes/computers.ts";
+import { json, type RouteCtx, type RouteHandler } from "./routes/context.ts";
+import { createEventsRoutes } from "./routes/events.ts";
+import { createHealthRoutes } from "./routes/health.ts";
+import { createIntegrationsRoutes } from "./routes/integrations.ts";
+import { createRoutinesRoutes } from "./routes/routines.ts";
+import { createTurnsRoutes } from "./routes/turns.ts";
+import { createBotsService, type BotsService } from "./services/bots.ts";
+import { createSseHub, type SseHub } from "./services/events.ts";
+import { createRoutinesService, type RoutinesService } from "./services/routines.ts";
+import { createTeachService, type TeachService } from "./services/teach.ts";
+import { createTurnsService, type TurnsService } from "./services/turns.ts";
+import type { ModelSelection } from "./contracts.ts";
+import { getSkill, skillPrompt } from "./teach.ts";
+
+const MIME: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".json": "application/json",
+  ".woff2": "font/woff2",
+};
+
+export interface Clock {
+  now(): number;
+}
+
+export interface CreateApplicationInput {
+  repos: Repositories;
+  providers: ProviderRegistry;
+  bus: EventBus;
+  cfg: AppConfig;
+  clock?: Clock;
+  port: number;
+  apiToken: string;
+  commsToken: string;
+  staticDir: string | null;
+  stamp: string;
+  reloadProviders(): Promise<void>;
+}
+
+export interface Application {
+  handle(req: IncomingMessage, res: ServerResponse): Promise<void>;
+  /** Drive the schedulers (routines + stall nudges). Fake-clock friendly. */
+  tick(now?: number): void;
+  hub: SseHub;
+  services: {
+    bots: BotsService;
+    turns: TurnsService;
+    routines: RoutinesService;
+    teach: TeachService;
+    proactive: Proactive;
+  };
+}
+
+export async function createApplication(input: CreateApplicationInput): Promise<Application> {
+  const { repos, providers: registry, bus, cfg, port, apiToken, commsToken, staticDir, stamp } = input;
+  const clock: Clock = input.clock ?? { now: () => Date.now() };
+
+  const hub = createSseHub();
+  const broadcast = hub.broadcast;
+
+  // canonical events are mirrored into SQLite (event_log); the per-thread
+  // NDJSON files stay on as the export surface (harness/bus.ts)
+  bus.subscribe((event: RuntimeEvent) => {
+    try {
+      repos.eventLog.append(event);
+    } catch {
+      /* the stream must never die on a log write */
+    }
+  });
+
+  // boot recovery: a bot that died mid-turn reloads as BLOCKED/interrupted
+  repos.bots.recoverInterrupted();
+
+  // default selection resolves asynchronously; bots created before that use
+  // the boot placeholder (exactly the pre-refactor behavior)
+  let bootSelection: ModelSelection = { instanceId: "claude", model: "claude-sonnet-5" };
+  const bots = createBotsService({ repos, defaultSelection: () => bootSelection });
+
+  const teach = createTeachService({ bus, registry, bot: (id) => bots.bot(id) });
+
+  let turnsRef: TurnsService | null = null;
+  const proactive = createProactive({
+    now: () => clock.now(),
+    onNudge: (botId) => {
+      const bot = bots.bot(botId);
+      if (!bot) return;
+      bots.patchBot(botId, { unread: true });
+      broadcast({ kind: "bot", bot: bots.bot(botId) });
+      broadcast({ kind: "nudge", botId, reason: "stall" });
+    },
+    onTrigger: (botId, prompt) => {
+      void turnsRef?.startTurn(botId, prompt).catch(() => {});
+    },
+  });
+
+  let routinesRef: RoutinesService | null = null;
+  const turns = createTurnsService({
+    cfg,
+    registry,
+    bus,
+    repos,
+    bots,
+    routines: () => routinesRef!,
+    teach,
+    proactive,
+    broadcast,
+    port,
+    commsToken,
+  });
+  turnsRef = turns;
+
+  const routines = createRoutinesService({
+    repos,
+    now: () => clock.now(),
+    broadcast,
+    bot: (id) => bots.bot(id),
+    startTurn: (botId, text) => turns.startTurn(botId, text),
+    getSkill,
+    skillPrompt,
+  });
+  routinesRef = routines;
+
+  bootSelection = await turns.defaultSelection();
+  bots.seedIfEmpty();
+  teach.restoreTeachSubscriptions();
+
+  const integrations = createIntegrationsRoutes({
+    bots,
+    turns,
+    registry,
+    cfg,
+    commsToken,
+    broadcast,
+    reloadProviders: input.reloadProviders,
+  });
+
+  // route order preserves the pre-refactor dispatch: internal comms first
+  // (their own token), then the launch-token gate, then the public surface
+  const gatedRoutes: RouteHandler[] = [
+    createEventsRoutes({ hub }),
+    createRoutinesRoutes({ routines }),
+    createApprovalsRoutes({ bots }),
+    createBotsRoutes({ bots, turns, teach, registry, cfg, broadcast }),
+    createTurnsRoutes({ turns }),
+    createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
+    integrations.api,
+    createComputersRoutes({ bots, cfg, recordBinding: (botId, boxId) => repos.computerBindings.record(botId, boxId) }),
+  ];
+
+  async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+    const ctx: RouteCtx = { req, res, url, path: url.pathname, method: req.method ?? "GET" };
+    try {
+      if (await integrations.internal(ctx)) return;
+
+      // ── launch-token gate for everything else under /api ──────────────
+      // 401 without/with a wrong or stale token; Host must be the loopback
+      // bind (DNS-rebinding guard); browser Origins are rejected on state
+      // changes. /api/health is exempt (port-fallback probe + release smoke).
+      if (ctx.path.startsWith("/api/")) {
+        const denied = requireApiAuth(
+          {
+            path: ctx.path,
+            method: ctx.method,
+            headers: {
+              authorization: req.headers.authorization,
+              host: req.headers.host,
+              origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+            },
+          },
+          apiToken,
+          port,
+        );
+        if (denied) return json(res, denied.status, { error: denied.error });
+      }
+
+      for (const route of gatedRoutes) {
+        if (await route(ctx)) return;
+      }
+
+      // packaged app: the server serves the built UI too (window → :8799 for
+      // everything, no dev proxy to die). OMB_STATIC_DIR is set by Electron.
+      if (ctx.method === "GET" && !ctx.path.startsWith("/api/") && staticDir) {
+        const safe = ctx.path === "/" ? "/index.html" : ctx.path.replace(/\.\./g, "");
+        const file = join(staticDir, safe);
+        try {
+          const data = readFileSync(file);
+          res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
+          res.end(data);
+          return;
+        } catch {
+          // SPA fallback
+          try {
+            const data = readFileSync(join(staticDir, "index.html"));
+            res.writeHead(200, { "content-type": "text/html" });
+            res.end(data);
+            return;
+          } catch {
+            /* fall through to 404 */
+          }
+        }
+      }
+
+      return json(res, 404, { error: `no route: ${ctx.method} ${ctx.path}` });
+    } catch (e) {
+      const status = (e as { status?: number })?.status ?? 500;
+      return json(res, status, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  return {
+    handle,
+    tick(now = clock.now()) {
+      routines.tick(now);
+      proactive.tick(now);
+    },
+    hub,
+    services: { bots, turns, routines, teach, proactive },
+  };
+}
