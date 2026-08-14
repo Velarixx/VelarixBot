@@ -33,6 +33,20 @@ export interface StreamEntry {
   payload: Record<string, unknown>;
 }
 
+/** Metadata-only view of one event — the `data` payload (which can carry
+ * turn/transcript content) is deliberately NOT selectable through this
+ * shape. The diagnostics export (P1.7) builds its redacted log section
+ * from these rows so transcripts can never leak into a support bundle. */
+export interface EventMeta {
+  seq: number;
+  eventId: string;
+  threadId: string;
+  type: string;
+  createdAt: string;
+  streamId: string;
+  sequence: number;
+}
+
 export interface EventLogRepository {
   /** Persist a runtime event on its thread's stream. Stamps schemaVersion /
    * streamId / sequence ON the event (in place) so every later consumer in
@@ -50,6 +64,11 @@ export interface EventLogRepository {
   /** Lowest retained sequence on the stream (0 when empty) — replay from
    * `after` is complete only when after >= oldest - 1. */
   oldestSequence(streamId: string): number;
+  /** The newest `limit` events as METADATA ONLY (no data column, so no
+   * transcript content), oldest first. */
+  recentMeta(limit: number): EventMeta[];
+  /** Total persisted events across all streams. */
+  count(): number;
 }
 
 export function createEventLogRepository(db: SqliteDatabase): EventLogRepository {
@@ -66,6 +85,17 @@ export function createEventLogRepository(db: SqliteDatabase): EventLogRepository
   const selectStream = db.prepare<{ sequence: number; data: string }>(
     "SELECT sequence, data FROM event_log WHERE stream_id = ? AND sequence > ? ORDER BY sequence",
   );
+  // no `data` column here on purpose — see EventMeta
+  const selectRecentMeta = db.prepare<{
+    seq: number;
+    event_id: string;
+    thread_id: string;
+    type: string;
+    created_at: string;
+    stream_id: string;
+    sequence: number;
+  }>("SELECT seq, event_id, thread_id, type, created_at, stream_id, sequence FROM event_log ORDER BY seq DESC LIMIT ?");
+  const countAll = db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log");
 
   // sequence assignment + insert must be one atomic step so two appends
   // can never race to the same (stream_id, sequence) pair
@@ -141,6 +171,23 @@ export function createEventLogRepository(db: SqliteDatabase): EventLogRepository
     },
     oldestSequence(streamId) {
       return oldestSeq.get(streamId)?.n ?? 0;
+    },
+    recentMeta(limit) {
+      return selectRecentMeta
+        .all(limit)
+        .reverse()
+        .map((row) => ({
+          seq: row.seq,
+          eventId: row.event_id,
+          threadId: row.thread_id,
+          type: row.type,
+          createdAt: row.created_at,
+          streamId: row.stream_id,
+          sequence: row.sequence,
+        }));
+    },
+    count() {
+      return countAll.get()?.n ?? 0;
     },
   };
 }

@@ -192,6 +192,38 @@ describe("harness HTTP API", () => {
     expect(JSON.stringify(body)).not.toContain("sk-or-v1-");
   });
 
+  it("exports diagnostics behind the token — versions, capabilities, integrity, and NO transcripts", async () => {
+    // the export is token-gated like every /api route (only /api/health is open)
+    const denied = await fetch(`${BASE}/api/diagnostics/export`);
+    expect(denied.status).toBe(401);
+
+    const roster = await api("GET", "/api/bots");
+    const transcriptLine = roster.body.bots[0].messages.find((m: { kind: string }) => m.kind === "text")?.text;
+    expect(typeof transcriptLine).toBe("string");
+
+    const { status, body } = await api("GET", "/api/diagnostics/export");
+    expect(status).toBe(200);
+    expect(body.format).toBe("velarixbot-diagnostics");
+    expect(body.transcriptsIncluded).toBe(false);
+    expect(body.versions.node).toBe(process.version); // spawned with the same node
+    expect(body.versions.schemaVersion).toBeGreaterThanOrEqual(3);
+    expect(body.integrity.result).toBe("ok");
+    const ghost = body.capabilities.providers.find((p: { instanceId: string }) => p.instanceId === "ghost");
+    expect(ghost).toMatchObject({ driverKind: "not-a-real-driver", state: "unavailable" });
+    expect(body.capabilities.computers.some((c: { kind: string }) => c.kind === "local")).toBe(true);
+    // the transcript that exists in this profile is NOT in the bundle
+    expect(JSON.stringify(body)).not.toContain(transcriptLine);
+  });
+
+  it("backs up the profile on demand and reports the verified manifest", async () => {
+    const { status, body } = await api("POST", "/api/diagnostics/backup");
+    expect(status).toBe(200);
+    expect(typeof body.path).toBe("string");
+    expect(body.manifest.integrity).toBe("ok");
+    expect(body.manifest.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.manifest.tables.bots).toBeGreaterThanOrEqual(1);
+  });
+
   it("creates, patches, and deletes a bot", async () => {
     const created = await api("POST", "/api/bots");
     expect(created.status).toBe(201);
