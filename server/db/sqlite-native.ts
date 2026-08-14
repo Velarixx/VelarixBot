@@ -73,7 +73,7 @@ export function loadBetterSqlite3(): SqliteDatabaseCtor {
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       throw new Error(
-        `could not load better-sqlite3 from "${target}". ` +
+        `could not load better-sqlite3 (resolved target: ${target}). ` +
           `Packaged installs must ship resources/server-deps/better-sqlite3 ` +
           `(scripts/stage-sqlite.mjs); dev needs pnpm install. ${detail}`,
       );

@@ -18,11 +18,21 @@ files:
 
 asar: true
 
+# node_modules ship nowhere; the server's ONE native dependency
+# (better-sqlite3, an N-API addon with an in-package prebuild) is staged by
+# scripts/stage-sqlite.mjs and loaded from resources/server-deps by
+# server/db/sqlite-native.ts. Never let electron-builder rebuild repo
+# node_modules against Electron — N-API needs no rebuild and the dev tree
+# must stay loadable by plain node.
+npmRebuild: false
+
 extraResources:
   - from: dist
     to: ui
   - from: dist-server
     to: server
+  - from: build/generated-server-deps
+    to: server-deps
 
 mac:
   identity: "-"
