@@ -1,7 +1,8 @@
-// Which cloud box a bot is bound to. A cache of the Box-side name lookup
-// (box.findBox stays authoritative — the box API can archive or recycle a
-// VM at any time); recorded when a box is found or provisioned, dropped
-// with the bot.
+// Which remote computer (machine id) a bot is bound to. A cache of the
+// provider-side lookup (the ComputerProvider stays authoritative — a vendor
+// can archive or recycle a machine at any time); recorded when a machine is
+// found or provisioned, dropped with the bot. Column names keep the
+// original box_* spelling — a rename would churn the schema for nothing.
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 
 export interface ComputerBinding {
