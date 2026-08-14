@@ -82,6 +82,21 @@ describe("event log per-stream sequences (P1.3)", () => {
     expect(log.latestSequence("t")).toBe(0);
   });
 
+  it("recentMeta returns metadata only — never the data payload (P1.7 diagnostics)", () => {
+    const log = createEventLogRepository(db);
+    const secretPayload = { ...runtimeEvent("thread-a", 1), transcript: "TRANSCRIPT-CANARY-nothing-may-export-this" };
+    log.append(secretPayload as RuntimeEvent);
+    log.append(runtimeEvent("thread-a", 2));
+    log.append(runtimeEvent("thread-b", 1));
+
+    const meta = log.recentMeta(2);
+    expect(meta).toHaveLength(2); // newest 2, oldest first
+    expect(meta.map((m) => m.eventId)).toEqual(["ev-thread-a-2", "ev-thread-b-1"]);
+    expect(meta[0]).toMatchObject({ threadId: "thread-a", type: "turn.started", streamId: "thread-a", sequence: 2 });
+    expect(JSON.stringify(log.recentMeta(10))).not.toContain("TRANSCRIPT-CANARY");
+    expect(log.count()).toBe(3);
+  });
+
   it("survives a reopen: sequences continue where the durable log left off", () => {
     let log = createEventLogRepository(db);
     log.appendToStream(UI_STREAM_ID, "bot", { kind: "bot" });
