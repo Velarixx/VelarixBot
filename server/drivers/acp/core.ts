@@ -29,7 +29,7 @@ import { augmentedPath } from "../../env-path.ts";
 import { acpImageBlocks, agentAcceptsImagePrompts } from "../../attachments.ts";
 import { classifyOpenedRequest } from "../../handoff.ts";
 import { appendNative } from "../native.ts";
-import { cliVersion, killProcessTree, spawnCliHidden } from "../cli.ts";
+import { cliVersion, displayCliPath, killProcessTree, probeProtocol, spawnCliHidden } from "../cli.ts";
 
 export interface AcpConfig {
   cli: string;
@@ -388,6 +388,16 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           emit({ ...base(threadId, turnId), type: "runtime.error", message: `spawn failed: ${e.message}` });
           settle(false, "spawn_error");
         });
+        // A CLI that dies within milliseconds (wrong argv → usage → exit 2)
+        // races the stdin writes: Node then emits an async `write EPIPE` on
+        // child.stdin, and without a listener that unhandled 'error' event
+        // kills the WHOLE server (rc.12 field crash). Settle instead —
+        // nothing can be written to this child anymore.
+        child.stdin.on("error", (e) => {
+          if (state.settled) return;
+          emit({ ...base(threadId, turnId), type: "runtime.error", message: `${DRIVER_KIND} stdin write failed: ${e.message}` });
+          settle(false, "stdin_error");
+        });
         child.on("close", (code) => {
           if (!state.settled) {
             emit({
@@ -491,10 +501,40 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         return { turnId };
       };
 
+      // Protocol-identity cache: one handshake per binary+version per
+      // minute, so the model picker doesn't spawn a process per describe().
+      let identityCache: { key: string; at: number; ok: boolean; detail: string } | null = null;
       const snapshot = async (): Promise<ProviderSnapshot> => {
         const env = childEnv();
         const version = await cliVersion(config.cli, 8000, env);
         if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
+        // `--version` succeeding proves presence, not identity: a binary that
+        // rejects our spawn argv (usage → exit 2) or never speaks JSON-RPC
+        // would otherwise show "available" while every turn fails (rc.12
+        // hermes field failure). Verify it speaks ACP on the exact argv a
+        // turn uses, and surface the resolved path + version when it doesn't.
+        const key = `${config.cli}@${version}`;
+        if (!identityCache || identityCache.key !== key || Date.now() - identityCache.at > 60_000) {
+          const probeTurn = { threadId: "acp-identity-probe", text: "" } as SendTurnInput;
+          const probe = await probeProtocol(
+            config.cli,
+            support.spawnArgs(config, probeTurn),
+            {
+              jsonrpc: "2.0",
+              id: 1,
+              method: "initialize",
+              params: { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } } },
+            },
+            { timeoutMs: 8000, env },
+          );
+          identityCache = { key, at: Date.now(), ...probe };
+        }
+        if (!identityCache.ok) {
+          return {
+            state: "unavailable",
+            reason: `\`${displayCliPath(config.cli, env)}\` (${version}) does not speak ACP with the ${support.displayName} argv — wrong or outdated CLI on PATH (${identityCache.detail})`,
+          };
+        }
         return { state: "available", version, authenticated: support.isAuthenticated(env) };
       };
 

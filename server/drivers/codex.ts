@@ -27,7 +27,10 @@
 // resumeCursor is the codex thread id; a later turn tries thread/resume
 // and falls back to a fresh thread/start. Persona is
 // thread/start|resume.developerInstructions (not prepended onto user text).
-// A child that exits 0 before turn/completed is a finished turn, not a kill.
+// A child that exits 0 before turn/completed is a finished turn ONLY when it
+// actually spoke the app-server protocol first; exit 0 with zero protocol
+// traffic is a wrong/outdated binary and fails the turn loudly (rc.12 field
+// hotfix — the invisible "DONE but empty" turn).
 import type {
   DriverCreateInput,
   ProviderDriver,
@@ -42,7 +45,7 @@ import { ensureBotWorkspace } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
 import { codexImageInput } from "../attachments.ts";
 import { HANDOFF_CONTINUE, classifyOpenedRequest, isCredentialAsk } from "../handoff.ts";
-import { cliVersion, killProcessTree, spawnCliHidden } from "./cli.ts";
+import { cliVersion, displayCliPath, killProcessTree, probeProtocol, spawnCliHidden } from "./cli.ts";
 import { FALLBACK_CODEX_MODELS, loadCodexModelCatalog } from "./codex-models.ts";
 import { appendNative } from "./native.ts";
 
@@ -231,7 +234,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         detached: true,
       });
 
-      const state = { settled: false, lastText: "", sawStreamDelta: false };
+      const state = { settled: false, lastText: "", sawStreamDelta: false, sawProtocol: false };
       const asks = new Map<string, AskFinish>();
       let nextId = 1;
       const rpcPending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
@@ -480,6 +483,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         } catch {
           return;
         }
+        state.sawProtocol = true;
         appendNative(threadId, { dir: "in", source: "codex.app-server", msg });
         if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
           const pend = rpcPending.get(msg.id);
@@ -517,22 +521,38 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         emit({ ...base(threadId, turnId), type: "runtime.error", message: `spawn failed: ${e.message}` });
         settle(false, "spawn_error");
       });
+      // A fast-dying CLI races the stdin writes: Node then emits an async
+      // `write EPIPE` on child.stdin, and without a listener that is an
+      // unhandled 'error' event that kills the WHOLE server (rc.12 field
+      // crash). Nothing can be written to this child anymore — settle.
+      child.stdin.on("error", (e) => {
+        if (state.settled) return;
+        emit({ ...base(threadId, turnId), type: "runtime.error", message: `codex stdin write failed: ${e.message}` });
+        settle(false, "stdin_error");
+      });
       child.on("close", (code) => {
         flushStdout();
         if (state.settled) return;
         // Codex sometimes exits 0 without a turn/completed notification
         // (or the notification is still in the just-flushed buffer). That is
-        // a clean end, not a killed turn — only a non-zero close is failure.
-        if (code === 0) {
+        // a clean end — but ONLY when the binary actually spoke the
+        // app-server protocol. Exit 0 with zero protocol traffic is an
+        // outdated/shadowed `codex` on PATH (issue #9 class): mapping it to
+        // success turns every message into an invisible empty "DONE" turn.
+        if (code === 0 && state.sawProtocol) {
           settle(true, null);
           return;
         }
+        const tail = stderr.trim().slice(-300);
         emit({
           ...base(threadId, turnId),
           type: "runtime.error",
-          message: `codex exited ${code} before turn/completed${stderr ? `: ${stderr.trim().slice(-300)}` : ""}`,
+          message:
+            code === 0
+              ? `\`${config.cli}\` exited 0 without speaking the app-server protocol — the codex on PATH is likely outdated or shadowed by another install${tail ? `: ${tail}` : ""}`
+              : `codex exited ${code} before turn/completed${tail ? `: ${tail}` : ""}`,
         });
-        settle(false, "exit_before_result");
+        settle(false, code === 0 ? "protocol_mismatch" : "exit_before_result");
       });
 
       active.set(threadId, { stop, turnId, asks });
@@ -594,9 +614,32 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       return { turnId };
     };
 
+    // Protocol-identity cache: one handshake per binary+version per minute,
+    // so the model picker doesn't spawn a process on every describe().
+    let identityCache: { key: string; at: number; ok: boolean; detail: string } | null = null;
     const snapshot = async (): Promise<ProviderSnapshot> => {
       const version = await cliVersion(config.cli, 8000, probeEnv);
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
+      // `--version` succeeding proves presence, not identity: a PATH-shadowed
+      // or outdated `codex` (issue #9 class) still answers it and then fails
+      // every turn. Verify the binary actually speaks app-server JSON-RPC and
+      // surface the resolved path + version when it doesn't.
+      const key = `${config.cli}@${version}`;
+      if (!identityCache || identityCache.key !== key || Date.now() - identityCache.at > 60_000) {
+        const probe = await probeProtocol(
+          config.cli,
+          ["app-server"],
+          { jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "velarixbot", version: "1" } } },
+          { timeoutMs: 8000, env: probeEnv },
+        );
+        identityCache = { key, at: Date.now(), ...probe };
+      }
+      if (!identityCache.ok) {
+        return {
+          state: "unavailable",
+          reason: `\`${displayCliPath(config.cli, probeEnv)}\` (${version}) does not speak the app-server protocol — update the codex CLI or fix PATH shadowing (${identityCache.detail})`,
+        };
+      }
       models = await loadCodexModelCatalog(config.cli, probeEnv);
       return { state: "available", version };
     };
