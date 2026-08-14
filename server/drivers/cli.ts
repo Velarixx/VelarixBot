@@ -180,6 +180,100 @@ export function cliVersion(
   );
 }
 
+/** The path the CLI resolves to, for display in snapshot reasons — so a
+ * PATH-shadowed binary is identifiable ("which codex is this?"). Display
+ * only, never used to spawn. Falls back to the raw name. */
+export function displayCliPath(cli: string, env?: NodeJS.ProcessEnv): string {
+  if (/[\\/]/.test(cli)) return cli;
+  if (IS_WIN) return resolveCli(cli);
+  const path = (env ?? process.env).PATH ?? "";
+  for (const dir of path.split(":")) {
+    if (!dir) continue;
+    try {
+      const candidate = join(dir, cli);
+      if (existsSync(candidate)) return candidate;
+    } catch {
+      /* unreadable PATH entry */
+    }
+  }
+  return cli;
+}
+
+/**
+ * Protocol-identity probe: spawn `cli args` exactly like a turn would, write
+ * one JSON-RPC line, and wait for ANY JSON-RPC message back on stdout. A
+ * `--version` probe alone cannot tell an impostor apart — a PATH-shadowed or
+ * outdated binary answers `--version` fine and then rejects the real argv or
+ * never speaks JSON (rc.12 field failure). Kills the child when done.
+ */
+export function probeProtocol(
+  cli: string,
+  args: string[],
+  initMessage: unknown,
+  opts: { timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ ok: boolean; detail: string }> {
+  return new Promise((resolvePromise) => {
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawnCliHidden(cli, args, {
+        env: opts.env ?? process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: true,
+      });
+    } catch (e) {
+      resolvePromise({ ok: false, detail: (e as Error).message });
+      return;
+    }
+    let done = false;
+    const finish = (ok: boolean, detail: string) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      killProcessTree(child.pid);
+      resolvePromise({ ok, detail: detail.slice(-300) });
+    };
+    const timer = setTimeout(
+      () => finish(false, "no protocol reply before the probe timeout"),
+      opts.timeoutMs ?? 8000,
+    );
+    timer.unref?.();
+    let stderr = "";
+    let buf = "";
+    child.stderr.on("data", (c) => {
+      stderr += c;
+      if (stderr.length > 4096) stderr = stderr.slice(-4096);
+    });
+    child.stdout.on("data", (chunk) => {
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg && typeof msg === "object") {
+            finish(true, "");
+            return;
+          }
+        } catch {
+          /* non-JSON noise — keep waiting */
+        }
+      }
+    });
+    child.on("error", (e) => finish(false, `spawn failed: ${e.message}`));
+    child.stdin.on("error", () => {
+      /* the close handler reports the failure */
+    });
+    child.on("close", (code) => finish(false, `exited ${code} before any protocol reply${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
+    try {
+      child.stdin.write(JSON.stringify(initMessage) + "\n");
+    } catch {
+      /* stream already gone — close will fire */
+    }
+  });
+}
+
 /**
  * Kill a spawned CLI and its whole process tree (child MCP servers, the
  * codex app-server worker, etc.). POSIX uses the process group

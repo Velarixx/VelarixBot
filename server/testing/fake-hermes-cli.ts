@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+// Strict-grammar fake of the `hermes` CLI, for validating the EXACT argv
+// hermes.ts spawns. The accept-anything fake-acp-cli.ts cannot falsify a
+// spawn grammar — which is how the rc.12 field failure shipped: the
+// installed hermes rejected our argv, printed its usage/subcommand catalog,
+// and exited 2, while `--version` kept the picker green. This fake is a
+// clap-style argv gate in front of the shared ACP protocol fake:
+//
+//   default             accepts EXACTLY the grammar hermes.ts emits —
+//                       `--approval-policy <acp|never> [-m <model>] acp stdio`
+//                       (and `exec -p <prompt>` for one-shot generateText) —
+//                       then delegates to fake-acp-cli.ts for the protocol.
+//                       ANY other argv → usage on stderr, exit 2.
+//   FAKE_HERMES_GRAMMAR=reject
+//                       models the field binary: answers `--version`, rejects
+//                       everything else with its subcommand catalog and exit 2
+//                       — never speaks ACP. Turns must fail loudly and
+//                       snapshot must report unusable, not "available".
+//
+// Keep this file dependency-free — it runs as a bare `node` subprocess.
+
+const argv = process.argv.slice(2);
+
+if (argv.includes("--version")) {
+  console.log("fake-hermes 0.9.0");
+  process.exit(0);
+}
+
+const USAGE = [
+  "error: unexpected argument found",
+  "usage: hermes <command> [options]",
+  "commands: acp, exec, login, logout, orchestrator, pets, journey, plugins, skills",
+].join("\n");
+
+function rejectArgv(): never {
+  process.stderr.write(USAGE + "\n");
+  process.exit(2);
+}
+
+if (process.env.FAKE_HERMES_GRAMMAR === "reject") rejectArgv();
+
+// one-shot generateText surface (`hermes exec -p <prompt>`), strict
+if (argv[0] === "exec") {
+  if (argv[1] !== "-p" || argv.length !== 3) rejectArgv();
+  console.log("fake hermes one-shot");
+  process.exit(0);
+}
+
+// turn/probe spawn: `--approval-policy <acp|never> [-m <model>] acp stdio`,
+// exactly and in order — anything else is the wrong grammar
+const rest = [...argv];
+if (rest.shift() !== "--approval-policy") rejectArgv();
+const policy = rest.shift();
+if (policy !== "acp" && policy !== "never") rejectArgv();
+if (rest[0] === "-m") {
+  rest.shift();
+  const model = rest.shift();
+  if (!model || model.startsWith("-")) rejectArgv();
+}
+if (rest.length !== 2 || rest[0] !== "acp" || rest[1] !== "stdio") rejectArgv();
+
+// grammar accepted — speak ACP via the shared protocol fake
+await import("./fake-acp-cli.ts");

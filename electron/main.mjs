@@ -9,6 +9,7 @@ import { startSpeech, stopSpeech } from "./speech.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { registerNotifyIpc } from "./notify.mjs";
 import { shouldQuitOnLastWindow } from "./background.mjs";
+import { createRestartPolicy } from "./server-supervisor.mjs";
 import { parseTrayEnabled, serializeTrayPrefs, trayBadgeText, trayTooltip } from "./tray-settings.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -122,6 +123,55 @@ const ERROR_PAGE =
   encodeURIComponent(
     `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><div style="font-size:40px">🐭</div><h2 style="font-weight:600;margin:12px 0 6px">Couldn't start the bot server</h2><p style="color:#fcfcfc99;line-height:1.5">Something else is using its ports. Quit and reopen VelarixBot — if it keeps happening, restart your computer.</p></div></body>`,
   );
+
+const SERVER_DOWN_PAGE =
+  "data:text/html;charset=utf-8," +
+  encodeURIComponent(
+    `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><div style="font-size:40px">🐭</div><h2 style="font-weight:600;margin:12px 0 6px">The bot server stopped</h2><p style="color:#fcfcfc99;line-height:1.5">It kept crashing and couldn't be restarted automatically. Quit and reopen VelarixBot to try again.</p></div></body>`,
+  );
+
+// Inject the launch token on every renderer request to the server. Covers
+// fetch AND EventSource (SSE, which cannot set its own headers). Re-run
+// after every (re)start — a respawn can land on a different fallback port,
+// and re-registering replaces the previous filter.
+function registerApiAuth() {
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: serverUrlFilter(SERVER_PORT) },
+    (details, callback) => callback({ requestHeaders: withAuthHeader(details.requestHeaders, API_TOKEN) }),
+  );
+}
+
+// Post-boot supervision (rc.12 field fix): the exit listener inside
+// startServerOn only matters during startup. Without this, one bad CLI
+// crashing the forked server left the window up while every bot was dead
+// until app relaunch. Respawn through the crash-loop policy; when that gives
+// up, say so visibly instead of a silently dead app.
+const serverRestartPolicy = createRestartPolicy();
+
+function superviseServer(proc) {
+  proc.once("exit", (code) => {
+    if (isQuitting || proc !== serverProc) return;
+    serverProc = null;
+    console.error(`[server] bot server exited unexpectedly (code ${code}) — attempting restart`);
+    void respawnServer();
+  });
+}
+
+async function respawnServer() {
+  serverReady = false;
+  if (serverRestartPolicy.shouldRestart()) {
+    serverReady = await startServerPackaged();
+  }
+  if (mainWindow?.isDestroyed()) return;
+  if (serverReady) {
+    superviseServer(serverProc);
+    registerApiAuth();
+    mainWindow?.loadURL(`http://127.0.0.1:${SERVER_PORT}`);
+  } else {
+    console.error("[server] bot server could not be restarted");
+    mainWindow?.loadURL(SERVER_DOWN_PAGE);
+  }
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -350,15 +400,12 @@ app.whenReady().then(async () => {
   startCua().catch((e) => console.error("[cua] start failed:", e));
   if (app.isPackaged) {
     serverReady = await startServerPackaged();
-    // Inject the launch token on every renderer request to the server —
-    // registered AFTER port fallback settles so the filter matches the port
-    // the window actually loads from. Covers fetch AND EventSource (SSE),
-    // which cannot set its own headers.
+    // Token injection registered AFTER port fallback settles so the filter
+    // matches the port the window actually loads from; supervision so a
+    // post-boot server death respawns instead of leaving a dead app.
     if (serverReady) {
-      session.defaultSession.webRequest.onBeforeSendHeaders(
-        { urls: serverUrlFilter(SERVER_PORT) },
-        (details, callback) => callback({ requestHeaders: withAuthHeader(details.requestHeaders, API_TOKEN) }),
-      );
+      superviseServer(serverProc);
+      registerApiAuth();
     }
   }
   trayEnabled = loadTrayEnabled();

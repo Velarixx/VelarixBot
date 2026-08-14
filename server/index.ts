@@ -22,6 +22,17 @@ import { initSecretStore } from "./secrets.ts";
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const STATIC_DIR = process.env.OMB_STATIC_DIR || null;
 
+// Last-resort crash guards: a misbehaving third-party CLI must never take
+// the whole server down. Async stream errors that escape their owners (the
+// rc.12 field crash was a `write EPIPE` on a dead child's stdin) land here —
+// log and keep serving; every turn-level failure path settles itself.
+process.on("uncaughtException", (e) => {
+  console.error("[server] uncaught exception (continuing):", e);
+});
+process.on("unhandledRejection", (e) => {
+  console.error("[server] unhandled rejection (continuing):", e);
+});
+
 ensureDirs();
 // SecretStore first (Electron-main safeStorage broker when forked packaged,
 // the documented file fallback when headless), then the idempotent plaintext
