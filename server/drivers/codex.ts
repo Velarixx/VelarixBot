@@ -28,10 +28,6 @@
 // and falls back to a fresh thread/start. Persona is
 // thread/start|resume.developerInstructions (not prepended onto user text).
 // A child that exits 0 before turn/completed is a finished turn, not a kill.
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import type {
   DriverCreateInput,
   ProviderDriver,
@@ -52,13 +48,6 @@ import { appendNative } from "./native.ts";
 
 const DRIVER_KIND = "codex";
 
-// proxy entry files live next to this one as .ts in dev (node type
-// stripping) and .js in the compiled dist-server the packaged app ships
-const proxyPath = (basename: string) => {
-  const ts = join(dirname(fileURLToPath(import.meta.url)), "..", `${basename}.ts`);
-  return existsSync(ts) ? ts : ts.replace(/\.ts$/, ".js");
-};
-const PROXY_PATH = proxyPath("computer-proxy");
 // in the packaged app process.execPath is the Electron binary — this env
 // makes it behave as plain node for the spawned MCP proxies (harmless in dev)
 const NODE_ENV_FLAG = { ELECTRON_RUN_AS_NODE: "1" };
@@ -74,18 +63,10 @@ function mcpServersFromIntegrations(integrations: SendTurnInput["integrations"])
       env: { ...NODE_ENV_FLAG, ...integrations.composio.env },
     };
   }
-  if (integrations?.computer) {
-    mcpServers.computer = {
-      command: process.execPath,
-      args: [PROXY_PATH],
-      env: {
-        ...NODE_ENV_FLAG,
-        OGB_BOX_ID: integrations.computer.boxId,
-        OGB_BOX_TOKEN: integrations.computer.token,
-      },
-    };
-  } else if (integrations?.localComputer) {
-    mcpServers.computer = { ...integrations.localComputer };
+  if (integrations?.computer?.mcp) {
+    // provider-built spawn contract (box proxy, local cua-driver, …) —
+    // mounted verbatim; the provider owns command/args/env
+    mcpServers.computer = { ...integrations.computer.mcp };
   }
   if (integrations?.agents) {
     mcpServers.agents = { ...integrations.agents };

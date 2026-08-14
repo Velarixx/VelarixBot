@@ -50,12 +50,19 @@ export function classifyOpenedRequest(
   };
 }
 
-export function handoffSubtitle(computer?: string): string {
-  return computer === "cloud" ? HANDOFF_SUBTITLE : HANDOFF_SUBTITLE_LOCAL;
+/** A bot.computer binding that points at a REMOTE computer provider —
+ * anything that is not off/local/unset ("cloud" is the legacy alias for the
+ * bundled box binding). */
+export function isRemoteComputerBinding(computer: string | undefined): boolean {
+  return Boolean(computer) && computer !== "local" && computer !== "off";
 }
 
-/** Open desktop talks to the Box join endpoint — only when this bot
- * actually has a cloud computer. Local/off bots skip it. */
-export function shouldOfferDesktop(computer: string | undefined, boxConfigured: boolean): boolean {
-  return computer === "cloud" && boxConfigured === true;
+export function handoffSubtitle(computer?: string): string {
+  return isRemoteComputerBinding(computer) ? HANDOFF_SUBTITLE : HANDOFF_SUBTITLE_LOCAL;
+}
+
+/** Open desktop talks to the computer join endpoint — only when this bot is
+ * bound to a configured remote computer. Local/off bots skip it. */
+export function shouldOfferDesktop(computer: string | undefined, configured: boolean): boolean {
+  return isRemoteComputerBinding(computer) && configured === true;
 }

@@ -107,7 +107,7 @@ describe("BoxAgentDriver asks (fake box)", () => {
     await instance.adapter.sendTurn({
       threadId: "t-box-ask",
       text: "go",
-      integrations: { computer: { boxId: "box-1", token: "tok_test" } },
+      integrations: { computer: { provider: "box", mcp: null, handle: { machineId: "box-1" } } },
     });
     const opened = await recorder.until((e) => e.type === "request.opened");
     expect(opened).toMatchObject({
@@ -142,7 +142,7 @@ describe("BoxAgentDriver asks (fake box)", () => {
     await instance.adapter.sendTurn({
       threadId: "t-empty",
       text: "go",
-      integrations: { computer: { boxId: "box-1", token: "tok_test" } },
+      integrations: { computer: { provider: "box", mcp: null, handle: { machineId: "box-1" } } },
     });
     await expect(
       instance.adapter.respondToRequest("t-empty", "never-asked", { behavior: "deny" }),
@@ -179,7 +179,7 @@ describe("BoxAgentDriver asks (fake box)", () => {
     await instance.adapter.sendTurn({
       threadId: "t-handoff",
       text: "log in",
-      integrations: { computer: { boxId: "box-1", token: "tok_test" } },
+      integrations: { computer: { provider: "box", mcp: null, handle: { machineId: "box-1" } } },
     });
     const opened = await recorder.until((e) => e.type === "request.opened");
     expect(opened).toMatchObject({

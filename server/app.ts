@@ -7,6 +7,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join } from "node:path";
 
 import { requireApiAuth } from "./auth.ts";
+import { createComputerRegistry, type ComputerRegistry } from "./computer/registry.ts";
 import type { AppConfig } from "./config.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { EventBus } from "./harness/bus.ts";
@@ -48,6 +49,8 @@ export interface Clock {
 export interface CreateApplicationInput {
   repos: Repositories;
   providers: ProviderRegistry;
+  /** Computer provider registry — built from cfg when not injected. */
+  computers?: ComputerRegistry;
   bus: EventBus;
   cfg: AppConfig;
   clock?: Clock;
@@ -93,10 +96,18 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // boot recovery: a bot that died mid-turn reloads as BLOCKED/interrupted
   repos.bots.recoverInterrupted();
 
+  // computer providers: local is core; box is the bundled default and an
+  // authored config map can remove it — nothing here needs a Box token
+  const computers = input.computers ?? (await createComputerRegistry({ cfg }));
+
   // default selection resolves asynchronously; bots created before that use
   // the boot placeholder (exactly the pre-refactor behavior)
   let bootSelection: ModelSelection = { instanceId: "claude", model: "claude-sonnet-5" };
-  const bots = createBotsService({ repos, defaultSelection: () => bootSelection });
+  const bots = createBotsService({
+    repos,
+    defaultSelection: () => bootSelection,
+    computerBindings: () => computers.list().map((p) => p.id),
+  });
 
   const teach = createTeachService({ bus, registry, bot: (id) => bots.bot(id) });
 
@@ -119,6 +130,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   const turns = createTurnsService({
     cfg,
     registry,
+    computers,
     bus,
     repos,
     bots,
@@ -162,11 +174,11 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     createEventsRoutes({ hub }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
-    createBotsRoutes({ bots, turns, teach, registry, cfg, broadcast }),
+    createBotsRoutes({ bots, turns, teach, registry, computers, cfg, broadcast }),
     createTurnsRoutes({ turns }),
     createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
     integrations.api,
-    createComputersRoutes({ bots, cfg, recordBinding: (botId, boxId) => repos.computerBindings.record(botId, boxId) }),
+    createComputersRoutes({ bots, computers, recordBinding: (botId, machineId) => repos.computerBindings.record(botId, machineId) }),
   ];
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {

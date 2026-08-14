@@ -100,13 +100,19 @@ export interface SendTurnInput {
     /** Connected apps for this bot, via the composio-proxy stdio MCP.
      * Spawn contract is built by the harness (key in env, never argv). */
     composio?: { command: string; args: string[]; env: Record<string, string> };
-    /** The bot's cloud computer (box.ascii.dev) for desktop/browser use. */
-    computer?: { boxId: string; token: string };
-    /** Local computer use via the Electron-hosted cua-driver daemon —
-     * spawn config comes verbatim from cua-connection.json (the daemon
-     * MUST be spawned by Electron main; the harness only points the agent
-     * CLI at the already-running socket via this MCP proxy command). */
-    localComputer?: { command: string; args: string[]; env: Record<string, string> };
+    /** The bot's computer, resolved from its provider binding (P1.1).
+     * `provider` is the provider KIND ("box" | "local" | "fake" | …).
+     * `mcp` is the spawn contract the provider built for mounting the
+     * computer tools — drivers mount it VERBATIM (secrets ride env, never
+     * argv; for the local provider the daemon is spawned by Electron main,
+     * the contract only points at the already-running socket). `handle` is
+     * the provider-native machine reference for drivers that run ON the
+     * computer (boxAgent). */
+    computer?: {
+      provider: string;
+      mcp: { command: string; args: string[]; env: Record<string, string> } | null;
+      handle?: { machineId: string };
+    };
     /** Peer-agent comms: an MCP proxy (list_bots / ask_bot / create_bot / update_bot / delete_bot) that
      * routes back through the harness so this bot can message other bots and
      * create, update, or remove real sidebar bots. The harness owns turns, permissions, and
@@ -139,11 +145,12 @@ export interface ProviderAdapter {
     agentsMcp?: boolean;
     /** True only when the driver can mount the Electron-owned local CUA MCP. */
     localComputerMcp?: boolean;
-    /** True only when the driver can actually act on the bot's cloud
-     * computer — mounting the Box computer MCP tools (claudeAgent, codex)
-     * or running on the box itself (boxAgent). The harness must not attach
-     * integrations.computer (or the "you have a cloud computer" prompt) to
-     * a driver without this — that prompt would be a lie. */
+    /** True only when the driver can actually act on the bot's remote
+     * computer — mounting the provider-built computer MCP tools
+     * (claudeAgent, codex) or running on the machine itself (boxAgent).
+     * The harness must not attach integrations.computer (or the "you have
+     * a computer" prompt) to a driver without this — that prompt would be
+     * a lie. */
     cloudComputer?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;

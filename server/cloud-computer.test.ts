@@ -57,15 +57,24 @@ describe("cloudComputer capability matrix", () => {
 describe("harness attach/PATCH gates (source contract)", () => {
   it("attaches integrations.computer only when the adapter has cloudComputer", () => {
     expect(turnsSrc).toMatch(
-      /wants === "cloud" && box\.boxConfigured\(cfg\) && instance\.adapter\.capabilities\.cloudComputer === true/,
+      /computerProvider && bot\.computer !== "local" && instance\.adapter\.capabilities\.cloudComputer === true/,
     );
   });
 
-  it("keeps the cloud-computer prompt line behind integrations.computer", () => {
-    expect(turnsSrc).toMatch(/integrations\.computer && instance\.driverKind !== "boxAgent"\s*\?\s*" You have your own cloud computer/);
+  it("keeps the provider prompt line behind integrations.computer", () => {
+    expect(turnsSrc).toMatch(
+      /integrations\.computer && instance\.driverKind !== "boxAgent" && computerProvider\?\.turnPrompt/,
+    );
   });
 
-  it("mirrors the local-computer 409 for computer:\"cloud\" PATCHes", () => {
+  it("routes the computer through the ComputerProvider registry, never the Box client (P1.1)", () => {
+    // turn dispatch must be vendor-blind: no box.ts import, no vendor URL
+    expect(turnsSrc).not.toContain('"../box.ts"');
+    expect(turnsSrc).not.toContain("box.ascii.dev");
+    expect(turnsSrc).toContain("boundProvider");
+  });
+
+  it("mirrors the local-computer 409 for remote-binding PATCHes", () => {
     expect(botsRoutesSrc).toContain('selectedInstance.adapter.capabilities.cloudComputer !== true');
     expect(botsRoutesSrc).toContain("selected provider has no cloud computer tools");
   });

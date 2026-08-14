@@ -79,8 +79,10 @@ export interface Bot {
   usage: Usage;
   currentTurnUsage?: Usage;
   modelSelection: ModelSelection;
-  /** Where this bot's computer runs; unset = auto (cloud box if one exists, else local). */
-  computer?: "cloud" | "local" | "off";
+  /** Computer provider BINDING: "off", "local", or a provider id like "box"
+   * (the server accepts the legacy "cloud" alias and stores the binding).
+   * Unset = auto (remote computer if one exists, else local). */
+  computer?: string;
   /** Force a permission card even when the provider is in full-auto. */
   requireApproval?: boolean;
   /** Connected-app slugs this bot may use. Empty/missing = none. */

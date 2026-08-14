@@ -24,7 +24,16 @@ export interface AppConfig {
   omnirouter?: { key?: string; url?: string };
 
   instances?: InstanceConfigMap;
+
+  /** Computer provider bindings (P1.1). An authored `providers` map — even
+   * an empty one — replaces the bundled default ({ box: {kind:"box"} }), so
+   * removing Box is `{"computer":{"providers":{}}}`. The `local` provider is
+   * core and always registered. `kind` is any slug — unknown kinds surface
+   * as unavailable shadow providers, never a crash. */
+  computer?: { providers?: ComputerProviderConfigMap };
 }
+
+export type ComputerProviderConfigMap = Record<string, { kind: string; config?: unknown }>;
 
 export const DATA_DIR = join(homedir(), ".velarixbot");
 const LEGACY_DATA_DIRS = [join(homedir(), ".openmausbot"), join(homedir(), ".opengrokbot")];

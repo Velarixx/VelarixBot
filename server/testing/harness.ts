@@ -27,9 +27,9 @@ export function harnessEnv(home: string, extra: Record<string, string> = {}): No
   };
 }
 
-export function writeHarnessConfig(home: string, instances: unknown): void {
+export function writeHarnessConfig(home: string, instances: unknown, extraConfig: Record<string, unknown> = {}): void {
   mkdirSync(join(home, ".velarixbot"), { recursive: true });
-  writeFileSync(join(home, ".velarixbot", "config.json"), JSON.stringify({ instances }));
+  writeFileSync(join(home, ".velarixbot", "config.json"), JSON.stringify({ instances, ...extraConfig }));
 }
 
 export async function waitForHealth(base: string, child: ChildProcess, stderr: () => string, timeoutMs = 20_000): Promise<void> {
@@ -211,12 +211,14 @@ export async function bootHarness(opts: {
   instances: unknown;
   port?: number;
   env?: Record<string, string>;
+  /** Extra top-level ~/.velarixbot/config.json keys (e.g. computer). */
+  config?: Record<string, unknown>;
 }): Promise<BootedHarness> {
   const port = opts.port ?? 18800 + Math.floor(Math.random() * 10_000);
   const base = `http://127.0.0.1:${port}`;
   const home = mkdtempSync(join(tmpdir(), "omb-harness-"));
   const token = `test-api-token-${port}`;
-  writeHarnessConfig(home, opts.instances);
+  writeHarnessConfig(home, opts.instances, opts.config ?? {});
   let stderr = "";
   const child = spawn(process.execPath, [SERVER_ENTRY], {
     cwd: join(SERVER_DIR, "..", ".."),

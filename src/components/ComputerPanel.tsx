@@ -37,6 +37,11 @@ type Phase =
   | "off"
   | "error";
 
+/** True when bot.computer is BOUND to a remote provider (e.g. "box" — the
+ * server stores provider bindings; "cloud" is its legacy alias). */
+const remoteBound = (computer: string | undefined) =>
+  Boolean(computer) && computer !== "local" && computer !== "off";
+
 export function ComputerPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const [phase, setPhase] = useState<Phase>("checking");
@@ -88,11 +93,12 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       setPhase(isElectron && localSupported ? "local" : "local-unavailable");
       return;
     }
-    // cloud, or auto (cloud box wins when one exists, else local in-app)
+    // remote binding, or auto (the remote computer wins when one exists,
+    // else local in-app)
     api(`/api/bots/${bot.id}/computer`)
       .then((status) => {
         if (!alive) return;
-        const autoLocal = bot.computer !== "cloud" && isElectron && localSupported;
+        const autoLocal = !remoteBound(bot.computer) && isElectron && localSupported;
         if (!status.configured) {
           setPhase(autoLocal ? "local" : "unconfigured");
           return;
@@ -317,6 +323,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           </div>
           <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
             {([
+              // "cloud" is the legacy alias the server resolves to the
+              // configured remote provider binding (the bundled "box")
               ["cloud", "Cloud box"] as const,
               ...(localSupported ? [["local", "This Mac"] as const] : []),
               ["off", "Off"] as const,
@@ -327,7 +335,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
                 className={cn(
                   "flex-1 py-1.5 text-[13px]",
                   i > 0 && "border-l border-hairline/40",
-                  bot.computer === mode
+                  (mode === "cloud" ? remoteBound(bot.computer) : bot.computer === mode)
                     ? "bg-raised text-ink"
                     : "text-ink-secondary hover:bg-raised/60 hover:text-ink",
                 )}

@@ -1,9 +1,11 @@
-// Box (box.ascii.dev) provider — the bot's cloud computer. Ported from
-// agentcal-api src/providers/box.js, reshaped per-bot instead of
-// per-customer: every workspace gets one shared persistent box,
-// stop pauses billing while the disk survives, and Join always mints a
-// FRESH desktop URL (stream tokens rotate on every state change — never
-// persist one).
+// Box (box.ascii.dev) VENDOR CLIENT — consumed only by the box
+// ComputerProvider (server/computer/box.ts) and the boxAgent driver; the
+// rest of the harness goes through the ComputerProvider SPI and never sees
+// this module. Ported from agentcal-api src/providers/box.js, reshaped
+// per-bot instead of per-customer: every bot gets one persistent box, stop
+// pauses billing while the disk survives, and Join always mints a FRESH
+// desktop URL (stream tokens rotate on every state change — never persist
+// one).
 //
 // Substrate facts (probed by agentcal 2026-07-24 on a live box):
 //   - REST only: POST /boxes/{id}/commands runs shell synchronously.
@@ -15,10 +17,14 @@ import type { AppConfig } from "./config.ts";
 const BOX_API = "https://ascii.dev/api/box/v1";
 const READY = new Set(["idle", "ready", "running"]);
 
-function apiBase(cfg: AppConfig) {
+/** Effective Box API base — the vendor URL lives HERE (and in config),
+ * behind the ComputerProvider interface; nothing outside the box provider
+ * may hardcode it. */
+export function boxApiBase(cfg: AppConfig): string {
   const url = cfg.box?.url?.trim();
   return (url || BOX_API).replace(/\/$/, "");
 }
+const apiBase = boxApiBase;
 
 function boxFetch(cfg: AppConfig, path: string, opts: RequestInit = {}) {
   return fetch(`${apiBase(cfg)}${path}`, {
@@ -100,18 +106,8 @@ export async function findBox(cfg: AppConfig, botId: string) {
   return (body?.boxes ?? []).find((b: any) => b.name === named && b.state !== "error") ?? null;
 }
 
-export function boxConfigured(cfg: AppConfig) {
+function boxConfigured(cfg: AppConfig) {
   return Boolean(cfg.box?.token);
-}
-
-/** Box state for the Computer panel. */
-export async function boxStatus(cfg: AppConfig, botId: string) {
-  if (!boxConfigured(cfg)) return { configured: false, box: null };
-  const box = await findBox(cfg, botId);
-  return {
-    configured: true,
-    box: box ? { boxId: box.id, state: box.state, desktopAvailable: box.desktopAvailable ?? null } : null,
-  };
 }
 
 /**

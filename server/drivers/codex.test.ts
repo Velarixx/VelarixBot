@@ -641,7 +641,21 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
           args: ["/fake/composio-proxy.js"],
           env: { OMB_COMPOSIO_KEY: composioKey, OMB_ALLOWED_TOOLKITS: "googledrive" },
         },
-        computer: { boxId: "box-1", token: "box-token" },
+        computer: {
+          provider: "box",
+          // provider-built spawn contract — the driver must mount it verbatim
+          mcp: {
+            command: process.execPath,
+            args: ["/fake/computer-proxy.js"],
+            env: {
+              ELECTRON_RUN_AS_NODE: "1",
+              OGB_BOX_URL: "http://127.0.0.1:9/api/box/v1",
+              OGB_BOX_ID: "box-1",
+              OGB_BOX_TOKEN: "box-token",
+            },
+          },
+          handle: { machineId: "box-1" },
+        },
         agents: {
           command: process.execPath,
           args: ["/fake/agents-proxy.js"],
@@ -694,15 +708,18 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
       command: process.execPath,
       env: {
         ELECTRON_RUN_AS_NODE: "1",
+        OGB_BOX_URL: "http://127.0.0.1:9/api/box/v1",
         OGB_BOX_ID: "box-1",
         OGB_BOX_TOKEN: "box-token",
       },
     });
     expect(mcp.computer.args.at(-1)).toMatch(/computer-proxy\.(ts|js)$/);
+    // secrets and vendor URL ride env, never argv
     expect(JSON.stringify(seen.argv)).not.toContain(composioKey);
+    expect(JSON.stringify(seen.argv)).not.toContain("box-token");
   });
 
-  it("mounts localComputer as the computer mcp server", async () => {
+  it("mounts the local provider's spawn contract as the computer mcp server", async () => {
     await create();
     const dump = join(scratch, "dump.json");
     process.env.FAKE_CODEX_DUMP = dump;
@@ -711,10 +728,13 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
       threadId: "t-mcp-local",
       text: "use this mac",
       integrations: {
-        localComputer: {
-          command: "/fake/cua-driver",
-          args: ["mcp", "--embedded", "--socket", "/tmp/cua.sock"],
-          env: { CUA: "1" },
+        computer: {
+          provider: "local",
+          mcp: {
+            command: "/fake/cua-driver",
+            args: ["mcp", "--embedded", "--socket", "/tmp/cua.sock"],
+            env: { CUA: "1" },
+          },
         },
       },
     });
