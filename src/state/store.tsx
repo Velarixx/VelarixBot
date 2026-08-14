@@ -108,13 +108,19 @@ export interface ConfigStatus {
 
 export type RoutineSchedule =
   | { kind: "interval"; everyMinutes: number }
-  | { kind: "daily"; time: string }
-  | { kind: "weekdays"; time: string }
+  | { kind: "daily"; time: string; timeZone?: string }
+  | { kind: "weekdays"; time: string; timeZone?: string }
   | { kind: "listener"; source: "github" | "slack"; everyMinutes?: number };
+export type MissedPolicy = "skip" | "run-once" | "catch-up";
+export interface RoutineRun {
+  seq: number; startedAt: number; finishedAt: number | null; scheduledFor: number | null;
+  kind: "scheduled" | "manual"; status: "running" | "done" | "blocked" | "skipped" | "interrupted";
+  attempt: number; result: string | null;
+}
 export interface Routine {
   id: string; botId: string; name: string; prompt: string; schedule: RoutineSchedule;
   enabled: boolean; running: boolean; nextRunAt: number; lastRunAt: number | null;
-  lastResult: string | null; createdAt: number;
+  lastResult: string | null; createdAt: number; missedPolicy: MissedPolicy;
   thenStartTurn?: { botId: string; prompt: string };
   skillId?: string;
 }

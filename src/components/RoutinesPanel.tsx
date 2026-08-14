@@ -1,12 +1,96 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { CalendarClock, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
-import { api, useStore, type Routine, type RoutineSchedule, type Skill } from "@/state/store";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { CalendarClock, FlaskConical, History, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
+import { api, useStore, type MissedPolicy, type Routine, type RoutineRun, type RoutineSchedule, type Skill } from "@/state/store";
 
 function scheduleLabel(schedule: RoutineSchedule) {
-  if (schedule.kind === "daily") return `Daily at ${schedule.time}`;
-  if (schedule.kind === "weekdays") return `Weekdays at ${schedule.time}`;
+  if (schedule.kind === "daily") return `Daily at ${schedule.time}${schedule.timeZone ? ` (${schedule.timeZone})` : ""}`;
+  if (schedule.kind === "weekdays") return `Weekdays at ${schedule.time}${schedule.timeZone ? ` (${schedule.timeZone})` : ""}`;
   if (schedule.kind === "listener") return `${schedule.source} listener`;
   return `Every ${schedule.everyMinutes} min`;
+}
+
+const MISSED_POLICY_LABELS: Array<[MissedPolicy, string]> = [
+  ["run-once", "Run once (coalesce missed)"],
+  ["skip", "Skip missed"],
+  ["catch-up", "Catch up (run each missed)"],
+];
+
+const RUN_STATUS_STYLE: Record<RoutineRun["status"], string> = {
+  running: "bg-accent/15 text-accent",
+  done: "bg-success/15 text-success",
+  blocked: "bg-danger/10 text-danger",
+  skipped: "bg-raised text-ink-secondary",
+  interrupted: "bg-danger/10 text-danger",
+};
+
+function RunHistory({ routine }: { routine: Routine }) {
+  const [runs, setRuns] = useState<RoutineRun[] | null>(null);
+  const refresh = useCallback(() => {
+    api(`/api/routines/${routine.id}/runs`).then(({ runs: list }) => setRuns(list ?? [])).catch(() => setRuns([]));
+  }, [routine.id]);
+  // reload when the routine's live state changes (runs start/finish over SSE)
+  useEffect(() => { refresh(); }, [refresh, routine.running, routine.lastResult, routine.nextRunAt]);
+  if (runs === null) return <div className="mt-2 text-[11px] text-ink-secondary">Loading history…</div>;
+  if (runs.length === 0) return <div className="mt-2 text-[11px] text-ink-secondary">No runs yet.</div>;
+  return <ul className="mt-2 space-y-1.5">
+    {runs.map((run) => <li key={run.seq} className="rounded-lg bg-inset px-2 py-1.5">
+      <div className="flex items-center gap-2">
+        <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${RUN_STATUS_STYLE[run.status]}`}>{run.status}</span>
+        {run.kind === "manual" && <span className="rounded-full bg-raised px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-ink-secondary">Test run</span>}
+        {run.attempt > 1 && <span className="text-[10px] text-ink-secondary">attempt {run.attempt}</span>}
+        <span className="ml-auto text-[10px] text-ink-secondary">{new Date(run.startedAt).toLocaleString()}</span>
+      </div>
+      {run.result && run.status !== "done" && <div className="mt-1 text-[11px] leading-snug text-ink-secondary">{run.result}</div>}
+    </li>)}
+  </ul>;
+}
+
+function RoutineCard({ routine, botName, skills, onPatch, onDelete, onError }: {
+  routine: Routine;
+  botName: string;
+  skills: Skill[];
+  onPatch: (routine: Routine, patch: Partial<Routine>) => Promise<void>;
+  onDelete: (routine: Routine) => Promise<void>;
+  onError: (message: string | null) => void;
+}) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const skill = skills.find((item) => item.id === routine.skillId);
+
+  const testRun = async () => {
+    setTesting(true); onError(null);
+    try {
+      await api(`/api/routines/${routine.id}/run`, { method: "POST" });
+      setHistoryOpen(true);
+    } catch (e) { onError(e instanceof Error ? e.message : String(e)); }
+    finally { setTesting(false); }
+  };
+
+  return <div className="rounded-xl bg-card p-3.5">
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="truncate text-[14px] font-medium text-ink">{routine.name}</div>
+        <div className="mt-0.5 text-[12px] text-ink-secondary">{botName} · {scheduleLabel(routine.schedule)}{skill ? ` · ${skill.name}` : ""}</div>
+      </div>
+      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${routine.running ? "bg-accent/15 text-accent" : routine.enabled ? "bg-success/15 text-success" : "bg-raised text-ink-secondary"}`}>{routine.running ? "Running" : routine.enabled ? "Enabled" : "Paused"}</span>
+    </div>
+    <p className="mt-2 line-clamp-2 text-[12.5px] leading-relaxed text-ink-secondary">{routine.prompt}</p>
+    <div className="mt-2 grid grid-cols-2 gap-2">
+      <label className="block text-[11px] text-ink-secondary">If runs are missed<select value={routine.missedPolicy} onChange={(e) => void onPatch(routine, { missedPolicy: e.target.value as MissedPolicy })} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink">{MISSED_POLICY_LABELS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      <label className="block text-[11px] text-ink-secondary">Skill<select value={routine.skillId ?? ""} onChange={(e) => void onPatch(routine, { skillId: e.target.value || "" })} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink"><option value="">None</option>{skills.filter((item) => item.botId === routine.botId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+    </div>
+    <div className="mt-3 flex items-center justify-between">
+      <span className="text-[11px] text-ink-secondary">Next {new Date(routine.nextRunAt).toLocaleString()}</span>
+      <div className="flex gap-1">
+        <button aria-label="Test run" title="Test run — runs now without touching the schedule" disabled={testing || routine.running} onClick={() => void testRun()} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">{testing ? <Loader2 size={15} className="animate-spin" /> : <FlaskConical size={15} />}</button>
+        <button aria-label={historyOpen ? "Hide run history" : "Show run history"} title="Run history" onClick={() => setHistoryOpen((open) => !open)} className={`rounded-md p-1.5 hover:bg-raised hover:text-ink ${historyOpen ? "bg-raised text-ink" : "text-ink-secondary"}`}><History size={15} /></button>
+        <button aria-label={routine.enabled ? "Disable routine" : "Enable routine"} title={routine.enabled ? "Disable" : "Enable"} onClick={() => void onPatch(routine, { enabled: !routine.enabled })} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink">{routine.enabled ? <Pause size={15} /> : <Play size={15} />}</button>
+        <button aria-label="Delete routine" title="Delete" onClick={() => void onDelete(routine)} className="rounded-md p-1.5 text-ink-secondary hover:bg-danger/10 hover:text-danger"><Trash2 size={15} /></button>
+      </div>
+    </div>
+    {routine.lastResult && <div className="mt-2 truncate text-[11px] text-ink-secondary">Last: {routine.lastResult}</div>}
+    {historyOpen && <RunHistory routine={routine} />}
+  </div>;
 }
 
 export function RoutinesPanel() {
@@ -20,10 +104,12 @@ export function RoutinesPanel() {
   const [kind, setKind] = useState<"interval" | "daily">("interval");
   const [everyMinutes, setEveryMinutes] = useState(60);
   const [time, setTime] = useState("09:00");
+  const [missedPolicy, setMissedPolicy] = useState<MissedPolicy>("run-once");
   const [thenBotId, setThenBotId] = useState("");
   const [thenPrompt, setThenPrompt] = useState("");
   const [skillId, setSkillId] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
+  const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   useEffect(() => {
     api("/api/routines").then(({ routines }) => dispatch({ type: "routinesLoaded", routines })).catch((e) => setError(e.message));
@@ -48,7 +134,7 @@ export function RoutinesPanel() {
     event.preventDefault();
     if (!botId || !name.trim() || !prompt.trim()) return;
     const schedule: RoutineSchedule =
-      kind === "daily" ? { kind: "daily", time: time.slice(0, 5) } : { kind: "interval", everyMinutes };
+      kind === "daily" ? { kind: "daily", time: time.slice(0, 5), timeZone: browserZone } : { kind: "interval", everyMinutes };
     setSaving(true); setError(null);
     try {
       const { routine } = await api("/api/routines", {
@@ -58,12 +144,13 @@ export function RoutinesPanel() {
           name: name.trim(),
           prompt: prompt.trim(),
           schedule,
+          missedPolicy,
           ...(thenBotId && thenPrompt.trim() ? { thenStartTurn: { botId: thenBotId, prompt: thenPrompt.trim() } } : {}),
           ...(skillId ? { skillId } : {}),
         }),
       });
       dispatch({ type: "routineSaved", routine });
-      setName(""); setPrompt(""); setThenBotId(""); setThenPrompt(""); setSkillId(""); setCreating(false);
+      setName(""); setPrompt(""); setThenBotId(""); setThenPrompt(""); setSkillId(""); setMissedPolicy("run-once"); setCreating(false);
       dispatch({ type: "toggleRoutines", open: true });
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setSaving(false); }
@@ -78,7 +165,7 @@ export function RoutinesPanel() {
   return <aside className="animate-panel-in flex h-full w-[420px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
     <div className="flex items-center justify-between px-4 py-3"><CalendarClock size={18} className="text-ink-secondary" /><span className="text-[15px] font-semibold text-ink">Routines</span><button aria-label="Close routines" onClick={() => dispatch({ type: "toggleRoutines", open: false })} className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"><X size={18} /></button></div>
     <div className="flex-1 overflow-y-auto px-4 pb-4">
-      <p className="text-[13px] leading-relaxed text-ink-secondary">Schedule a prompt for a bot. Routines persist locally and run only while the harness is running.</p>
+      <p className="text-[13px] leading-relaxed text-ink-secondary">Schedule a prompt for a bot. Routines persist locally and run while VelarixBot is open — they do not run when the app is closed. Each routine's missed-run policy decides what happens to runs that came due while it was.</p>
       {error && <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 p-2 text-[12px] text-danger">{error}</div>}
       {creating ? <form onSubmit={create} className="mt-4 space-y-3 rounded-xl bg-card p-4">
         <label className="block text-[12px] text-ink-secondary">Bot<select value={botId} onChange={(e) => setBotId(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink">{state.bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label>
@@ -90,20 +177,19 @@ export function RoutinesPanel() {
           ))}
         </div>
         {kind === "daily" ? (
-          <label className="block text-[12px] text-ink-secondary">Time<input type="time" required value={time} onChange={(e) => setTime(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
+          <label className="block text-[12px] text-ink-secondary">Time<input type="time" required value={time} onChange={(e) => setTime(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /><span className="mt-1 block text-[11px] text-ink-secondary">In your time zone ({browserZone}) — daylight saving handled automatically.</span></label>
         ) : (
           <label className="block text-[12px] text-ink-secondary">Run every (minutes)<input type="number" min={1} value={everyMinutes} onChange={(e) => setEveryMinutes(Math.max(1, Number(e.target.value)))} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
         )}
+        <label className="block text-[12px] text-ink-secondary">If runs are missed while VelarixBot is closed<select value={missedPolicy} onChange={(e) => setMissedPolicy(e.target.value as MissedPolicy)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink">{MISSED_POLICY_LABELS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="block text-[12px] text-ink-secondary">Then also start a turn on (optional)<select value={thenBotId} onChange={(e) => setThenBotId(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink"><option value="">None</option>{state.bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label>
         {thenBotId ? <label className="block text-[12px] text-ink-secondary">Prompt<textarea required rows={3} value={thenPrompt} onChange={(e) => setThenPrompt(e.target.value)} placeholder="Follow up on that result…" className="mt-1 w-full resize-none rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label> : null}
         <label className="block text-[12px] text-ink-secondary">Taught skill (optional)<select value={skillId} onChange={(e) => setSkillId(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink"><option value="">None</option>{skills.filter((s) => s.botId === botId || !botId).map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}</select></label>
         <div className="flex justify-end gap-2"><button type="button" onClick={() => { setCreating(false); dispatch({ type: "toggleRoutines", open: true }); }} className="rounded-lg px-3 py-2 text-[13px] text-ink-secondary">Cancel</button><button disabled={saving} className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white disabled:opacity-50">{saving && <Loader2 size={13} className="animate-spin" />}Create</button></div>
       </form> : <button onClick={() => setCreating(true)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white"><Plus size={16} />New routine</button>}
-      <div className="mt-4 space-y-2">{state.routines.length === 0 && !creating ? <div className="rounded-xl border border-dashed border-hairline/50 p-6 text-center text-[13px] text-ink-secondary">No routines yet.</div> : state.routines.map((routine) => {
-        const bot = state.bots.find((item) => item.id === routine.botId);
-        const skill = skills.find((item) => item.id === routine.skillId);
-        return <div key={routine.id} className="rounded-xl bg-card p-3.5"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate text-[14px] font-medium text-ink">{routine.name}</div><div className="mt-0.5 text-[12px] text-ink-secondary">{bot?.name ?? "Deleted bot"} · {scheduleLabel(routine.schedule)}{skill ? ` · ${skill.name}` : ""}</div></div><span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${routine.running ? "bg-accent/15 text-accent" : routine.enabled ? "bg-success/15 text-success" : "bg-raised text-ink-secondary"}`}>{routine.running ? "Running" : routine.enabled ? "Enabled" : "Paused"}</span></div><p className="mt-2 line-clamp-2 text-[12.5px] leading-relaxed text-ink-secondary">{routine.prompt}</p><label className="mt-2 block text-[11px] text-ink-secondary">Skill<select value={routine.skillId ?? ""} onChange={(e) => void mutate(routine, { skillId: e.target.value || "" })} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink"><option value="">None</option>{skills.filter((item) => item.botId === routine.botId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><div className="mt-3 flex items-center justify-between"><span className="text-[11px] text-ink-secondary">Next {new Date(routine.nextRunAt).toLocaleString()}</span><div className="flex gap-1"><button aria-label={routine.enabled ? "Disable routine" : "Enable routine"} title={routine.enabled ? "Disable" : "Enable"} onClick={() => void mutate(routine, { enabled: !routine.enabled })} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink">{routine.enabled ? <Pause size={15} /> : <Play size={15} />}</button><button aria-label="Delete routine" title="Delete" onClick={() => void remove(routine)} className="rounded-md p-1.5 text-ink-secondary hover:bg-danger/10 hover:text-danger"><Trash2 size={15} /></button></div></div>{routine.lastResult && <div className="mt-2 truncate text-[11px] text-ink-secondary">Last: {routine.lastResult}</div>}</div>;
-      })}</div>
+      <div className="mt-4 space-y-2">{state.routines.length === 0 && !creating ? <div className="rounded-xl border border-dashed border-hairline/50 p-6 text-center text-[13px] text-ink-secondary">No routines yet.</div> : state.routines.map((routine) => (
+        <RoutineCard key={routine.id} routine={routine} botName={state.bots.find((item) => item.id === routine.botId)?.name ?? "Deleted bot"} skills={skills} onPatch={mutate} onDelete={remove} onError={setError} />
+      ))}</div>
     </div>
   </aside>;
 }
