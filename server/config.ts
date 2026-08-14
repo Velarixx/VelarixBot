@@ -2,7 +2,7 @@
 //   { "xai": {"key":"xai-…"}, "composio": {"key":"ck_…"}, "box": {"token":"…"},
 //     "openrouter": {"key":"sk-or-…"}, "omnirouter": {"key":"…"},
 //     "instances": { "<instanceId>": {"driver":"grok", …} } }
-import { readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -38,7 +38,7 @@ export function botWorkspaceDir(botId: string): string {
 
 export function ensureBotWorkspace(botId: string): string {
   const dir = botWorkspaceDir(botId);
-  mkdirSync(dir, { recursive: true });
+  ensurePrivateDir(dir);
   return dir;
 }
 
