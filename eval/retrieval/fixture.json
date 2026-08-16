@@ -1,0 +1,84 @@
+{
+  "bots": {
+    "bot-a": {
+      "user": "Preferred name is Sam.\nCurrent city is Austin.\nSupport alias is desk-sam.",
+      "distilled": "Obsolete listing: Berlin office closed.\nRetired queue name berlin-queue."
+    },
+    "bot-b": {
+      "user": "Ops alias is pager-lee.\nOn-call region is EU-west.",
+      "distilled": "Pager prefix is OPS-NEVER-SHARE."
+    }
+  },
+  "workspace": "Ship day is Friday.\nDeploy window starts after sixteen-hundred Amsterdam.",
+  "cases": [
+    {
+      "id": "a-right-memory-recalled",
+      "gate": "a",
+      "mode": "recall",
+      "botId": "bot-a",
+      "query": "Austin",
+      "expect": ["Austin", "desk-sam"],
+      "forbid": ["Berlin", "berlin-queue", "pager-lee", "OPS-NEVER-SHARE"]
+    },
+    {
+      "id": "a-right-memory-injected",
+      "gate": "a",
+      "mode": "inject",
+      "botId": "bot-a",
+      "expect": ["Austin", "Sam", "Friday"],
+      "forbid": ["pager-lee", "OPS-NEVER-SHARE"]
+    },
+    {
+      "id": "a-right-workspace-recalled",
+      "gate": "a",
+      "mode": "recall",
+      "botId": "bot-a",
+      "query": "Friday",
+      "expect": ["Friday", "Amsterdam"],
+      "forbid": ["Austin", "Berlin", "pager-lee"]
+    },
+    {
+      "id": "b-stale-memory-not-applied",
+      "gate": "b",
+      "mode": "recall",
+      "botId": "bot-a",
+      "query": "Austin",
+      "expect": ["Austin"],
+      "forbid": ["Berlin", "berlin-queue"]
+    },
+    {
+      "id": "c-no-cross-bot-leak-recall-a",
+      "gate": "c",
+      "mode": "recall",
+      "botId": "bot-a",
+      "query": "alias",
+      "expect": ["desk-sam"],
+      "forbid": ["pager-lee", "OPS-NEVER-SHARE"]
+    },
+    {
+      "id": "c-no-cross-bot-leak-recall-b",
+      "gate": "c",
+      "mode": "recall",
+      "botId": "bot-b",
+      "query": "pager",
+      "expect": ["pager-lee"],
+      "forbid": ["desk-sam", "Austin", "Berlin"]
+    },
+    {
+      "id": "c-no-cross-bot-leak-inject-a",
+      "gate": "c",
+      "mode": "inject",
+      "botId": "bot-a",
+      "expect": ["Austin", "desk-sam", "Friday"],
+      "forbid": ["pager-lee", "OPS-NEVER-SHARE"]
+    },
+    {
+      "id": "c-no-cross-bot-leak-inject-b",
+      "gate": "c",
+      "mode": "inject",
+      "botId": "bot-b",
+      "expect": ["pager-lee", "Friday"],
+      "forbid": ["desk-sam", "Austin", "Berlin"]
+    }
+  ]
+}
