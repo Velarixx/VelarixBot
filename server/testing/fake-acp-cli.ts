@@ -75,6 +75,21 @@ if (argv[0] === "exec" && argv.includes("-p")) {
   console.log("User prefers concise replies. Last turn noted.");
   process.exit(0);
 }
+// pool-listing surface (`cli auth list`) — hermes-style; the driver's
+// snapshot cache hint asks this BEFORE any file. Derived from
+// FAKE_ACP_AUTH_IDS (agent-managed entries only — terminal methods are not
+// credentials), so tests flip the pool through env, never through disk.
+if (argv[0] === "auth" && argv[1] === "list") {
+  const pool = (process.env.FAKE_ACP_AUTH_IDS ?? "cached_token")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((spec) => spec.split(":"))
+    .filter(([id, type]) => id && id !== "hermes-setup" && type !== "terminal");
+  if (pool.length === 0) console.log("No credentials configured.");
+  for (const [id] of pool) console.log(`${id} (1 credential):\n  oauth device_code`);
+  process.exit(0);
+}
 if (dumpPath) writeDump({});
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");

@@ -8,8 +8,9 @@
 // the shared ACP protocol fake:
 //
 //   default             accepts EXACTLY the v0.20.1 grammar hermes.ts emits —
-//                       `[-m <model>] acp` (and `exec -p <prompt>` for
-//                       one-shot generateText) — then delegates to
+//                       `[-m <model>] acp` (plus `exec -p <prompt>` for
+//                       one-shot generateText and `auth list` for the
+//                       snapshot cache hint) — then delegates to
 //                       fake-acp-cli.ts for the protocol. ANY other argv →
 //                       usage on stderr, exit 2. In particular the OLD
 //                       grammar (`--approval-policy … acp stdio`) and the
@@ -72,6 +73,23 @@ if (process.env.FAKE_HERMES_GRAMMAR === "reject-signed-out" && !existsSync(join(
 if (argv[0] === "exec") {
   if (argv[1] !== "-p" || argv.length !== 3) rejectArgv();
   console.log("fake hermes one-shot");
+  process.exit(0);
+}
+
+// pool-listing surface (`hermes auth list`) — the v0.20.1 credential
+// manager the snapshot cache hint asks before any file. Strict: only the
+// exact `auth list` argv; the listing mirrors FAKE_ACP_AUTH_IDS'
+// agent-managed entries, like the real CLI mirrors its resolved pool.
+if (argv[0] === "auth") {
+  if (argv[1] !== "list" || argv.length !== 2) rejectArgv();
+  const pool = (process.env.FAKE_ACP_AUTH_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((spec) => spec.split(":"))
+    .filter(([id, type]) => id && id !== "hermes-setup" && type !== "terminal");
+  if (pool.length === 0) console.log("No credentials configured.");
+  for (const [id] of pool) console.log(`${id} (1 credential):\n  oauth device_code`);
   process.exit(0);
 }
 

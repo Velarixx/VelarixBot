@@ -448,13 +448,14 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
     }
   });
 
-  it("`hermes auth add` un-sticks a failed probe immediately — the 60s identity cache never outlives the store", async () => {
+  it("`hermes auth add` un-sticks a failed probe immediately — the 60s identity cache never outlives the pool", async () => {
     // reject-signed-out models a credential-less binary that refuses ACP
     // mode until the pool store ~/.hermes/auth.json exists. The identity
-    // cache is keyed on the store's change signature, so the snapshot right
-    // after `hermes auth add …` re-probes and recovers instead of serving
-    // the stale failure for the rest of the 60s TTL. The credential-less
-    // failure itself still reports the CLI's own usage/exit.
+    // cache is keyed on the pool hint (`hermes auth list`, file stat as
+    // fallback while the credential-less binary rejects even that), so the
+    // snapshot right after `hermes auth add …` re-probes and recovers
+    // instead of serving the stale failure for the rest of the 60s TTL. The
+    // credential-less failure itself still reports the CLI's own usage/exit.
     const authFile = join(homedir(), ".hermes", "auth.json");
     rmSync(authFile, { force: true });
     await createStrict({ grammar: "reject-signed-out" });
@@ -559,6 +560,43 @@ describe("Hermes snapshot", () => {
     expect(snap).toMatchObject({ state: "available", authenticated: true });
     expect(snap.reason).toBeUndefined();
     await instance.dispose();
+  });
+
+  it("a pool change that never touches disk un-greys immediately — the cache hint asks `hermes auth list`, not a file", async () => {
+    // the Bitwarden field shape: credentials hydrate into the process env,
+    // ~/.hermes stays plans/-only forever. A `hermes auth add` there changes
+    // NOTHING on disk, so a file-stat hint would serve the stale signed-out
+    // probe for the rest of the 60s TTL. The hint asks the CLI's own pool
+    // listing instead. FAKE_ACP_AUTH_IDS rides process.env (not the pinned
+    // instance environment) so the test can flip the pool mid-instance the
+    // way the real pool changes out from under a running server.
+    const hermesDir = join(homedir(), ".hermes");
+    rmSync(hermesDir, { recursive: true, force: true });
+    mkdirSync(join(hermesDir, "plans"), { recursive: true });
+    const instance = await HermesAgentDriver.create({
+      instanceId: "hermes-diskless-pool",
+      displayName: undefined,
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    const prev = process.env.FAKE_ACP_AUTH_IDS;
+    try {
+      process.env.FAKE_ACP_AUTH_IDS = SETUP_ONLY_AUTH_IDS;
+      const before = await instance.snapshot();
+      expect(before).toMatchObject({ state: "available", authenticated: false });
+      expect(before.reason).toContain("hermes auth");
+      expect(before.reason).not.toContain("hermes login");
+
+      process.env.FAKE_ACP_AUTH_IDS = POOL_AUTH_IDS; // `hermes auth add openai-codex`, Bitwarden-side
+      const after = await instance.snapshot();
+      expect(after).toMatchObject({ state: "available", authenticated: true });
+      expect(after.reason).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.FAKE_ACP_AUTH_IDS;
+      else process.env.FAKE_ACP_AUTH_IDS = prev;
+      await instance.dispose();
+    }
   });
 
   it("only the terminal setup method advertised → available with the `hermes auth` hint, never `hermes login`", async () => {

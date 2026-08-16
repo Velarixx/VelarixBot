@@ -71,11 +71,13 @@ export interface AcpSupport {
    * no protocol), the auth state is unknown and snapshot omits it rather
    * than fabricating one from disk. */
   authenticatedFromInit?(init: unknown): boolean;
-  /** Cheap change-signature of the CLI's credential store (e.g. auth-store
-   * file mtime), mixed into the identity-cache key so an auth change
-   * re-probes immediately instead of waiting out the 60s TTL. Defaults to
-   * isAuthenticated's boolean when omitted. */
-  authCacheHint?(env: Record<string, string | undefined>): string;
+  /** Cheap change-signature of the CLI's credential store, mixed into the
+   * identity-cache key so an auth change re-probes immediately instead of
+   * waiting out the 60s TTL. May ask the CLI itself (gets the instance
+   * config for the binary name — e.g. hermes reduces `hermes auth list`),
+   * with a file stat as fallback. Defaults to isAuthenticated's boolean
+   * when omitted. */
+  authCacheHint?(config: AcpConfig, env: Record<string, string | undefined>): string | Promise<string>;
   /** Compose the session/prompt text. Default prepends the persona. */
   buildPromptText?(turn: SendTurnInput): string;
   /** Optional cheap one-shot text call (titles, memory distill) — e.g. a
@@ -534,7 +536,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         // stuck for the rest of the 60s TTL — the picker must un-grey on
         // the next describe() after the credential store changes.
         const authHint = support.authCacheHint
-          ? support.authCacheHint(env)
+          ? await support.authCacheHint(config, env)
           : String(support.isAuthenticated?.(env) ?? "n/a");
         const key = `${config.cli}@${version}@auth:${authHint}`;
         if (!identityCache || identityCache.key !== key || Date.now() - identityCache.at > 60_000) {

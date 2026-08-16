@@ -26,10 +26,10 @@ import { createAcpDriver, type AcpSupport } from "./core.ts";
 // oauth creds). So this file's absence proves nothing — requiring it is
 // exactly the v0.20.1 field failure ("run `hermes login`" on an
 // authenticated machine; that command no longer even exists). The path is
-// only a cheap change signal that busts the snapshot identity cache the
-// moment `hermes auth …` rewrites the store; when creds never touch disk
-// the hint is a constant "absent" and the 60s TTL is the refresh path. The
-// signed-in truth is the ACP handshake itself (authenticatedFromInit).
+// only the FALLBACK change signal for the snapshot identity cache —
+// authCacheHint asks the CLI itself (`hermes auth list`) first, so a pool
+// change is seen whichever layer holds it. The signed-in truth is the ACP
+// handshake itself (authenticatedFromInit).
 const HERMES_AUTH_STORE = [".hermes", "auth.json"] as const;
 
 // The terminal setup method Hermes ACP always advertises (launches
@@ -102,12 +102,30 @@ const support: AcpSupport = {
     const methods = (init as { authMethods?: unknown } | null)?.authMethods;
     return usableAuthMethod(Array.isArray(methods) ? methods : []) !== undefined;
   },
-  // …but a store rewrite must re-probe immediately (`hermes auth add`
-  // un-greys the picker on the next describe(), not after the 60s TTL).
-  authCacheHint: () => {
+  // …but a pool change must re-probe immediately (`hermes auth add` un-greys
+  // the picker on the next describe(), not after the 60s TTL). Ask the CLI
+  // first, file stat only as fallback: `hermes auth list` sees EVERY storage
+  // layout — on-disk pool, profiles, env/Bitwarden-hydrated — where the pool
+  // store file sees only one (the field machine has NO auth.json at all).
+  // The listing is reduced to provider=count pairs so transient cooldown/
+  // status text never flaps the cache, and it is never logged or persisted.
+  authCacheHint: async (config, env) => {
+    const listing = await cliExec(config.cli, ["auth", "list"], {
+      timeout: 8000,
+      env: env as NodeJS.ProcessEnv,
+    });
+    if (listing.ok) {
+      const counts = [...listing.stdout.matchAll(/^\s*([\w.-]+)\s*\((\d+)\s+credentials?\b/gim)]
+        .map((m) => `${m[1]}=${m[2]}`)
+        .sort()
+        .join(",");
+      if (counts) return `pool:${counts}`;
+    }
+    // older CLI without `auth list`, a listing format we can't read, or the
+    // command erroring — fall back to the on-disk store's change signature
     try {
       const s = statSync(join(homedir(), ...HERMES_AUTH_STORE));
-      return `${s.mtimeMs}:${s.size}`;
+      return `file:${s.mtimeMs}:${s.size}`;
     } catch {
       return "absent";
     }
