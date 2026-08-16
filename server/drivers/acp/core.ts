@@ -60,17 +60,31 @@ export interface AcpSupport {
    *  "continue": proceed anyway (CLIs that work off an ambient login). */
   authFailure: "fail" | "continue";
   /** snapshot(): is the CLI signed in? Filesystem/env heuristic (env already
-   * carries the merged config). Omit when the CLI owns a richer credential
-   * store than one probe-able file and provide authenticatedFromInit
-   * instead — at least one of the two must exist when authFailure is
-   * "fail", or the sign-in hint could never show. */
-  isAuthenticated?(env: Record<string, string | undefined>): boolean;
+   * carries the merged config). May return undefined for "unknown" when a
+   * particular credential shape cannot be probed from one file — the
+   * snapshot then omits `authenticated` rather than fabricating a state.
+   * Omit the hook entirely when the CLI owns a richer credential store
+   * than one probe-able file and provide authenticatedFromInit instead —
+   * at least one of the two must exist when authFailure is "fail", or the
+   * sign-in hint could never show. */
+  isAuthenticated?(env: Record<string, string | undefined>): boolean | undefined;
   /** snapshot(): derive the signed-in state from the identity probe's
    * initialize RESULT — the same signal a turn's auth step rides — instead
    * of a filesystem heuristic. When the probe itself fails (argv rejection,
    * no protocol), the auth state is unknown and snapshot omits it rather
    * than fabricating one from disk. */
   authenticatedFromInit?(init: unknown): boolean;
+  /** snapshot(): ask the CLI ITSELF whether it is signed in when the
+   * handshake alone cannot tell (gemini advertises every auth method
+   * unconditionally; its login gate is session/new). Runs only when the
+   * identity cache refreshes — once per binary+version+auth-hint per 60s
+   * TTL, never per describe() — and only after the protocol probe proved
+   * this binary speaks ACP. Return undefined for "inconclusive"; the
+   * isAuthenticated file/env heuristic is then the FALLBACK. */
+  probeAuthenticated?(
+    config: AcpConfig,
+    env: Record<string, string | undefined>,
+  ): Promise<boolean | undefined>;
   /** Cheap change-signature of the CLI's credential store, mixed into the
    * identity-cache key so an auth change re-probes immediately instead of
    * waiting out the 60s TTL. May ask the CLI itself (gets the instance
@@ -456,10 +470,20 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               throw new Error(support.loginNote);
             }
 
+            // Some agents (gemini-cli) advertise the session's ACTUAL model
+            // in the session/new / session/load RESULT (models.currentModelId)
+            // rather than initialize's _meta.modelState — capture it so
+            // session.started reports the CLI's own truth, not our request.
+            const advertisedModelOf = (res: unknown): string | null => {
+              const id = (res as { models?: { currentModelId?: unknown } } | null)?.models?.currentModelId;
+              return typeof id === "string" ? id : null;
+            };
+            let advertisedModel: string | null = null;
             const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
             if (cursor) {
               try {
-                await request("session/load", { sessionId: cursor, cwd, mcpServers }, LOAD_SESSION_TIMEOUT);
+                const loaded = await request("session/load", { sessionId: cursor, cwd, mcpServers }, LOAD_SESSION_TIMEOUT);
+                advertisedModel = advertisedModelOf(loaded);
                 sessionId = cursor;
               } catch {
                 /* session gone, load unsupported, or too slow — start fresh */
@@ -469,12 +493,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               const started = await request("session/new", { cwd, mcpServers }, NEW_SESSION_TIMEOUT);
               sessionId = typeof started?.sessionId === "string" ? started.sessionId : null;
               if (!sessionId) throw new Error("session/new returned no sessionId");
+              advertisedModel = advertisedModelOf(started) ?? advertisedModel;
             }
             emit({
               ...base(threadId, turnId),
               type: "session.started",
               sessionId,
-              model: init?._meta?.modelState?.currentModelId ?? turn.model ?? null,
+              model: init?._meta?.modelState?.currentModelId ?? advertisedModel ?? turn.model ?? null,
             });
             state.promptSent = true;
             const text = support.buildPromptText
@@ -520,7 +545,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
       // Protocol-identity cache: one handshake per binary+version per
       // minute, so the model picker doesn't spawn a process per describe().
-      let identityCache: { key: string; at: number; ok: boolean; detail: string; init?: unknown } | null = null;
+      let identityCache: {
+        key: string;
+        at: number;
+        ok: boolean;
+        detail: string;
+        init?: unknown;
+        probedAuth?: boolean;
+      } | null = null;
       const snapshot = async (): Promise<ProviderSnapshot> => {
         const env = childEnv();
         const version = await cliVersion(config.cli, 8000, env);
@@ -552,16 +584,24 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             },
             { timeoutMs: 8000, env },
           );
-          identityCache = { key, at: Date.now(), ...probe };
+          // CLI-asked sign-in check (e.g. gemini's session/new gate) — only
+          // when the binary just proved it speaks ACP; an argv-rejecting
+          // binary must keep its argv fault, never gain a login story.
+          const probedAuth =
+            probe.ok && support.probeAuthenticated
+              ? await support.probeAuthenticated(config, env).catch(() => undefined)
+              : undefined;
+          identityCache = { key, at: Date.now(), ...probe, probedAuth };
         }
-        // Signed-in truth: the probe's initialize result when the harness
-        // derives auth from the handshake (undefined — unknown, omitted —
-        // when that probe failed), else the filesystem heuristic.
+        // Signed-in truth, in order: the probe's initialize result when the
+        // harness derives auth from the handshake (undefined — unknown,
+        // omitted — when that probe failed); else the CLI-asked probe; the
+        // filesystem/env heuristic is the FALLBACK when both are silent.
         const authenticated = support.authenticatedFromInit
           ? identityCache.ok
             ? support.authenticatedFromInit(identityCache.init)
             : undefined
-          : support.isAuthenticated?.(env);
+          : identityCache.probedAuth ?? support.isAuthenticated?.(env);
         if (!identityCache.ok) {
           // The probe spawns the exact turn argv, so a failure here is the
           // CLI rejecting THAT — surface the binary's own usage/exit detail
@@ -578,9 +618,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           };
         }
         // Signed-out but ACP-capable: models stay selectable (a turn fails
-        // with the login note), and the picker shows the sign-in hint
-        // instead of silently looking healthy.
-        if (support.authFailure === "fail" && authenticated === false) {
+        // with the login note — fail-closed CLIs at authenticate, lenient
+        // ones at session/new's auth_required), and the picker shows the
+        // sign-in hint instead of silently looking healthy.
+        if (authenticated === false) {
           return { state: "available", version, authenticated: false, reason: support.loginNote };
         }
         return { state: "available", version, ...(authenticated === undefined ? {} : { authenticated }) };
