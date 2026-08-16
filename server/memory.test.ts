@@ -238,7 +238,7 @@ describe("memory files", () => {
   });
 
   it("skips extract when there is no generateText hook, and a thrown hook does not fail the turn", async () => {
-    await expect(extractMemory({ botId: BOT, turnText: "hello" })).resolves.toBeUndefined();
+    await expect(extractMemory({ botId: BOT, turnText: "hello" })).resolves.toEqual([]);
     expect(listMemoryRows(BOT)).toEqual([]);
     await expect(
       extractMemory({
@@ -248,13 +248,13 @@ describe("memory files", () => {
           throw new Error("haiku down");
         },
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual([]);
     expect(listMemoryRows(BOT)).toEqual([]);
   });
 
-  it("extract writes typed rows and leaves a pin in place", async () => {
+  it("extract returns suggestions and does not write rows", async () => {
     const pinned = insertMemoryRow({ botId: BOT, type: "preference", text: "Call me Sam.", pinned: true, now: 1 });
-    await extractMemory({
+    const items = await extractMemory({
       botId: BOT,
       turnText: "User: I moved to Austin.\n\nBot: Got it.",
       generateText: async () =>
@@ -264,9 +264,10 @@ describe("memory files", () => {
         ]),
       now: 2,
     });
+    expect(items).toEqual([{ type: "fact", text: "Lives in Austin." }]);
     const rows = listMemoryRows(BOT);
-    expect(rows.some((r) => r.id === pinned.id && r.pinned && r.text === "Call me Sam.")).toBe(true);
-    expect(rows.some((r) => r.type === "fact" && r.text.includes("Austin"))).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: pinned.id, pinned: true, text: "Call me Sam." });
     pinMemoryRow(pinned.id, true);
     expect(listMemoryRows(BOT).find((r) => r.id === pinned.id)?.pinned).toBe(true);
   });

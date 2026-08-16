@@ -123,7 +123,7 @@ describe("memory_rows store", () => {
           throw new Error("haiku down");
         },
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual([]);
     expect(listMemoryRows(BOT)[0]?.text).toBe("Stay.");
   });
 });

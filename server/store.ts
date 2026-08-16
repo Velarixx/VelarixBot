@@ -20,7 +20,18 @@ export function wouldEmptyWorkspace(botCount: number): boolean {
 }
 export type BotState = "IDLE" | "RUNNING" | "DONE" | "BLOCKED" | "NEEDS_INPUT";
 export interface Usage { input: number; output: number; cost: number | null }
-export interface OptionCardData { title: string; subtitle: string; options: string[]; answered?: string; dismissed?: boolean; requestId?: string; requestType?: "permission" | "question" | "credential" | "secret"; connectUrl?: string }
+export interface OptionCardData {
+  title: string;
+  subtitle: string;
+  options: string[];
+  answered?: string;
+  dismissed?: boolean;
+  requestId?: string;
+  requestType?: "permission" | "question" | "credential" | "secret" | "suggestion";
+  connectUrl?: string;
+  /** PRO extract card. Accept writes via createRoutine / insertMemoryRow. */
+  suggestion?: { botId: string; type: "preference" | "fact" | "workflow"; text: string };
+}
 export interface Message {
   id: string; role: "bot" | "user"; kind: "text" | "options" | "activity" | "screen"; text?: string;
   card?: OptionCardData; tool?: { name: string; ok?: boolean }; png?: string; mime?: string; at: number; usage?: Usage;
