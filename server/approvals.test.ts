@@ -217,6 +217,48 @@ describe("approval rules", () => {
   });
 });
 
+describe("per-bot Always allow settings toggle", () => {
+  it("auto-allows routine asks for THIS bot only, without writing any rule", () => {
+    expect(autoResolvePermission({ id: BOT, alwaysAllow: true }, "shell", "git status")).toEqual({
+      behavior: "allow",
+      source: "rule",
+    });
+    // no rule, no wildcard, no workspace grant lands on disk
+    expect(loadRules(BOT)).toEqual([]);
+    expect(loadRules(WORKSPACE_SCOPE)).toEqual([]);
+    // the toggle is a bot-record flag: another bot without it still cards
+    expect(autoResolvePermission({ id: OTHER }, "shell", "git status")).toBeNull();
+  });
+
+  it("Require approval wins over Always allow", () => {
+    expect(
+      autoResolvePermission({ id: BOT, alwaysAllow: true, requireApproval: true }, "shell", "git status"),
+    ).toBeNull();
+  });
+
+  it("credential/sign-in asks are never auto-resolved by Always allow", () => {
+    expect(autoResolvePermission({ id: BOT, alwaysAllow: true }, "shell", "Sign in to GitHub")).toBeNull();
+    expect(autoResolvePermission({ id: BOT, alwaysAllow: true }, "shell", "enter the password: hunter2")).toBeNull();
+  });
+
+  it("an explicit deny rule still wins over Always allow", () => {
+    addRule(BOT, { tool: "shell", pattern: "rm -rf *", action: "deny" });
+    expect(autoResolvePermission({ id: BOT, alwaysAllow: true }, "shell", "rm -rf scratch")).toEqual({
+      behavior: "deny",
+      source: "rule",
+    });
+    expect(autoResolvePermission({ id: BOT, alwaysAllow: true }, "shell", "git status")?.behavior).toBe("allow");
+  });
+
+  it("audits every Always-allow auto-decision with a redacted matcher", () => {
+    autoResolvePermission({ id: BOT, alwaysAllow: true }, "shell", "token=sk-live-supersecret git push");
+    const entries = readAudit().filter((entry) => entry.decision === "bot.always-allow");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ bot: BOT, tool: "shell" });
+    expect(JSON.stringify(entries)).not.toContain("sk-live-supersecret");
+  });
+});
+
 describe("audit log", () => {
   it("appends redacted, append-only entries for persist, rule hits, quarantine, reconfirm, and revoke", () => {
     const rule = persistAllowRule({

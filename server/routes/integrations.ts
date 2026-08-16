@@ -190,12 +190,18 @@ export function createIntegrationsRoutes(deps: {
           json(res, 404, { error: "no such bot" });
           return true;
         }
-        const patch: { name?: string; title?: string; description?: string } = {};
+        const patch: { name?: string; title?: string; description?: string; alwaysAllow?: boolean } = {};
         if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
         if (typeof body.title === "string") patch.title = body.title;
         if (typeof body.description === "string") patch.description = body.description;
+        if (typeof body.always_allow === "boolean") patch.alwaysAllow = body.always_allow;
         if (!Object.keys(patch).length) {
-          json(res, 400, { error: "name, title, or description required" });
+          json(res, 400, { error: "name, title, description, or always_allow required" });
+          return true;
+        }
+        // same unsafe-combination rule as the public PATCH route
+        if (patch.alwaysAllow === true && target.computer === "local") {
+          json(res, 409, { error: "unsafe configuration: local computer cannot be combined with Always allow" });
           return true;
         }
         const updated = bots.patchBot(targetId, patch);
@@ -213,7 +219,7 @@ export function createIntegrationsRoutes(deps: {
           });
           broadcast({ kind: "message", threadId: from.threadId, message: note });
         }
-        json(res, 200, { id: updated.id, name: updated.name, title: updated.title, description: updated.description });
+        json(res, 200, { id: updated.id, name: updated.name, title: updated.title, description: updated.description, always_allow: updated.alwaysAllow === true });
         return true;
       }
       if (method === "POST" && path === "/api/internal/workspace") {

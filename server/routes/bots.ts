@@ -148,7 +148,7 @@ export function createBotsRoutes(deps: {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: Record<string, unknown> = {};
-      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "iconShape", "pinned", "hidden", "requireApproval", "enabledApps", "skillId", "threadParticipants"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "iconShape", "pinned", "hidden", "requireApproval", "alwaysAllow", "enabledApps", "skillId", "threadParticipants"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (patch.enabledApps !== undefined) patch.enabledApps = parseAllowedToolkits(patch.enabledApps);
@@ -166,6 +166,17 @@ export function createBotsRoutes(deps: {
       if (patch.computer === "local" && process.env.OMB_LOCAL_CUA_SUPPORTED === "0") {
         json(res, 409, { error: "local computer control is not available on Windows; choose Cloud box or Off" });
         return true;
+      }
+      // Same unsafe-combination rule as provider full-auto: a bot allowed to
+      // act without cards must not be driving THIS machine.
+      {
+        const current = bots.bot(m[1]);
+        const effectiveComputer = (patch.computer ?? current?.computer) as string | undefined;
+        const effectiveAlwaysAllow = patch.alwaysAllow !== undefined ? patch.alwaysAllow === true : current?.alwaysAllow === true;
+        if (effectiveComputer === "local" && effectiveAlwaysAllow) {
+          json(res, 409, { error: "unsafe configuration: local computer cannot be combined with Always allow" });
+          return true;
+        }
       }
       if (patch.computer === "local" || (patch.modelSelection && bots.bot(m[1])?.computer === "local")) {
         const current = bots.bot(m[1]);

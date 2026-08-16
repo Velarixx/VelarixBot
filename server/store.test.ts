@@ -29,10 +29,29 @@ describe("bot record normalization", () => {
     expect(bot).toMatchObject({ computer: "off", state: "IDLE", color: "blue", iconShape: "cursor", resumeCursors: { codex: "cursor" } });
   });
 
-  it("rejects unrecognizable records", () => {
+  it("rejects only truly unrecognizable records (no id/threadId)", () => {
     expect(normalizeBot(null)).toBeNull();
     expect(normalizeBot({ id: "x" })).toBeNull();
-    expect(normalizeBot({ ...baseBot, modelSelection: {} })).toBeNull();
+    expect(normalizeBot({ threadId: "t" })).toBeNull();
+    expect(normalizeBot({ ...baseBot, id: "" })).toBeNull();
+  });
+
+  it("salvages a damaged record instead of vanishing it (rc.14 field regression)", () => {
+    // one bad field must never make the bot disappear from every read —
+    // the field trace was list_bots "No other bots" + update_bot "no such
+    // bot" while the row still existed
+    const badSelection = normalizeBot({ ...baseBot, modelSelection: {} });
+    expect(badSelection).toMatchObject({ id: "bot-1", threadId: "thread-1", name: "Testy", modelSelection: { instanceId: "", model: "" } });
+    const stringSelection = normalizeBot({ ...baseBot, modelSelection: "gpt-5.6-terra" } as unknown as Partial<BotRecord>);
+    expect(stringSelection?.modelSelection).toEqual({ instanceId: "", model: "" });
+    const badName = normalizeBot({ ...baseBot, name: 123 } as unknown as Partial<BotRecord>);
+    expect(badName).toMatchObject({ id: "bot-1", name: "New Bot", modelSelection: baseBot.modelSelection });
+  });
+
+  it("keeps the per-bot Always allow flag only when explicitly true", () => {
+    expect(normalizeBot({ ...baseBot, alwaysAllow: true })?.alwaysAllow).toBe(true);
+    expect(normalizeBot({ ...baseBot, alwaysAllow: "yes" } as unknown as Partial<BotRecord>)?.alwaysAllow).toBeUndefined();
+    expect(normalizeBot(baseBot)?.alwaysAllow).toBeUndefined();
   });
 
   it("flips a crashed RUNNING record only when recovery is asked for", () => {

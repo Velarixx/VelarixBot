@@ -34,6 +34,11 @@ export interface BotRecord {
    * resolves to nothing at runtime. */
   computer: string; pinned?: boolean; hidden?: boolean; busy: boolean; state: BotState; stateDetail?: string;
   usage: Usage; currentTurnUsage?: Usage; createdAt: number; requireApproval?: boolean;
+  /** Bot Settings → Permissions → Always allow: routine permission asks for
+   * THIS bot auto-resolve to allow without a card. Scoped to this bot only —
+   * never a workspace rule, never a stored `*` matcher. Credential/sign-in
+   * asks still card, and Require approval wins when both are set. */
+  alwaysAllow?: boolean;
   /** Connected-app slugs this bot may use (Composio). Empty/missing = none. */
   enabledApps?: string[];
   /** Taught skill attached to every turn this bot runs. */
@@ -78,24 +83,42 @@ export function validUsage(v: unknown): Usage {
   return { input: Number.isFinite(x?.input) ? Math.max(0, Number(x!.input)) : 0, output: Number.isFinite(x?.output) ? Math.max(0, Number(x!.output)) : 0, cost: Number.isFinite(x?.cost) ? Math.max(0, Number(x!.cost)) : null };
 }
 
-/** Normalize any historical bot record into a valid current one; null when
- * unrecognizable. `recoverInterrupted` flips a crashed RUNNING/busy record
- * to BLOCKED/interrupted — boot-time recovery only, never on a live read
- * (a live read of a RUNNING bot must stay RUNNING). */
+/** A modelSelection that survives a round-trip; damaged/missing selections
+ * salvage to an empty binding so the bot stays visible and repairable in
+ * the model picker (startTurn then fails loudly with "pick another model")
+ * instead of the whole record vanishing from every read. */
+export function validModelSelection(v: unknown): ModelSelection | null {
+  const s = v as Partial<ModelSelection> | null;
+  if (!s || typeof s !== "object") return null;
+  if (typeof s.instanceId !== "string" || typeof s.model !== "string") return null;
+  return { instanceId: s.instanceId, model: s.model };
+}
+
+/** Normalize any historical bot record into a valid current one; null ONLY
+ * when unrecognizable (id/threadId missing). A record whose name or
+ * modelSelection is damaged is salvaged with fallbacks — the rc.14 field
+ * failure was a single bad field making the bot silently disappear from
+ * every read (list_bots "no other bots", update_bot "no such bot") while
+ * its row still existed. `recoverInterrupted` flips a crashed RUNNING/busy
+ * record to BLOCKED/interrupted — boot-time recovery only, never on a live
+ * read (a live read of a RUNNING bot must stay RUNNING). */
 export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } = {}): BotRecord | null {
   if (!v || typeof v !== "object") return null;
   const b = v as Partial<BotRecord>;
-  if (![b.id, b.threadId, b.name].every((x) => typeof x === "string") || !b.modelSelection || typeof b.modelSelection.instanceId !== "string" || typeof b.modelSelection.model !== "string") return null;
+  if (typeof b.id !== "string" || !b.id || typeof b.threadId !== "string" || !b.threadId) return null;
   const crashed = opts.recoverInterrupted === true && (b.state === "RUNNING" || b.busy === true);
   return {
-    id: b.id!, threadId: b.threadId!, name: b.name!, title: typeof b.title === "string" ? b.title : "", description: typeof b.description === "string" ? b.description : "",
+    id: b.id, threadId: b.threadId,
+    name: typeof b.name === "string" ? b.name : "New Bot",
+    title: typeof b.title === "string" ? b.title : "", description: typeof b.description === "string" ? b.description : "",
     notifications: b.notifications !== false, color: COLORS.includes(b.color as MausColor) ? b.color! : "blue", mascotExpression: b.mascotExpression,
     iconShape: resolveIconShape(b.iconShape),
-    unread: b.unread === true, modelSelection: b.modelSelection, resumeCursors: b.resumeCursors && typeof b.resumeCursors === "object" ? b.resumeCursors : {},
+    unread: b.unread === true, modelSelection: validModelSelection(b.modelSelection) ?? { instanceId: "", model: "" }, resumeCursors: b.resumeCursors && typeof b.resumeCursors === "object" ? b.resumeCursors : {},
     computer: normalizeComputerBinding(b.computer), pinned: b.pinned, hidden: b.hidden, busy: crashed ? false : b.busy === true,
     state: crashed ? "BLOCKED" : STATES.has(b.state as BotState) ? b.state! : "IDLE", ...(crashed ? { stateDetail: "interrupted" } : b.stateDetail ? { stateDetail: b.stateDetail } : {}),
     usage: validUsage(b.usage), currentTurnUsage: b.currentTurnUsage ? validUsage(b.currentTurnUsage) : undefined, createdAt: Number.isFinite(b.createdAt) ? b.createdAt! : Date.now(),
     ...(b.requireApproval === true ? { requireApproval: true } : {}),
+    ...(b.alwaysAllow === true ? { alwaysAllow: true } : {}),
     ...(validStringList(b.enabledApps) ? { enabledApps: validStringList(b.enabledApps) } : {}),
     ...(typeof b.skillId === "string" && b.skillId.trim() ? { skillId: b.skillId.trim() } : {}),
     ...(validNotifyEvents(b.notifyEvents) ? { notifyEvents: validNotifyEvents(b.notifyEvents) } : {}),

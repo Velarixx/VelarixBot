@@ -86,6 +86,9 @@ export interface Bot {
   computer?: string;
   /** Force a permission card even when the provider is in full-auto. */
   requireApproval?: boolean;
+  /** Permissions → Always allow: routine asks auto-resolve for THIS bot
+   * only. Credential/sign-in asks still card; requireApproval wins. */
+  alwaysAllow?: boolean;
   /** Connected-app slugs this bot may use. Empty/missing = none. */
   enabledApps?: string[];
   /** Taught skill attached to every turn this bot runs. */
@@ -246,6 +249,7 @@ type Action =
           | "pinned"
           | "hidden"
           | "requireApproval"
+          | "alwaysAllow"
           | "enabledApps"
           | "skillId"
         >

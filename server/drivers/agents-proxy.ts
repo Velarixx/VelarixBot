@@ -77,7 +77,7 @@ const TOOLS = [
   {
     name: "update_bot",
     description:
-      "Rename a sidebar bot or change its title/description (persona). bot_id comes from list_bots. Omit fields you are not changing.",
+      "Rename a sidebar bot or change its title/description (persona) or its Always-allow permissions setting. bot_id comes from list_bots. Omit fields you are not changing.",
     inputSchema: {
       type: "object",
       properties: {
@@ -85,6 +85,11 @@ const TOOLS = [
         name: { type: "string" },
         title: { type: "string" },
         description: { type: "string", description: "Persona / about text." },
+        always_allow: {
+          type: "boolean",
+          description:
+            "Bot Settings → Permissions → Always allow for THAT bot only: routine permission asks auto-resolve without a card. Credential/sign-in asks still ask the user. Never workspace-wide.",
+        },
       },
       required: ["bot_id"],
     },
@@ -182,8 +187,9 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     const namePatch = String(args.name ?? "").trim();
     const titlePatch = typeof args.title === "string" ? args.title : undefined;
     const descriptionPatch = typeof args.description === "string" ? args.description : undefined;
-    if (!namePatch && titlePatch === undefined && descriptionPatch === undefined) {
-      return { text: "update_bot needs name, title, or description.", isError: true };
+    const alwaysAllowPatch = typeof args.always_allow === "boolean" ? args.always_allow : undefined;
+    if (!namePatch && titlePatch === undefined && descriptionPatch === undefined && alwaysAllowPatch === undefined) {
+      return { text: "update_bot needs name, title, description, or always_allow.", isError: true };
     }
     const r = await api(`/api/internal/update-bot`, {
       method: "POST",
@@ -193,12 +199,15 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
         ...(namePatch ? { name: namePatch } : {}),
         ...(titlePatch !== undefined ? { title: titlePatch } : {}),
         ...(descriptionPatch !== undefined ? { description: descriptionPatch } : {}),
+        ...(alwaysAllowPatch !== undefined ? { always_allow: alwaysAllowPatch } : {}),
         depth: DEPTH,
       }),
     });
     if (r.error) return { text: `Couldn't update that bot: ${r.error}`, isError: true };
+    const alwaysAllowNote =
+      alwaysAllowPatch === undefined ? "" : ` Always allow is now ${r.always_allow === true ? "on" : "off"} for that bot.`;
     return {
-      text: `Updated sidebar bot ${r.name ?? targetId} (id: ${r.id ?? targetId}).`,
+      text: `Updated sidebar bot ${r.name ?? targetId} (id: ${r.id ?? targetId}).${alwaysAllowNote}`,
     };
   }
   return { text: `Unknown tool: ${name}`, isError: true };

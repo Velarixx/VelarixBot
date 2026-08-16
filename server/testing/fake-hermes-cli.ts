@@ -16,8 +16,16 @@
 //                       everything else with its subcommand catalog and exit 2
 //                       — never speaks ACP. Turns must fail loudly and
 //                       snapshot must report unusable, not "available".
+//   FAKE_HERMES_GRAMMAR=reject-signed-out
+//                       models a real signed-out subscription hermes: refuses
+//                       ACP mode (usage + exit 2) until ~/.hermes/auth.json
+//                       exists, then behaves like the default strict grammar.
+//                       Pins the login → picker-recovers path.
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const argv = process.argv.slice(2);
 
@@ -38,6 +46,9 @@ function rejectArgv(): never {
 }
 
 if (process.env.FAKE_HERMES_GRAMMAR === "reject") rejectArgv();
+if (process.env.FAKE_HERMES_GRAMMAR === "reject-signed-out" && !existsSync(join(homedir(), ".hermes", "auth.json"))) {
+  rejectArgv();
+}
 
 // one-shot generateText surface (`hermes exec -p <prompt>`), strict
 if (argv[0] === "exec") {

@@ -316,4 +316,20 @@ describe("agents-proxy MCP surface", () => {
     expect((await callTool("update_bot", { bot_id: "" })).result.isError).toBe(true);
     expect((await callTool("update_bot", { bot_id: "bot-helper" })).result.isError).toBe(true);
   });
+
+  it("update_bot forwards always_allow as a boolean and reports the new state", async () => {
+    updateResponse = { id: "bot-helper", name: "Helper", title: "Ops", description: "Runs ops", always_allow: true };
+    const res = await callTool("update_bot", { bot_id: "bot-helper", always_allow: true });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toContain("Always allow is now on");
+    expect(lastUpdateBody).toMatchObject({ fromBotId: "bot-asker", bot_id: "bot-helper", always_allow: true, depth: 0 });
+
+    updateResponse = { id: "bot-helper", name: "Helper", title: "Ops", description: "Runs ops", always_allow: false };
+    const off = await callTool("update_bot", { bot_id: "bot-helper", always_allow: false });
+    expect(off.result.isError).toBeFalsy();
+    expect(off.result.content[0].text).toContain("Always allow is now off");
+    expect(lastUpdateBody).toMatchObject({ always_allow: false });
+    // a non-boolean value is not forwarded (and alone is not a valid patch)
+    expect((await callTool("update_bot", { bot_id: "bot-helper", always_allow: "yes" })).result.isError).toBe(true);
+  });
 });
