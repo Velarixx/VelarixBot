@@ -35,9 +35,11 @@ import {
   distillMemory,
   extractMemory,
   fleetGenerateText,
+  listMemoryRows,
   turnTextFromMessages,
   memoryPrompt,
 } from "../memory.ts";
+import { suggestionCardsFor } from "../suggestions.ts";
 import { createPeerQueue } from "../peer-queue.ts";
 import type { Proactive } from "../proactive.ts";
 import type { Repositories } from "../repositories/index.ts";
@@ -693,7 +695,20 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           const generateText = fleetGenerateText(registry.instances(), bot.modelSelection.instanceId);
           void (async () => {
             await distillMemory({ botId: bot.id, turnText, generateText });
-            await extractMemory({ botId: bot.id, turnText, generateText });
+            const extracted = await extractMemory({ botId: bot.id, turnText, generateText });
+            if (!extracted.length) return;
+            const existingCards = store
+              .messagesFor(bot.threadId)
+              .map((m) => m.card)
+              .filter((c): c is NonNullable<typeof c> => !!c);
+            const cards = suggestionCardsFor(bot.id, extracted, {
+              existingRows: listMemoryRows(bot.id),
+              existingCards,
+            });
+            for (const card of cards) {
+              const message = store.appendMessage(bot.threadId, { role: "bot", kind: "options", card });
+              broadcast({ kind: "message", threadId: bot.threadId, message });
+            }
           })().catch(() => {
             /* post-turn distill/extract must not fail the turn or log prompts */
           });

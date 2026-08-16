@@ -194,7 +194,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     createEventsRoutes({ hub, bots }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
-    createBotsRoutes({ bots, turns, teach, registry, computers, cfg, broadcast }),
+    createBotsRoutes({ bots, turns, teach, routines, registry, computers, cfg, broadcast }),
     createTurnsRoutes({ turns }),
     createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
     createDiagnosticsRoutes({ diagnostics }),

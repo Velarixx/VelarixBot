@@ -6,8 +6,9 @@
 // snapshot — not a third store, not dual-written with rows.
 //
 // Inject and recall both go through composeUserKnowledge into
-// "What you know about this user." Distill + extract run after a
-// successful turn (failures swallowed). No embeddings, no cloud, no
+// "What you know about this user." Distill runs after a successful
+// turn (failures swallowed). Extract returns structured suggestions
+// only — PRO cards write on accept. No embeddings, no cloud, no
 // secrets or prompts in logs.
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -423,35 +424,34 @@ function normalizeNote(text: string): string {
   return text.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-/** After a successful turn, same swallow-failure contract as distill. */
+/** After a successful turn, same swallow-failure contract as distill.
+ * Returns structured suggestions only — never writes a row or routine.
+ * PRO cards accept through insertMemoryRow / createRoutine. */
 export async function extractMemory(opts: {
   botId: string;
   turnText: string;
   generateText?: TextGenerator;
   now?: number;
-}): Promise<void> {
-  if (!opts.generateText || !rowsStore) return;
+}): Promise<Array<{ type: MemoryRowType; text: string }>> {
+  if (!opts.generateText) return [];
   const turnText = opts.turnText.trim();
-  if (!turnText) return;
+  if (!turnText) return [];
   try {
     const out = (await opts.generateText(extractPrompt(turnText))).trim();
-    if (!out) return;
+    if (!out) return [];
     const items = parseExtractedRows(out);
-    if (!items.length) return;
-    const now = opts.now ?? Date.now();
+    if (!items.length) return [];
     const existing = safeListRows(opts.botId);
+    const suggestions: Array<{ type: MemoryRowType; text: string }> = [];
     for (const item of items) {
-      const match = existing.find((row) => normalizeNote(row.text) === normalizeNote(item.text));
-      if (match?.pinned) continue;
-      if (match) {
-        rowsStore.update(match.id, { type: item.type, text: item.text, updatedAt: now });
-        continue;
-      }
-      const created = rowsStore.insert({ botId: opts.botId, type: item.type, text: item.text, createdAt: now, updatedAt: now });
-      existing.push(created);
+      const match = existing.find((row) => row.botId === opts.botId && normalizeNote(row.text) === normalizeNote(item.text));
+      if (match) continue;
+      suggestions.push(item);
     }
+    return suggestions;
   } catch {
     /* extract failure must not fail the turn — and must not log the prompt */
+    return [];
   }
 }
 

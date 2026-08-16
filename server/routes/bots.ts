@@ -18,8 +18,10 @@ import {
 } from "../memory.ts";
 import type { Broadcast } from "../services/events.ts";
 import type { BotsService } from "../services/bots.ts";
+import type { RoutinesService } from "../services/routines.ts";
 import type { TeachService } from "../services/teach.ts";
 import type { TurnsService } from "../services/turns.ts";
+import { acceptSuggestion, isSuggestionAccept, isSuggestionCard } from "../suggestions.ts";
 import { deleteSkill, getRecordingSession, getSkill, listTeachSessions, loadSkills, saveSkill } from "../teach.ts";
 import { json, readBody, type RouteHandler } from "./context.ts";
 
@@ -27,12 +29,13 @@ export function createBotsRoutes(deps: {
   bots: BotsService;
   turns: TurnsService;
   teach: TeachService;
+  routines: RoutinesService;
   registry: ProviderRegistry;
   computers: ComputerRegistry;
   cfg: AppConfig;
   broadcast: Broadcast;
 }): RouteHandler {
-  const { bots, turns, teach, registry, computers, cfg, broadcast } = deps;
+  const { bots, turns, teach, routines, registry, computers, cfg, broadcast } = deps;
   return async ({ req, res, path, method }) => {
     // ── per-bot + shared workspace memory (markdown + structured rows) ──
     const memoryMatch = path.match(/^\/api\/bots\/([\w-]+)\/memory$/);
@@ -325,10 +328,31 @@ export function createBotsRoutes(deps: {
         return true;
       }
       const body = await readBody(req);
+      const answered = typeof body.answered === "string" ? body.answered : undefined;
+      const dismissed = body.dismissed === true;
+      // Suggestion cards write only on an explicit accept of THIS bot's
+      // card. Dismiss / already-settled / cross-bot persist the card and
+      // nothing else — not a routine, not a memory row, not Allow-always.
+      if (
+        isSuggestionCard(existing.card) &&
+        !existing.card.answered &&
+        !existing.card.dismissed &&
+        !dismissed &&
+        answered &&
+        existing.card.suggestion &&
+        isSuggestionAccept(existing.card, answered)
+      ) {
+        const result = acceptSuggestion({
+          botId: bot.id,
+          suggestion: existing.card.suggestion,
+          createRoutine: (input) => routines.createRoutine(input),
+        });
+        if (result.kind === "routine") broadcast({ kind: "routine", routine: result.routine });
+      }
       const patched = bots.patchMessage(bot.threadId, m[2], {
         card: {
           ...existing.card,
-          ...(body.answered !== undefined ? { answered: body.answered } : {}),
+          ...(answered !== undefined ? { answered } : {}),
           ...(body.dismissed !== undefined ? { dismissed: body.dismissed } : {}),
         },
       });
