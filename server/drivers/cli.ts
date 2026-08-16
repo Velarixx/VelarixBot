@@ -289,17 +289,24 @@ export function displayCliPath(cli: string, env?: NodeJS.ProcessEnv): string {
 
 /**
  * Protocol-identity probe: spawn `cli args` exactly like a turn would, write
- * one JSON-RPC line, and wait for ANY JSON-RPC message back on stdout. A
- * `--version` probe alone cannot tell an impostor apart — a PATH-shadowed or
- * outdated binary answers `--version` fine and then rejects the real argv or
- * never speaks JSON (rc.12 field failure). Kills the child when done.
+ * one JSON-RPC line, and wait for the reply on stdout. A `--version` probe
+ * alone cannot tell an impostor apart — a PATH-shadowed or outdated binary
+ * answers `--version` fine and then rejects the real argv or never speaks
+ * JSON (rc.12 field failure). Kills the child when done.
+ *
+ * `init` carries the RESULT of the message whose `id` matches `initMessage`
+ * (the initialize response), so callers can inspect the handshake itself —
+ * e.g. hermes derives the signed-in state from the advertised authMethods.
+ * Any JSON-RPC object on stdout already proves protocol identity, so a
+ * child that emits JSON but never answers the probe id (a notification-
+ * first agent) still resolves ok — just without `init`.
  */
 export function probeProtocol(
   cli: string,
   args: string[],
   initMessage: unknown,
   opts: { timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
-): Promise<{ ok: boolean; detail: string }> {
+): Promise<{ ok: boolean; detail: string; init?: unknown }> {
   return new Promise((resolvePromise) => {
     let child: ChildProcessWithoutNullStreams;
     try {
@@ -312,16 +319,18 @@ export function probeProtocol(
       resolvePromise({ ok: false, detail: (e as Error).message });
       return;
     }
+    const expectId = (initMessage as { id?: unknown } | null)?.id;
+    let sawJson = false;
     let done = false;
-    const finish = (ok: boolean, detail: string) => {
+    const finish = (ok: boolean, detail: string, init?: unknown) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       killProcessTree(child.pid);
-      resolvePromise({ ok, detail: detail.slice(-300) });
+      resolvePromise({ ok, detail: detail.slice(-300), ...(init === undefined ? {} : { init }) });
     };
     const timer = setTimeout(
-      () => finish(false, "no protocol reply before the probe timeout"),
+      () => finish(sawJson, sawJson ? "" : "no protocol reply before the probe timeout"),
       opts.timeoutMs ?? 8000,
     );
     timer.unref?.();
@@ -341,8 +350,13 @@ export function probeProtocol(
         try {
           const msg = JSON.parse(line);
           if (msg && typeof msg === "object") {
-            finish(true, "");
-            return;
+            sawJson = true;
+            if (expectId === undefined || (msg as { id?: unknown }).id === expectId) {
+              finish(true, "", (msg as { result?: unknown }).result);
+              return;
+            }
+            // JSON, but not the probe reply (a notification / side-channel)
+            // — identity is proven; keep reading for the reply itself
           }
         } catch {
           /* non-JSON noise — keep waiting */
@@ -353,7 +367,9 @@ export function probeProtocol(
     child.stdin.on("error", () => {
       /* the close handler reports the failure */
     });
-    child.on("close", (code) => finish(false, `exited ${code} before any protocol reply${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
+    child.on("close", (code) =>
+      finish(sawJson, sawJson ? "" : `exited ${code} before any protocol reply${stderr.trim() ? `: ${stderr.trim()}` : ""}`),
+    );
     try {
       child.stdin.write(JSON.stringify(initMessage) + "\n");
     } catch {

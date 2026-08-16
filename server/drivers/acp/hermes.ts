@@ -1,24 +1,43 @@
 // Hermes Agent harness support — the `hermes` CLI over ACP stdio
-// (`hermes [-m <model>] acp`, verified against v0.20.1), on the ChatGPT
-// subscription login (`hermes login` → HERMES_AUTH_FILE), never an OpenAI
-// API key.
+// (`hermes [-m <model>] acp`, verified against v0.20.1), on Hermes' own
+// credential pool (`hermes auth`; openai-codex OAuth is the ChatGPT/Codex
+// subscription path), never an OpenAI API key.
 // The generic protocol runtime lives in acp/core.ts; this file is only the
 // per-harness quirks, modeled on acp/grok.ts.
 //
 // Coordinator tier: agents/memory/composio/workspace MCP, the permission
 // bridge, session/load, image gating, _meta usage, and interrupt all come
 // from the ACP core. No third-party protocol translation.
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { cliExec } from "../cli.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
-// Where `hermes login` stores the ChatGPT OAuth credentials (mirrors Codex's
-// ~/.codex/auth.json). Single source of truth for the signed-in probe — if
-// the CLI ever moves the file, change this one constant.
-const HERMES_AUTH_FILE = [".hermes", "auth.json"] as const;
+// Hermes' credential-pool store (`hermes auth` persists pool state under the
+// credential_pool key here). NOT a sign-in gate: credentials can be
+// env-seeded, imported (~/.codex/auth.json, Claude Code), or profile-scoped
+// (~/.hermes/profiles/<name>/auth.json), so this file's absence proves
+// nothing — requiring it is exactly the v0.20.1 field failure ("run
+// `hermes login`" on an authenticated machine; that command no longer even
+// exists). The path is only a cheap change signal that busts the snapshot
+// identity cache the moment `hermes auth …` rewrites the store. The
+// signed-in truth is the ACP handshake itself (authenticatedFromInit).
+const HERMES_AUTH_STORE = [".hermes", "auth.json"] as const;
+
+// The terminal setup method Hermes ACP always advertises (launches
+// `hermes --setup` out of band) — even on a machine with zero credentials,
+// so its presence proves nothing about auth.
+const TERMINAL_SETUP_METHOD = "hermes-setup";
+
+// Hermes advertises the resolved runtime provider (openai-codex for the
+// ChatGPT/Codex subscription, or whatever `hermes model` configured) as an
+// agent-managed auth method id if and only if its credential pool resolves
+// usable credentials. Filter by BOTH the fixed setup id and the terminal
+// type, so a future terminal-flavored method never reads as signed-in.
+const usableAuthMethod = (methods: Array<{ id?: string; type?: string }>) =>
+  methods.find((m) => typeof m.id === "string" && m.id !== TERMINAL_SETUP_METHOD && m.type !== "terminal");
 
 const support: AcpSupport = {
   driverKind: "hermesAgent",
@@ -34,7 +53,11 @@ const support: AcpSupport = {
   },
   defaultCli: "hermes",
   nativeSource: "hermes.acp",
-  loginNote: "Hermes is not signed in to ChatGPT — run `hermes login` in a terminal, then retry.",
+  // Never `hermes login` — v0.20.1 removed that command. `hermes auth`
+  // manages the credential pool; `hermes setup` is the guided flow.
+  loginNote:
+    "Hermes has no usable provider credentials — add one with `hermes auth` " +
+    "(ChatGPT/Codex subscription: `hermes auth add openai-codex`) or run `hermes setup`, then retry.",
 
   // v0.20.1 grammar: global `-m <model>` before the bare `acp` subcommand —
   // there is no `--approval-policy` flag and no trailing `stdio` (that argv
@@ -45,7 +68,7 @@ const support: AcpSupport = {
   // silently auto-approve below the permission bridge.
   spawnArgs: (_config, turn) => [...(turn.model ? ["-m", turn.model] : []), "acp"],
 
-  // The CLI owns its own ChatGPT login; a leaked API key silently flips
+  // The CLI owns its own credential pool; a leaked API key silently flips
   // billing from the subscription to pay-as-you-go.
   transformEnv: (env) => {
     delete env.OPENAI_API_KEY;
@@ -53,11 +76,36 @@ const support: AcpSupport = {
     delete env.HERMES_AUTH_JSON;
   },
 
-  // Bind the ChatGPT subscription login. No API-key fallback by design —
-  // an unauthenticated CLI is a user action, not something to paper over.
-  pickAuthMethod: (methods) => methods.find((m) => m.id === "chatgpt-oauth")?.id ?? null,
+  // Bind the agent-managed pool credential Hermes advertises: prefer
+  // openai-codex (the ChatGPT/Codex subscription), else whatever provider
+  // the pool resolved — Hermes only accepts authenticate for the provider
+  // it advertised, so the advertised id IS the valid one. Never the
+  // terminal setup method: picking it can acknowledge a login that does
+  // not exist yet. No API-key fallback by design — an unconfigured CLI is
+  // a user action (`hermes auth` / `hermes setup`), not something to paper
+  // over. When only the setup method is advertised (no pool credentials),
+  // this returns null and the turn fails closed with loginNote.
+  pickAuthMethod: (methods) =>
+    (methods.find((m) => m.id === "openai-codex") ?? usableAuthMethod(methods))?.id ?? null,
   authFailure: "fail",
-  isAuthenticated: () => existsSync(join(homedir(), ...HERMES_AUTH_FILE)),
+
+  // Signed-in truth = the ACP handshake: Hermes advertises an agent-managed
+  // auth method exactly when its credential pool resolves. No filesystem
+  // probe — the pool store's location and shape are the CLI's business.
+  authenticatedFromInit: (init) => {
+    const methods = (init as { authMethods?: unknown } | null)?.authMethods;
+    return usableAuthMethod(Array.isArray(methods) ? methods : []) !== undefined;
+  },
+  // …but a store rewrite must re-probe immediately (`hermes auth add`
+  // un-greys the picker on the next describe(), not after the 60s TTL).
+  authCacheHint: () => {
+    try {
+      const s = statSync(join(homedir(), ...HERMES_AUTH_STORE));
+      return `${s.mtimeMs}:${s.size}`;
+    } catch {
+      return "absent";
+    }
+  },
 
   // buildPromptText omitted on purpose — the core default (persona prepended
   // codex-style) is the contract here.

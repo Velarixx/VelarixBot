@@ -223,8 +223,9 @@ runProviderDriverContract({
     HermesAgentDriver.create({
       instanceId: "contract-hermes",
       displayName: "Hermes Contract",
-      // hermes fails closed unless the fake advertises chatgpt-oauth
-      environment: { FAKE_ACP_AUTH_IDS: "chatgpt-oauth" },
+      // hermes fails closed unless the fake advertises an agent-managed
+      // pool provider (v0.20.1 shape: provider + terminal setup method)
+      environment: { FAKE_ACP_AUTH_IDS: "openai-codex,hermes-setup:terminal" },
       enabled: true,
       config: { cli: FAKE_ACP_CLI, fullAuto: false },
     }),

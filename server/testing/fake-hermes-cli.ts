@@ -21,10 +21,11 @@
 //                       never speaks ACP. Turns must fail loudly and
 //                       snapshot must report unusable, not "available".
 //   FAKE_HERMES_GRAMMAR=reject-signed-out
-//                       models a signed-out binary that refuses ACP mode
-//                       (usage + exit 2) until ~/.hermes/auth.json exists,
-//                       then behaves like the default strict grammar. Pins
-//                       the login → identity-cache-recovers path.
+//                       models a credential-less binary that refuses ACP
+//                       mode (usage + exit 2) until the pool store
+//                       ~/.hermes/auth.json exists, then behaves like the
+//                       default strict grammar. Pins the `hermes auth add`
+//                       → identity-cache-recovers path.
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { existsSync } from "node:fs";
@@ -41,11 +42,14 @@ if (argv.includes("--version")) {
 // Mirrors the field CLI's rejection: unexpected argument → usage catalog on
 // stderr, exit 2. `hermes acp --help` (v0.20.1) only knows --accept-hooks,
 // --version, --check, --setup, --setup-browser, --yes — no --approval-policy,
-// no trailing stdio.
+// no trailing stdio. The command catalog matches v0.20.1: `login`/`logout`
+// are REMOVED (the field binary answers `hermes login` with "The 'hermes
+// login' command has been removed. Use 'hermes auth' …"); credentials are
+// managed by `hermes auth` / `hermes model` / `hermes setup`.
 const USAGE = [
   "error: unexpected argument found",
   "usage: hermes [-m MODEL] [--yolo] <command> [options]",
-  "commands: acp, exec, login, logout, orchestrator, pets, journey, plugins, skills",
+  "commands: acp, auth, exec, model, setup, orchestrator, pets, journey, plugins, skills",
 ].join("\n");
 
 function rejectArgv(): never {
