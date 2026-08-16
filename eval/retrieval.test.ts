@@ -1,6 +1,7 @@
 // P2.6 memory retrieval evals (GATE). Deterministic cases over a fixed
 // fixture corpus — substring recall + whole-file inject as they exist
 // today. No live model, no new ranker, no Playwright chat flow.
+// Runs in existing ci.yml via `pnpm test` (eval/**/*.test.ts).
 // Assertions report only missing/leaked tokens — never the corpus text,
 // distill prompts, or memory file contents.
 import { readFileSync } from "node:fs";
