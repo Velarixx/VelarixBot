@@ -529,13 +529,34 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           );
           identityCache = { key, at: Date.now(), ...probe };
         }
+        const authenticated = support.isAuthenticated(env);
         if (!identityCache.ok) {
+          // A signed-out subscription CLI often refuses ACP mode outright —
+          // presenting that as "wrong or outdated CLI" is a dead grey trap
+          // (rc.14 Hermes field failure). When login is required and the
+          // login file is missing, the user action is `hermes login`, so
+          // say THAT; the wrong-CLI diagnosis is reserved for a binary that
+          // is signed in and still won't speak ACP.
+          if (support.authFailure === "fail" && !authenticated) {
+            return {
+              state: "unavailable",
+              authenticated: false,
+              reason: `${support.loginNote} (\`${displayCliPath(config.cli, env)}\` ${version} answered --version but did not speak ACP: ${identityCache.detail})`,
+            };
+          }
           return {
             state: "unavailable",
+            authenticated,
             reason: `\`${displayCliPath(config.cli, env)}\` (${version}) does not speak ACP with the ${support.displayName} argv — wrong or outdated CLI on PATH (${identityCache.detail})`,
           };
         }
-        return { state: "available", version, authenticated: support.isAuthenticated(env) };
+        // Signed-out but ACP-capable: models stay selectable (a turn fails
+        // with the login note), and the picker shows the sign-in hint
+        // instead of silently looking healthy.
+        if (support.authFailure === "fail" && !authenticated) {
+          return { state: "available", version, authenticated: false, reason: support.loginNote };
+        }
+        return { state: "available", version, authenticated };
       };
 
       return {

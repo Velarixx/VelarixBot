@@ -316,13 +316,37 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
     expect(await instance.generateText!("distill")).toBe("fake hermes one-shot");
   });
 
-  it("snapshot verifies protocol identity: the field binary is unavailable with path + version", async () => {
+  it("snapshot verifies protocol identity: a signed-in field binary is unavailable with path + version", async () => {
+    // signed in (auth.json present) rules the login out — the remaining
+    // diagnosis is the wrong/outdated CLI on PATH
+    const authFile = join(homedir(), ".hermes", "auth.json");
+    mkdirSync(dirname(authFile), { recursive: true });
+    writeFileSync(authFile, JSON.stringify({ tokens: "fake" }));
+    try {
+      await createStrict({ reject: true });
+      const snap = await instance.snapshot();
+      expect(snap.state).toBe("unavailable");
+      expect(snap.reason).toContain("does not speak ACP");
+      expect(snap.reason).toContain("fake-hermes 0.9.0"); // --version alone no longer means available
+      expect(snap.reason).toContain("fake-hermes-cli"); // resolved path — which binary is this?
+    } finally {
+      rmSync(authFile, { force: true });
+    }
+  });
+
+  it("a signed-OUT hermes that refuses ACP says `hermes login`, not 'wrong CLI' (rc.14 grey-picker trap)", async () => {
+    // the field failure: hermes.exe installed, ~/.hermes/auth.json missing,
+    // ACP mode refused — the picker showed a dead grey list with a
+    // wrong-CLI diagnosis when the actual user action is `hermes login`
+    rmSync(join(homedir(), ".hermes", "auth.json"), { force: true });
     await createStrict({ reject: true });
     const snap = await instance.snapshot();
     expect(snap.state).toBe("unavailable");
-    expect(snap.reason).toContain("does not speak ACP");
-    expect(snap.reason).toContain("fake-hermes 0.9.0"); // --version alone no longer means available
-    expect(snap.reason).toContain("fake-hermes-cli"); // resolved path — which binary is this?
+    expect(snap.authenticated).toBe(false);
+    expect(snap.reason).toContain("hermes login");
+    expect(snap.reason).toContain("not signed in to ChatGPT");
+    expect(snap.reason).toContain("fake-hermes 0.9.0"); // still says which binary answered
+    expect(snap.reason).not.toContain("wrong or outdated CLI");
   });
 
   it("snapshot stays available when the binary accepts the argv and speaks ACP", async () => {
@@ -385,7 +409,7 @@ describe("Hermes snapshot", () => {
     await instance.dispose();
   });
 
-  it("authenticated tracks the ~/.hermes/auth.json login file", async () => {
+  it("authenticated tracks the ~/.hermes/auth.json login file, with the sign-in hint while signed out", async () => {
     const instance = await HermesAgentDriver.create({
       instanceId: "hermes-auth-file",
       displayName: undefined,
@@ -396,10 +420,16 @@ describe("Hermes snapshot", () => {
     // HOME is the per-suite sandbox (testing/setup.ts) — never the real one
     const authFile = join(homedir(), ".hermes", "auth.json");
     rmSync(authFile, { force: true });
-    expect((await instance.snapshot())).toMatchObject({ state: "available", authenticated: false });
+    // signed out but ACP-capable: still available (models stay selectable)
+    // and the picker gets the sign-in hint instead of a silent healthy look
+    const signedOut = await instance.snapshot();
+    expect(signedOut).toMatchObject({ state: "available", authenticated: false });
+    expect(signedOut.reason).toContain("hermes login");
     mkdirSync(dirname(authFile), { recursive: true });
     writeFileSync(authFile, JSON.stringify({ tokens: "fake" }));
-    expect((await instance.snapshot())).toMatchObject({ state: "available", authenticated: true });
+    const signedIn = await instance.snapshot();
+    expect(signedIn).toMatchObject({ state: "available", authenticated: true });
+    expect(signedIn.reason).toBeUndefined();
     rmSync(authFile, { force: true });
     await instance.dispose();
   });

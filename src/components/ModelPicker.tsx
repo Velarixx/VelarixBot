@@ -94,11 +94,30 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
               <>
                 <div className="px-2 pb-1 pt-1">
                   <div className="text-[13px] font-semibold text-ink">{railInstance.displayName}</div>
-                  <div className="truncate text-[11px] text-ink-secondary">
-                    {railInstance.snapshot.state === "available"
-                      ? (railInstance.snapshot.version ?? "ready")
-                      : (railInstance.snapshot.reason ?? "unavailable")}
-                  </div>
+                  {railInstance.snapshot.state === "available" ? (
+                    <>
+                      <div className="truncate text-[11px] text-ink-secondary">
+                        {railInstance.snapshot.version ?? "ready"}
+                      </div>
+                      {railInstance.snapshot.authenticated === false && (
+                        <div
+                          className="mt-0.5 text-[11px] leading-snug text-warning"
+                          title={railInstance.snapshot.reason ?? "not signed in"}
+                        >
+                          {railInstance.snapshot.reason ?? "Not signed in — sign in from a terminal, then retry."}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    // never a silent grey list: the full reason wraps here and
+                    // repeats as a tooltip on every disabled model row
+                    <div
+                      className="text-[11px] leading-snug text-warning"
+                      title={railInstance.snapshot.reason ?? "unavailable"}
+                    >
+                      {railInstance.snapshot.reason ?? "unavailable"}
+                    </div>
+                  )}
                 </div>
                 {railInstance.models.options.map((option) => {
                   const current =
@@ -108,6 +127,7 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
                     <button
                       key={option.id}
                       disabled={disabled}
+                      title={disabled ? (railInstance.snapshot.reason ?? "unavailable") : undefined}
                       onClick={() => pick(railInstance, option.id)}
                       className={cn(
                         "flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px]",
