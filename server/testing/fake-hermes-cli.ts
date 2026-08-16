@@ -1,26 +1,30 @@
 #!/usr/bin/env node
 // Strict-grammar fake of the `hermes` CLI, for validating the EXACT argv
 // hermes.ts spawns. The accept-anything fake-acp-cli.ts cannot falsify a
-// spawn grammar — which is how the rc.12 field failure shipped: the
-// installed hermes rejected our argv, printed its usage/subcommand catalog,
-// and exited 2, while `--version` kept the picker green. This fake is a
-// clap-style argv gate in front of the shared ACP protocol fake:
+// spawn grammar — which is how the rc.12/rc.14 field failures shipped: the
+// installed hermes rejected our argv, printed its usage, and exited 2,
+// while `--version` kept the picker green. This fake is shaped like the
+// FIELD binary (Hermes Agent v0.20.1): a clap-style argv gate in front of
+// the shared ACP protocol fake:
 //
-//   default             accepts EXACTLY the grammar hermes.ts emits —
-//                       `--approval-policy <acp|never> [-m <model>] acp stdio`
-//                       (and `exec -p <prompt>` for one-shot generateText) —
-//                       then delegates to fake-acp-cli.ts for the protocol.
-//                       ANY other argv → usage on stderr, exit 2.
+//   default             accepts EXACTLY the v0.20.1 grammar hermes.ts emits —
+//                       `[-m <model>] acp` (and `exec -p <prompt>` for
+//                       one-shot generateText) — then delegates to
+//                       fake-acp-cli.ts for the protocol. ANY other argv →
+//                       usage on stderr, exit 2. In particular the OLD
+//                       grammar (`--approval-policy … acp stdio`) and the
+//                       global `--yolo` bypass are rejected, exactly like
+//                       the field binary rejected the old spawn.
 //   FAKE_HERMES_GRAMMAR=reject
-//                       models the field binary: answers `--version`, rejects
-//                       everything else with its subcommand catalog and exit 2
-//                       — never speaks ACP. Turns must fail loudly and
+//                       models a wrong/outdated binary: answers `--version`,
+//                       rejects everything else with usage and exit 2 —
+//                       never speaks ACP. Turns must fail loudly and
 //                       snapshot must report unusable, not "available".
 //   FAKE_HERMES_GRAMMAR=reject-signed-out
-//                       models a real signed-out subscription hermes: refuses
-//                       ACP mode (usage + exit 2) until ~/.hermes/auth.json
-//                       exists, then behaves like the default strict grammar.
-//                       Pins the login → picker-recovers path.
+//                       models a signed-out binary that refuses ACP mode
+//                       (usage + exit 2) until ~/.hermes/auth.json exists,
+//                       then behaves like the default strict grammar. Pins
+//                       the login → identity-cache-recovers path.
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { existsSync } from "node:fs";
@@ -30,13 +34,17 @@ import { join } from "node:path";
 const argv = process.argv.slice(2);
 
 if (argv.includes("--version")) {
-  console.log("fake-hermes 0.9.0");
+  console.log("fake-hermes 0.20.1");
   process.exit(0);
 }
 
+// Mirrors the field CLI's rejection: unexpected argument → usage catalog on
+// stderr, exit 2. `hermes acp --help` (v0.20.1) only knows --accept-hooks,
+// --version, --check, --setup, --setup-browser, --yes — no --approval-policy,
+// no trailing stdio.
 const USAGE = [
   "error: unexpected argument found",
-  "usage: hermes <command> [options]",
+  "usage: hermes [-m MODEL] [--yolo] <command> [options]",
   "commands: acp, exec, login, logout, orchestrator, pets, journey, plugins, skills",
 ].join("\n");
 
@@ -57,18 +65,16 @@ if (argv[0] === "exec") {
   process.exit(0);
 }
 
-// turn/probe spawn: `--approval-policy <acp|never> [-m <model>] acp stdio`,
-// exactly and in order — anything else is the wrong grammar
+// turn/probe spawn: `[-m <model>] acp`, exactly and in order — anything else
+// (the old `--approval-policy … acp stdio` grammar, a `--yolo` bypass, a
+// trailing `stdio`) is the wrong grammar and gets the field binary's exit 2
 const rest = [...argv];
-if (rest.shift() !== "--approval-policy") rejectArgv();
-const policy = rest.shift();
-if (policy !== "acp" && policy !== "never") rejectArgv();
 if (rest[0] === "-m") {
   rest.shift();
   const model = rest.shift();
   if (!model || model.startsWith("-")) rejectArgv();
 }
-if (rest.length !== 2 || rest[0] !== "acp" || rest[1] !== "stdio") rejectArgv();
+if (rest.length !== 1 || rest[0] !== "acp") rejectArgv();
 
 // grammar accepted — speak ACP via the shared protocol fake
 await import("./fake-acp-cli.ts");

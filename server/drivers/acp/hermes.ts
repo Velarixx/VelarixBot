@@ -1,6 +1,7 @@
 // Hermes Agent harness support — the `hermes` CLI over ACP stdio
-// (`hermes … acp stdio`), on the ChatGPT subscription login
-// (`hermes login` → HERMES_AUTH_FILE), never an OpenAI API key.
+// (`hermes [-m <model>] acp`, verified against v0.20.1), on the ChatGPT
+// subscription login (`hermes login` → HERMES_AUTH_FILE), never an OpenAI
+// API key.
 // The generic protocol runtime lives in acp/core.ts; this file is only the
 // per-harness quirks, modeled on acp/grok.ts.
 //
@@ -35,16 +36,14 @@ const support: AcpSupport = {
   nativeSource: "hermes.acp",
   loginNote: "Hermes is not signed in to ChatGPT — run `hermes login` in a terminal, then retry.",
 
-  // --approval-policy must always be explicit: a local Hermes config may set
-  // auto-approve, which would silently make every session yolo and never
-  // fire session/request_permission.
-  spawnArgs: (config, turn) => [
-    "--approval-policy",
-    config.fullAuto ? "never" : "acp",
-    ...(turn.model ? ["-m", turn.model] : []),
-    "acp",
-    "stdio",
-  ],
+  // v0.20.1 grammar: global `-m <model>` before the bare `acp` subcommand —
+  // there is no `--approval-policy` flag and no trailing `stdio` (that argv
+  // is rejected with usage + exit 2, the rc.14 field grey-out). Approvals
+  // ride ACP session/request_permission, where the core answers fail-closed;
+  // fullAuto auto-allows at that bridge (audited, per-ask) and deliberately
+  // never maps to the CLI's global `--yolo` bypass — P0.1: a turn must not
+  // silently auto-approve below the permission bridge.
+  spawnArgs: (_config, turn) => [...(turn.model ? ["-m", turn.model] : []), "acp"],
 
   // The CLI owns its own ChatGPT login; a leaked API key silently flips
   // billing from the subscription to pay-as-you-go.

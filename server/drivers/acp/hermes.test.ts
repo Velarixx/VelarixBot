@@ -1,14 +1,17 @@
 // Hermes driver contract tests, run against the scripted fake ACP CLI in
 // server/testing/fake-acp-cli.ts (FAKE_ACP_AUTH_IDS=chatgpt-oauth). Mirrors
 // acp.test.ts for the shared runtime, plus the Hermes-specific quirks:
-// approval-policy always pinned on argv, OPENAI_API_KEY stripped from the
-// child env, chatgpt-oauth-only auth that fails closed BOTH ways (method not
-// advertised / authenticate errors), and the expired-token shape (auth ok,
-// session/prompt -32000) settling as auth_required instead of hanging.
+// the v0.20.1 spawn grammar (`[-m <model>] acp` — never the retired
+// `--approval-policy … acp stdio`, never `--yolo`), OPENAI_API_KEY stripped
+// from the child env, chatgpt-oauth-only auth that fails closed BOTH ways
+// (method not advertised / authenticate errors), and the expired-token shape
+// (auth ok, session/prompt -32000) settling as auth_required instead of
+// hanging.
 //
 // This suite runs on Windows too: the fake CLI is a `.ts` path, which
 // resolveCliCommand always executes via process.execPath on every platform —
 // no shebang, no chmodSync, no posixOnly.
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,9 +24,11 @@ import { recordEvents, type EventRecorder } from "../../testing/events.ts";
 import { HermesAgentDriver } from "./hermes.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
-// Strict-grammar hermes: rejects any argv that isn't exactly what hermes.ts
-// emits (usage + exit 2, like a real CLI), then speaks ACP. The rc.12 field
-// failure shipped because only accept-anything fakes ever saw the argv.
+// Strict-grammar hermes, shaped like the field binary (v0.20.1): rejects any
+// argv that isn't exactly what hermes.ts emits (usage + exit 2, like the real
+// CLI — including the OLD `--approval-policy … acp stdio` grammar), then
+// speaks ACP. The rc.12/rc.14 field failures shipped because only
+// accept-anything fakes ever saw the argv.
 const STRICT_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-hermes-cli.ts");
 
 describe("Hermes decodeConfig", () => {
@@ -120,7 +125,7 @@ describe("Hermes turns (fake CLI)", () => {
     expect(native).toContain('"dir":"in"');
   });
 
-  it("pins --approval-policy acp, passes -m through, and strips key env vars", async () => {
+  it("pins the v0.20.1 argv `-m <model> acp` — no --approval-policy, no stdio — and strips key env vars", async () => {
     const dump = join(scratch, "dump.json");
     await create({ env: { FAKE_ACP_DUMP: dump } });
     process.env.OPENAI_API_KEY = "sk-should-not-leak";
@@ -130,13 +135,17 @@ describe("Hermes turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
-    expect(seen.argv).toEqual(["--approval-policy", "acp", "-m", "gpt-5.5", "acp", "stdio"]);
+    expect(seen.argv).toEqual(["-m", "gpt-5.5", "acp"]);
+    // the retired grammar (rejected by hermes v0.20.1 with usage + exit 2)
+    // must never come back
+    expect(seen.argv).not.toContain("--approval-policy");
+    expect(seen.argv).not.toContain("stdio");
     expect(seen.env.OPENAI_API_KEY).toBeUndefined();
     expect(seen.env.HERMES_API_KEY).toBeUndefined();
     expect(JSON.stringify(seen)).not.toContain("should-not-leak");
   });
 
-  it("pins --approval-policy never (still explicit) under fullAuto, no -m without a model", async () => {
+  it("fullAuto never reaches the argv — bare `acp`, no --yolo (P0.1), no -m without a model", async () => {
     const dump = join(scratch, "dump.json");
     await create({ fullAuto: true, env: { FAKE_ACP_DUMP: dump } });
 
@@ -144,7 +153,10 @@ describe("Hermes turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
-    expect(seen.argv).toEqual(["--approval-policy", "never", "acp", "stdio"]);
+    expect(seen.argv).toEqual(["acp"]);
+    // fullAuto auto-allows at the ACP permission bridge — never via the
+    // CLI-level --yolo bypass, which would skip session/request_permission
+    expect(seen.argv).not.toContain("--yolo");
   });
 
   it("surfaces a permission ask and a DENY still completes the turn", async () => {
@@ -301,6 +313,26 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
     expect(done).toMatchObject({ ok: true, stopReason: null });
   });
 
+  it("the OLD argv (--approval-policy … acp stdio) is rejected by the field-shaped fake: usage + exit 2", async () => {
+    // the v0.20.1 field binary rejects the retired grammar exactly like
+    // this — if the driver ever regresses to it, the strict-fake turn and
+    // snapshot tests above fail, and this pins WHY: exit 2 on that argv
+    const oldArgv = ["--approval-policy", "acp", "-m", "gpt-5.6-sol", "acp", "stdio"];
+    const { code, stderr } = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, [STRICT_CLI, ...oldArgv], {
+        stdio: ["ignore", "ignore", "pipe"],
+        windowsHide: true,
+      });
+      let stderr = "";
+      child.stderr.on("data", (c) => (stderr += c));
+      child.on("error", reject);
+      child.on("close", (code) => resolve({ code, stderr }));
+    });
+    expect(code).toBe(2);
+    expect(stderr).toContain("unexpected argument");
+    expect(stderr).toContain("usage: hermes");
+  });
+
   it("a hermes that rejects the argv (the field binary) fails the turn loudly, never silently", async () => {
     await createStrict({ reject: true });
     await instance.adapter.sendTurn({ threadId: "t-strict-reject", text: "hi", model: "gpt-5.6-sol" });
@@ -317,9 +349,10 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
     expect(await instance.generateText!("distill")).toBe("fake hermes one-shot");
   });
 
-  it("snapshot verifies protocol identity: a signed-in field binary is unavailable with path + version", async () => {
-    // signed in (auth.json present) rules the login out — the remaining
-    // diagnosis is the wrong/outdated CLI on PATH
+  it("snapshot on a signed-in binary that rejects the argv reports the real usage/exit — never the login note", async () => {
+    // the rc.14 field shape: valid OAuth creds on disk, yet the CLI rejects
+    // the spawn argv (usage + exit 2). Blaming login here sends the user to
+    // `hermes login` for a fault that is the CLI/argv, not auth.
     const authFile = join(homedir(), ".hermes", "auth.json");
     mkdirSync(dirname(authFile), { recursive: true });
     writeFileSync(authFile, JSON.stringify({ tokens: "fake" }));
@@ -327,55 +360,65 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
       await createStrict({ reject: true });
       const snap = await instance.snapshot();
       expect(snap.state).toBe("unavailable");
+      expect(snap.authenticated).toBe(true);
       expect(snap.reason).toContain("does not speak ACP");
-      expect(snap.reason).toContain("fake-hermes 0.9.0"); // --version alone no longer means available
+      expect(snap.reason).toContain("exited 2"); // the CLI's real exit …
+      expect(snap.reason).toContain("usage: hermes"); // … and its own usage
+      expect(snap.reason).toContain("fake-hermes 0.20.1"); // --version alone no longer means available
       expect(snap.reason).toContain("fake-hermes-cli"); // resolved path — which binary is this?
+      expect(snap.reason).not.toContain("hermes login");
+      expect(snap.reason).not.toContain("not signed in");
     } finally {
       rmSync(authFile, { force: true });
     }
   });
 
+  it("a signed-OUT hermes that rejects the argv ALSO reports the real usage/exit, not the login note", async () => {
+    // the rc.14 copy blamed login whenever auth.json was missing — but an
+    // argv rejection is the same CLI fault whatever the login state, and
+    // the login note pointed the field user at the wrong fix. The genuine
+    // signed-out hint lives on the ACP-capable path (available +
+    // authenticated:false), not on a probe failure.
+    rmSync(join(homedir(), ".hermes", "auth.json"), { force: true });
+    await createStrict({ reject: true });
+    const snap = await instance.snapshot();
+    expect(snap.state).toBe("unavailable");
+    expect(snap.authenticated).toBe(false);
+    expect(snap.reason).toContain("wrong or outdated CLI");
+    expect(snap.reason).toContain("exited 2");
+    expect(snap.reason).toContain("usage: hermes");
+    expect(snap.reason).toContain("fake-hermes 0.20.1"); // still says which binary answered
+    expect(snap.reason).not.toContain("hermes login");
+    expect(snap.reason).not.toContain("not signed in");
+  });
+
   it("`hermes login` un-sticks a failed probe immediately — the 60s identity cache never outlives the login", async () => {
-    // reject-signed-out models the real signed-out subscription binary:
-    // ACP mode refuses until ~/.hermes/auth.json exists. The identity
-    // cache is keyed on the auth state, so the snapshot right after login
-    // re-probes and recovers instead of serving the stale failure for the
-    // rest of the 60s TTL.
+    // reject-signed-out models a signed-out binary that refuses ACP mode
+    // until ~/.hermes/auth.json exists. The identity cache is keyed on the
+    // auth state, so the snapshot right after login re-probes and recovers
+    // instead of serving the stale failure for the rest of the 60s TTL. The
+    // signed-out failure itself still reports the CLI's own usage/exit.
     const authFile = join(homedir(), ".hermes", "auth.json");
     rmSync(authFile, { force: true });
     await createStrict({ grammar: "reject-signed-out" });
     try {
       const signedOut = await instance.snapshot();
       expect(signedOut.state).toBe("unavailable");
-      expect(signedOut.reason).toContain("hermes login");
+      expect(signedOut.reason).toContain("exited 2");
+      expect(signedOut.reason).not.toContain("hermes login");
 
       mkdirSync(dirname(authFile), { recursive: true });
       writeFileSync(authFile, JSON.stringify({ tokens: "fake" }));
       const signedIn = await instance.snapshot();
-      expect(signedIn).toMatchObject({ state: "available", authenticated: true, version: "fake-hermes 0.9.0" });
+      expect(signedIn).toMatchObject({ state: "available", authenticated: true, version: "fake-hermes 0.20.1" });
     } finally {
       rmSync(authFile, { force: true });
     }
   });
 
-  it("a signed-OUT hermes that refuses ACP says `hermes login`, not 'wrong CLI' (rc.14 grey-picker trap)", async () => {
-    // the field failure: hermes.exe installed, ~/.hermes/auth.json missing,
-    // ACP mode refused — the picker showed a dead grey list with a
-    // wrong-CLI diagnosis when the actual user action is `hermes login`
-    rmSync(join(homedir(), ".hermes", "auth.json"), { force: true });
-    await createStrict({ reject: true });
-    const snap = await instance.snapshot();
-    expect(snap.state).toBe("unavailable");
-    expect(snap.authenticated).toBe(false);
-    expect(snap.reason).toContain("hermes login");
-    expect(snap.reason).toContain("not signed in to ChatGPT");
-    expect(snap.reason).toContain("fake-hermes 0.9.0"); // still says which binary answered
-    expect(snap.reason).not.toContain("wrong or outdated CLI");
-  });
-
   it("snapshot stays available when the binary accepts the argv and speaks ACP", async () => {
     await createStrict();
-    expect(await instance.snapshot()).toMatchObject({ state: "available", version: "fake-hermes 0.9.0" });
+    expect(await instance.snapshot()).toMatchObject({ state: "available", version: "fake-hermes 0.20.1" });
   });
 });
 
