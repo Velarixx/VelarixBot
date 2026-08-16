@@ -134,8 +134,11 @@ export function createBotsService(opts: {
       }
       Object.assign(b, next);
       // a write that matched no row must not report success — the caller
-      // would broadcast/answer with a record the store does not hold
-      if (!repos.bots.update(b)) throw new Error(`bot ${id} disappeared while patching`);
+      // would broadcast/answer with a record the store does not hold. The
+      // bot is gone, so this is a 404 to HTTP callers, never a 500.
+      if (!repos.bots.update(b)) {
+        throw Object.assign(new Error(`no such bot: ${id} disappeared while patching`), { status: 404 });
+      }
       return b;
     },
     deleteBot(id) {

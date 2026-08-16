@@ -101,6 +101,28 @@ describe("bots service", () => {
     expect(bots.patchBot(bot.id, { name: "Chief of Staff" })?.name).toBe("Chief of Staff");
   });
 
+  it("a 0-row update() during patchBot is a 404, never a fake 200 or a 500", () => {
+    // the row vanishing between the read and the write (e.g. a concurrent
+    // delete) must surface as "no such bot", not as success and not as an
+    // internal error
+    const bot = bots.createBot();
+    const flaky = createBotsService({
+      repos: { ...repos, bots: { ...repos.bots, update: () => false } },
+      defaultSelection: selection,
+    });
+    let thrown: unknown;
+    try {
+      flaky.patchBot(bot.id, { name: "Chief of Staff" });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as { status?: number }).status).toBe(404);
+    expect((thrown as Error).message).toMatch(/no such bot/);
+    // the real store is untouched — nothing was half-written
+    expect(bots.bot(bot.id)?.name).toBe("New Bot");
+  });
+
   it("field-scoped patches never write a stale name back (the suspected RMW clobber)", () => {
     // The CoS field map suspected a whole-record read-modify-write race
     // writing "New Bot" back over a rename. patchBot re-reads the row and
