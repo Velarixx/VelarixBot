@@ -34,6 +34,12 @@ import { join } from "node:path";
 
 const argv = process.argv.slice(2);
 
+// The field binary prints its secret-manager status on stderr on EVERY
+// command (--version, exec, acp, rejected argv alike) when Bitwarden
+// Secrets Manager is enabled. Version parsing, the identity probe, turns,
+// and one-shot exec must all tolerate this stderr banner.
+process.stderr.write("Bitwarden Secrets Manager: applied 1 secret\n");
+
 if (argv.includes("--version")) {
   console.log("fake-hermes 0.20.1");
   process.exit(0);

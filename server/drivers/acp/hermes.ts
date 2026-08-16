@@ -17,12 +17,18 @@ import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 // Hermes' credential-pool store (`hermes auth` persists pool state under the
 // credential_pool key here). NOT a sign-in gate: credentials can be
-// env-seeded, imported (~/.codex/auth.json, Claude Code), or profile-scoped
-// (~/.hermes/profiles/<name>/auth.json), so this file's absence proves
-// nothing — requiring it is exactly the v0.20.1 field failure ("run
-// `hermes login`" on an authenticated machine; that command no longer even
-// exists). The path is only a cheap change signal that busts the snapshot
-// identity cache the moment `hermes auth …` rewrites the store. The
+// env-seeded, imported (~/.codex/auth.json, Claude Code), profile-scoped
+// (~/.hermes/profiles/<name>/auth.json), or supplied entirely by a secret
+// manager — the Bitwarden Secrets Manager integration hydrates provider
+// keys into the process env at every hermes start ("Bitwarden Secrets
+// Manager: applied N secrets"), leaving NOTHING under ~/.hermes (the field
+// machine has only ~/.hermes/plans/ while `hermes auth` lists openai-codex
+// oauth creds). So this file's absence proves nothing — requiring it is
+// exactly the v0.20.1 field failure ("run `hermes login`" on an
+// authenticated machine; that command no longer even exists). The path is
+// only a cheap change signal that busts the snapshot identity cache the
+// moment `hermes auth …` rewrites the store; when creds never touch disk
+// the hint is a constant "absent" and the 60s TTL is the refresh path. The
 // signed-in truth is the ACP handshake itself (authenticatedFromInit).
 const HERMES_AUTH_STORE = [".hermes", "auth.json"] as const;
 

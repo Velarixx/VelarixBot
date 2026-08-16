@@ -210,14 +210,18 @@ describe("Hermes turns (fake CLI)", () => {
     expect(JSON.stringify(recorder.events)).not.toContain("hunter2");
   });
 
-  it("a pool credential is enough: no ~/.hermes/auth.json on disk, openai-codex advertised → no login note", async () => {
+  it("a pool credential is enough: ~/.hermes holds only plans/, openai-codex advertised → no login note", async () => {
     // the v0.20.1 field failure: Dyon HAD authenticated (`hermes auth` shows
     // openai-codex oauth) yet every turn demanded the removed `hermes login`
-    // because the driver required chatgpt-oauth + a legacy auth.json. The
-    // handshake is the truth: an advertised pool provider must complete the
-    // turn with zero login copy.
+    // because the driver required chatgpt-oauth + a legacy auth.json. His
+    // disk shape, verified: ~/.hermes contains ONLY plans\ — no auth.json
+    // anywhere, credentials hydrated by Bitwarden Secrets Manager at process
+    // start. The handshake is the truth: an advertised pool provider must
+    // complete the turn with zero login copy, whatever is (not) on disk.
     const dump = join(scratch, "dump.json");
-    rmSync(join(homedir(), ".hermes"), { recursive: true, force: true }); // sandbox HOME — nothing on disk
+    const hermesDir = join(homedir(), ".hermes");
+    rmSync(hermesDir, { recursive: true, force: true });
+    mkdirSync(join(hermesDir, "plans"), { recursive: true }); // the exact field shape
     await create({ env: { FAKE_ACP_DUMP: dump } });
     await instance.adapter.sendTurn({ threadId: "t-hermes-pool", text: "go", model: "gpt-5.6-sol" });
     const done = await recorder.until((e) => e.type === "turn.completed");
@@ -536,10 +540,14 @@ describe("Hermes snapshot", () => {
   it("authenticated comes from the ACP handshake — an advertised pool provider with NO ~/.hermes/auth.json is signed in", async () => {
     // the v0.20.1 contract: hermes advertises the resolved pool provider as
     // an auth method iff its credential pool resolves (env-seeded, imported,
-    // or profile-scoped stores included) — no file on disk is required, and
-    // requiring one was the field failure. HOME is the per-suite sandbox
-    // (testing/setup.ts), so nothing exists under ~/.hermes here.
-    rmSync(join(homedir(), ".hermes"), { recursive: true, force: true });
+    // profile-scoped, or secret-manager-hydrated — Bitwarden Secrets Manager
+    // injects provider keys at process start with nothing under ~/.hermes) —
+    // no file on disk is required, and requiring one was the field failure.
+    // HOME is the per-suite sandbox (testing/setup.ts); recreate the field
+    // machine's shape: ~/.hermes with only plans\, no auth.json.
+    const hermesDir = join(homedir(), ".hermes");
+    rmSync(hermesDir, { recursive: true, force: true });
+    mkdirSync(join(hermesDir, "plans"), { recursive: true });
     const instance = await HermesAgentDriver.create({
       instanceId: "hermes-auth-pool",
       displayName: undefined,
