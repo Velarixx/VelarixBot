@@ -1,7 +1,9 @@
 // Cross-platform CLI execution contract. Windows npm/pnpm/yarn installs expose
-// .cmd shims, while packaged Electron must invoke their real JS entry without
-// routing model-controlled arguments through cmd.exe.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+// .cmd shims. npm Codex's shim target (bin/codex.js) is only a LAUNCHER for a
+// vendored native codex.exe — the unwrap must bind stdio to that exe, never to
+// the launcher under packaged (GUI-subsystem) Electron, and never route
+// model-controlled arguments through cmd.exe.
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,6 +89,137 @@ describe("Windows shim parsing", () => {
 
   it("rejects unknown environment-variable expansion", () => {
     expect(_internal.shimScriptTarget(shim('@"%MYSTERY_HOME%\\bin\\codex.js" %*\r\n'))).toBeNull();
+  });
+});
+
+describe("npm launcher → native exe unwrap (rc.13 protocol_mismatch fix)", () => {
+  // Models a real `npm i -g @openai/codex` global prefix:
+  //   <prefix>/codex.cmd                                (npm cmd-shim)
+  //   <prefix>/node_modules/@openai/codex/bin/codex.js  (launcher only)
+  //   <prefix>/node_modules/@openai/codex-win32-<arch>/
+  //       vendor/<triple>/bin/codex.exe                 (the real CLI)
+  // bin/codex.js just spawns the native exe with stdio:"inherit" and mirrors
+  // its exit code. Binding the driver's pipes to the launcher (via packaged
+  // GUI-subsystem Electron under pwsh) is exactly the field failure — the
+  // unwrap must resolve and bind the native exe itself.
+  const TRIPLES: Record<string, string> = {
+    x64: "x86_64-pc-windows-msvc",
+    arm64: "aarch64-pc-windows-msvc",
+  };
+  const LAUNCHER_JS =
+    "// launcher only: const child = spawn(binaryPath, process.argv.slice(2), { stdio: 'inherit' });\n" +
+    "// process.exit(child.exitCode)\n";
+
+  let dir: string | undefined;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  const makeNpmGlobalTree = (opts: { arch?: string; platformPkg?: boolean; fatVendor?: boolean } = {}) => {
+    const arch = opts.arch ?? "x64";
+    const triple = TRIPLES[arch];
+    dir = mkdtempSync(join(tmpdir(), "velarix-npm-prefix-"));
+    const pkgRoot = join(dir, "node_modules", "@openai", "codex");
+    const script = join(pkgRoot, "bin", "codex.js");
+    mkdirSync(dirname(script), { recursive: true });
+    writeFileSync(join(pkgRoot, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.147.0" }));
+    writeFileSync(script, LAUNCHER_JS);
+    let nativeExe: string | null = null;
+    if (opts.platformPkg !== false) {
+      const platformRoot = join(dir, "node_modules", "@openai", `codex-win32-${arch}`);
+      nativeExe = join(platformRoot, "vendor", triple, "bin", "codex.exe");
+      mkdirSync(dirname(nativeExe), { recursive: true });
+      writeFileSync(join(platformRoot, "package.json"), JSON.stringify({ name: `@openai/codex-win32-${arch}` }));
+      writeFileSync(nativeExe, "MZ-fake-native-codex");
+    }
+    if (opts.fatVendor) {
+      nativeExe = join(pkgRoot, "vendor", triple, "bin", "codex.exe");
+      mkdirSync(dirname(nativeExe), { recursive: true });
+      writeFileSync(nativeExe, "MZ-fake-native-codex");
+    }
+    // shimScriptTarget's %dp0% substitution is Windows-path-only, so model
+    // the shim with the quoted absolute target it resolves to — the same
+    // string the substitution yields on a real Windows prefix.
+    const shim = join(dir, "codex.cmd");
+    writeFileSync(shim, `@SETLOCAL\r\n@node "${script}" %*\r\n`);
+    return { shim, script, nativeExe };
+  };
+
+  it("resolves the vendored native exe from the launcher script (platform package)", () => {
+    const { script, nativeExe } = makeNpmGlobalTree({ arch: "x64" });
+    expect(_internal.nativeLauncherExe(script, "x64")).toBe(nativeExe);
+    expect(nativeExe).toContain(join("codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe"));
+  });
+
+  it("resolves the arm64 triple for win32-arm64 installs", () => {
+    const { script, nativeExe } = makeNpmGlobalTree({ arch: "arm64" });
+    expect(_internal.nativeLauncherExe(script, "arm64")).toBe(nativeExe);
+    expect(nativeExe).toContain("aarch64-pc-windows-msvc");
+  });
+
+  it("falls back to the fat package's own vendor dir when the platform package is absent", () => {
+    const { script, nativeExe } = makeNpmGlobalTree({ platformPkg: false, fatVendor: true });
+    expect(_internal.nativeLauncherExe(script, "x64")).toBe(nativeExe);
+    expect(nativeExe).toContain(join("@openai", "codex", "vendor"));
+  });
+
+  it("returns null when no vendored exe exists — plain JS CLIs keep the node path", () => {
+    const { script } = makeNpmGlobalTree({ platformPkg: false });
+    expect(_internal.nativeLauncherExe(script, "x64")).toBeNull();
+  });
+
+  it("returns null for a script outside any package", () => {
+    dir = mkdtempSync(join(tmpdir(), "velarix-bare-"));
+    const script = join(dir, "bin", "codex.js");
+    mkdirSync(dirname(script), { recursive: true });
+    writeFileSync(script, LAUNCHER_JS);
+    expect(_internal.nativeLauncherExe(script, "x64")).toBeNull();
+  });
+
+  it("unwraps shim → launcher → NATIVE exe: turn stdio binds to codex.exe, not Electron-as-node", () => {
+    const { shim, nativeExe } = makeNpmGlobalTree({ arch: "x64" });
+    const unwrapped = _internal.windowsShimCommand(shim, "x64")!;
+    // the command spawnCliHidden/execFile will bind pipes to IS the native
+    // exe — no process.execPath (packaged: GUI-subsystem VelarixBot.exe)
+    // launcher hop that pwsh fire-and-forgets, no ELECTRON_RUN_AS_NODE
+    expect(unwrapped.command).toBe(nativeExe);
+    expect(unwrapped.command).not.toBe(process.execPath);
+    expect(unwrapped.args).toEqual([]);
+    expect(unwrapped.env).toBeUndefined();
+    // a native .exe target never trips the .cmd metacharacter refusal and
+    // never needs cmd.exe
+    expect(unwrapped.command).toMatch(/\.exe$/i);
+  });
+
+  it("keeps the node + JS-entry fallback for unwrapped shims without a vendored exe", () => {
+    const { shim, script } = makeNpmGlobalTree({ platformPkg: false });
+    const unwrapped = _internal.windowsShimCommand(shim, "x64")!;
+    expect(unwrapped.command).toBe(process.execPath);
+    expect(unwrapped.args).toEqual([script]);
+    expect(unwrapped.env).toMatchObject({ ELECTRON_RUN_AS_NODE: "1" });
+  });
+
+  it("still refuses to unwrap a shim with unknown var expansion (no cmd.exe fallback)", () => {
+    dir = mkdtempSync(join(tmpdir(), "velarix-optout-"));
+    const shim = join(dir, "codex.cmd");
+    writeFileSync(shim, '@"%MYSTERY_HOME%\\bin\\codex.js" %*\r\n');
+    expect(_internal.windowsShimCommand(shim, "x64")).toBeNull();
+  });
+
+  it("wraps the native exe in the hidden CLI tree like claude.exe (hide-console rules intact)", () => {
+    const { shim } = makeNpmGlobalTree({ arch: "x64" });
+    const unwrapped = _internal.windowsShimCommand(shim, "x64")!;
+    // console-subsystem exe under the pwsh -WindowStyle Hidden wrapper;
+    // args travel via JSON file — never a shell command string
+    expect(_internal.shouldWrapCliTree("codex")).toBe(true);
+    const { args, cleanup } = _internal.pwshWrapperArgs(unwrapped.command, ["app-server"]);
+    try {
+      expect(args[args.indexOf("-Cli") + 1]).toBe(unwrapped.command);
+      expect(args.join(" ")).not.toMatch(/cmd\.exe|shell:true/i);
+    } finally {
+      cleanup();
+    }
   });
 });
 

@@ -6,18 +6,25 @@
 // command runs through cmd.exe, and going through cmd.exe re-opens argv to
 // its quoting and %VAR% expansion rules (the CVE-2024-27980 class — model
 // names, personas, and MCP-config JSON all travel on argv here). Instead
-// we resolve the shim to the real JS entry and run it with
-// process.execPath — no shell at all. Native installers (the claude
-// installer → claude.exe) resolve to their .exe. A shim we cannot unwrap
-// is NEVER routed through cmd.exe: probes go through the pwsh wrapper
-// (args in a JSON file), and turn spawns fail with a clear error instead.
+// we resolve the shim to its real target and spawn THAT — no shell at all:
+//   1. a vendored native .exe when the shim's JS entry is a launcher that
+//      only re-spawns one (npm Codex: codex.cmd → bin/codex.js →
+//      @openai/codex-win32-<arch>/vendor/<triple>/bin/codex.exe). The
+//      driver's stdio pipes must bind to the process that actually speaks
+//      the protocol — see nativeLauncherExe for the rc.13 field failure.
+//   2. otherwise the JS entry itself under process.execPath (as node).
+// Native installers (the claude installer → claude.exe) resolve to their
+// .exe. A shim we cannot unwrap is NEVER routed through cmd.exe: probes go
+// through the pwsh wrapper (args in a JSON file), and turn spawns fail
+// with a clear error instead.
 //
 // Blocking notes: resolveCli shells out to `where` synchronously, at most
 // once per CLI per minute (cached); everything else spawns async children.
 import { execFile, spawn, spawnSync, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 const IS_WIN = process.platform === "win32";
 const SHIM_RE = /\.(cmd|bat)$/i;
@@ -100,13 +107,94 @@ function shimScriptTarget(shim: string): string | null {
   }
 }
 
+// Windows arch → rust target triple for the vendored-binary layout npm
+// CLIs like @openai/codex ship. Same table as codex's own bin/codex.js.
+const WIN_VENDOR_TRIPLES: Record<string, string> = {
+  x64: "x86_64-pc-windows-msvc",
+  arm64: "aarch64-pc-windows-msvc",
+};
+
+/**
+ * npm-installed Codex is a LAUNCHER, not the CLI: bin/codex.js resolves the
+ * native codex.exe out of the platform package (@openai/codex-win32-<arch>,
+ * vendor/<triple>/bin/codex.exe — or the main package's own vendor/ dir)
+ * and spawns it with stdio:"inherit", mirroring its exit code.
+ *
+ * Running that launcher from the packaged app is the rc.13 field failure:
+ * the unwrap used to hand spawnCliHidden `process.execPath + codex.js`, and
+ * packaged process.execPath is VelarixBot.exe — a GUI-subsystem binary.
+ * PowerShell does not wait for (or wire stdio to) GUI-subsystem
+ * executables, so wrap.ps1's `& VelarixBot.exe codex.js app-server`
+ * returned immediately, `exit $LASTEXITCODE` made pwsh exit 0 having never
+ * carried a protocol byte, and every turn failed as protocol_mismatch
+ * ("`codex` exited 0 without speaking the app-server protocol"). Dev was
+ * immune only because process.execPath there is node.exe, a console app.
+ *
+ * So: resolve the same native exe the launcher would spawn — mirroring its
+ * search exactly (require.resolve of the platform package from the script's
+ * own location, then the main package's vendor/ fallback) — and bind the
+ * driver's stdio pipes to IT, one console-subsystem child, same as
+ * claude.exe. The launcher's CODEX_MANAGED_BY_* env hints (update nagging
+ * only) are intentionally skipped. Returns null when the script is not a
+ * vendored-native launcher; callers then fall back to node + the JS entry.
+ */
+function nativeLauncherExe(script: string, arch: string = process.arch): string | null {
+  const triple = WIN_VENDOR_TRIPLES[arch];
+  if (!triple) return null;
+  const pkgRoot = dirname(dirname(script)); // <pkg>/bin/codex.js → <pkg>
+  let pkgName = "";
+  try {
+    const pkg = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8")) as { name?: unknown };
+    pkgName = typeof pkg.name === "string" ? pkg.name : "";
+  } catch {
+    return null; // not a package-shaped install — plain JS entry
+  }
+  if (!pkgName) return null;
+  const exe = basename(script).replace(SCRIPT_RE, "") + ".exe";
+  const candidates: string[] = [];
+  try {
+    // the platform package, resolved the way the launcher's own
+    // require.resolve does (npm global, pnpm, and nested layouts)
+    const platformPkg = createRequire(script).resolve(`${pkgName}-win32-${arch}/package.json`);
+    candidates.push(join(dirname(platformPkg), "vendor", triple, "bin", exe));
+  } catch {
+    /* platform package not installed — try the fat-package vendor dir */
+  }
+  candidates.push(join(pkgRoot, "vendor", triple, "bin", exe));
+  return candidates.find((c) => existsSync(c)) ?? null;
+}
+
+/**
+ * Windows: turn a resolved .cmd/.bat shim into a spawnable command.
+ * Prefers the vendored native exe (see nativeLauncherExe) over the shim's
+ * JS entry; falls back to process.execPath-as-node + the JS entry; null
+ * when the shim cannot be unwrapped at all. `arch` is a test seam — real
+ * callers use this machine's arch.
+ */
+function windowsShimCommand(
+  shim: string,
+  arch: string = process.arch,
+): { command: string; args: string[]; env?: Record<string, string> } | null {
+  const script = shimScriptTarget(shim);
+  if (!script) return null;
+  const native = nativeLauncherExe(script, arch);
+  if (native) return { command: native, args: [] };
+  return {
+    command: process.execPath,
+    args: [script],
+    // packaged: process.execPath is the Electron binary; run as plain node
+    env: { ELECTRON_RUN_AS_NODE: "1" },
+  };
+}
+
 /**
  * How to spawn a CLI on this platform:
  * - `.ts` / `.js` scripts (test fakes): this process's node. Shebang
  *   execution is POSIX-only; Windows cannot exec a `.ts` file.
  * - POSIX binaries: the raw name (resolved via PATH by the shell-less spawn).
- * - Windows: the resolved .exe, or — for .cmd shims — node running the
- *   shim's real JS entry, which needs no cmd.exe at all.
+ * - Windows: the resolved .exe, or — for .cmd shims — the vendored native
+ *   .exe the shim's JS launcher would spawn (npm Codex), else node running
+ *   the shim's real JS entry. Neither needs cmd.exe at all.
  * Falls back to the raw name when nothing better can be resolved.
  */
 export function resolveCliCommand(
@@ -122,15 +210,8 @@ export function resolveCliCommand(
   if (!IS_WIN) return { command: cli, args: [] };
   const resolved = resolveCli(cli);
   if (SHIM_RE.test(resolved)) {
-    const script = shimScriptTarget(resolved);
-    if (script) {
-      return {
-        command: process.execPath,
-        args: [script],
-        // packaged: process.execPath is the Electron binary; run as plain node
-        env: { ELECTRON_RUN_AS_NODE: "1" },
-      };
-    }
+    const unwrapped = windowsShimCommand(resolved);
+    if (unwrapped) return unwrapped;
   }
   return { command: resolved, args: [] };
 }
@@ -180,12 +261,19 @@ export function cliVersion(
   );
 }
 
-/** The path the CLI resolves to, for display in snapshot reasons — so a
- * PATH-shadowed binary is identifiable ("which codex is this?"). Display
- * only, never used to spawn. Falls back to the raw name. */
+/** The path the CLI resolves to, for display in snapshot reasons and turn
+ * failures — so a PATH-shadowed binary is identifiable ("which codex is
+ * this?"). On Windows this is the executable a turn actually binds stdio
+ * to (the vendored native .exe, the unwrapped JS entry, or the resolved
+ * .exe) — not the .cmd shim in front of it. Display only, never used to
+ * spawn. Falls back to the raw name. */
 export function displayCliPath(cli: string, env?: NodeJS.ProcessEnv): string {
   if (/[\\/]/.test(cli)) return cli;
-  if (IS_WIN) return resolveCli(cli);
+  if (IS_WIN) {
+    const { command, args } = resolveCliCommand(cli);
+    // node + JS entry: the entry identifies the install, not our own binary
+    return command === process.execPath && args[0] ? args[0] : command;
+  }
   const path = (env ?? process.env).PATH ?? "";
   for (const dir of path.split(":")) {
     if (!dir) continue;
@@ -329,8 +417,11 @@ exit $LASTEXITCODE
 // embedded quotes — fatal for --mcp-config JSON. PowerShell 7 (pwsh)
 // passes argv correctly, so prefer it and fall back to a plain
 // windowsHide spawn (direct child hidden; grandchildren may flash).
-// Unwrapped Codex JS entries still take the CLI-tree path when a wrapper
-// exists — roar.exe must inherit a hidden console, not CREATE_NO_WINDOW.
+// Unwrapped JS entries still take the CLI-tree path when a wrapper
+// exists — anything native they spawn must inherit a hidden console,
+// not CREATE_NO_WINDOW. NB: only CONSOLE-subsystem targets belong under
+// the wrapper; pwsh does not wait for or wire stdio to GUI-subsystem
+// executables (the packaged-Electron rc.13 failure).
 let pwshCache: { path: string | null; at: number } | null = null;
 function resolvePwsh(): string | null {
   if (pwshCache && (pwshCache.path !== null || Date.now() - pwshCache.at < WHERE_TTL)) {
@@ -400,10 +491,15 @@ function execViaPwsh(
  *
  * Test fakes (`.ts` / `.js` path as `cli`) spawn node directly with
  * windowsHide. Wrapping those in wrap.ps1 exits 0 without running the
- * script. Packaged Codex is an unwrapped `.cmd` → node + `codex.js`; that
- * node process then launches roar.exe. CREATE_NO_WINDOW on node gives roar
- * no console to inherit, so it flashes a visible CMD under AppData/roar.
- * Those JS entries go through the hidden pwsh CLI tree like native .exe.
+ * script. Packaged Codex is an unwrapped `.cmd` resolved all the way to
+ * the vendored native codex.exe (see nativeLauncherExe) — a console app
+ * the pwsh wrapper waits for and wires stdio to, exactly like claude.exe.
+ * It must NOT run as node + `codex.js`: packaged process.execPath is the
+ * GUI-subsystem VelarixBot.exe, which pwsh fire-and-forgets (exit 0, zero
+ * protocol bytes — the rc.13 protocol_mismatch field failure). Unwrapped
+ * JS entries without a vendored exe still go through the hidden pwsh CLI
+ * tree like native .exe: CREATE_NO_WINDOW on node would give any native
+ * child no console to inherit, so it would flash a visible CMD window.
  *
  * Throws (never EINVAL-ambushes) when the target is a .cmd shim that could
  * not be unwrapped and pwsh is unavailable — spawning a .cmd without a
@@ -428,7 +524,7 @@ export function spawnCliHidden(
   const helperOpts = windowsSpawnOptions(opts);
   const env = { ...(opts.env ?? process.env), ...runEnv };
   const argv = [...prefix, ...args];
-  // Test fakes: this process's node + a .ts/.js path. No roar grandchild.
+  // Test fakes: this process's node + a .ts/.js path. No native grandchild.
   // CREATE_NO_WINDOW hides the helper itself. Do not wrap in wrap.ps1.
   if (isTestScriptCli(cli) && spawnDirectNode(command)) {
     return spawn(command, argv, { ...helperOpts, env }) as ChildProcessWithoutNullStreams;
@@ -454,7 +550,7 @@ export function spawnCliHidden(
     );
   }
   // Do not set windowsHide/CREATE_NO_WINDOW on this spawn. The wrapper is
-  // hidden via -WindowStyle Hidden so Codex, roar, MCP proxies, and
+  // hidden via -WindowStyle Hidden so codex.exe, MCP proxies, and
   // command-safety pwsh inherit one hidden console instead of each opening
   // a visible cmd window for the turn. Never attach to the user's terminal.
   const { args: psArgs, cleanup } = pwshWrapperArgs(command, argv);
@@ -474,8 +570,8 @@ function isTestScriptCli(cli: string): boolean {
 }
 
 /**
- * Packaged Windows answer path: wrap native .exe AND unwrapped node+js
- * (codex.js → roar.exe) so grandchildren inherit a hidden console.
+ * Packaged Windows answer path: wrap native .exe (codex.exe, claude.exe)
+ * AND unwrapped node+js entries so grandchildren inherit a hidden console.
  * Test script CLIs stay on CREATE_NO_WINDOW.
  */
 function shouldWrapCliTree(cli: string): boolean {
@@ -503,6 +599,8 @@ function resolveCliTreeWrapper(args: string[]): string | null {
 // exposed for tests only
 export const _internal = {
   shimScriptTarget,
+  nativeLauncherExe,
+  windowsShimCommand,
   whereCache,
   windowsSpawnOptions,
   windowsCliTreeSpawnOptions,

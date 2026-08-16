@@ -544,15 +544,30 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           return;
         }
         const tail = stderr.trim().slice(-300);
-        emit({
-          ...base(threadId, turnId),
-          type: "runtime.error",
-          message:
-            code === 0
-              ? `\`${config.cli}\` exited 0 without speaking the app-server protocol — the codex on PATH is likely outdated or shadowed by another install${tail ? `: ${tail}` : ""}`
-              : `codex exited ${code} before turn/completed${tail ? `: ${tail}` : ""}`,
-        });
-        settle(false, code === 0 ? "protocol_mismatch" : "exit_before_result");
+        if (code !== 0) {
+          emit({
+            ...base(threadId, turnId),
+            type: "runtime.error",
+            message: `codex exited ${code} before turn/completed${tail ? `: ${tail}` : ""}`,
+          });
+          settle(false, "exit_before_result");
+          return;
+        }
+        // issue #9 class — name WHICH binary shrugged: the executable the
+        // turn actually bound stdio to plus its --version, so "which codex
+        // is this?" is answerable from the error card alone. The version
+        // probe is async; a wrong/dead binary answers (or fails) fast.
+        void (async () => {
+          const exe = displayCliPath(config.cli, probeEnv);
+          const version = (await cliVersion(config.cli, 4000, probeEnv)) ?? "version unknown";
+          if (state.settled) return; // an interrupt raced the probe
+          emit({
+            ...base(threadId, turnId),
+            type: "runtime.error",
+            message: `\`${exe}\` (${version}) exited 0 without speaking the app-server protocol — the codex on PATH is likely outdated or shadowed by another install${tail ? `: ${tail}` : ""}`,
+          });
+          settle(false, "protocol_mismatch");
+        })();
       });
 
       active.set(threadId, { stop, turnId, asks });

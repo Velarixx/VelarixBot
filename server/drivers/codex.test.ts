@@ -825,6 +825,10 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     const error = recorder.events.find((e) => e.type === "runtime.error")!;
     expect(error.message).toContain("without speaking the app-server protocol");
     expect(error.message).toContain("usage: codex"); // the stderr tail is surfaced
+    // issue #9 class: the error must name WHICH binary shrugged — the
+    // resolved executable the turn bound stdio to, plus its version
+    expect(error.message).toContain("fake-codex-app-server"); // resolved path
+    expect(error.message).toContain("fake-codex 0.144.4"); // --version
   });
 
   it("a write to a closed child stdin settles the turn — never an unhandled EPIPE crash (rc.12)", async () => {

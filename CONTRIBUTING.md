@@ -108,8 +108,11 @@ The SPI in [`server/contracts.ts`](server/contracts.ts) is deliberately small. A
   `~/Library` paths) belongs in `electron/` behind a `process.platform === "darwin"` gate.
 - **Never build command strings for a shell.** No `shell: true`, no spawning through `cmd.exe` with
   quoted strings — model names, personas, and MCP config JSON travel through argv, and cmd.exe
-  metacharacter expansion is a real injection class. On Windows, resolve `.cmd` shims to their JS
-  entry and spawn `process.execPath` instead.
+  metacharacter expansion is a real injection class. On Windows, resolve `.cmd` shims to the
+  vendored native `.exe` their JS entry launches when one exists (npm Codex: `codex.cmd` →
+  `bin/codex.js` → `@openai/codex-win32-<arch>/vendor/<triple>/bin/codex.exe` — stdio must bind to
+  the process that speaks the protocol, and packaged `process.execPath` is a GUI-subsystem binary
+  PowerShell won't wire stdio to), else to their JS entry under `process.execPath`.
 - POSIX-only calls (`process.kill(-pid)`, unix sockets) need a gated Windows equivalent
   (`taskkill /T`, named pipes) — not a silent failure.
 
