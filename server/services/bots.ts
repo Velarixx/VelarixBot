@@ -14,6 +14,7 @@ import {
   STATES,
   onboardingCard,
   resolveIconShape,
+  validModelSelection,
   validNotifyEvents,
   validUsage,
   zeroUsage,
@@ -98,6 +99,21 @@ export function createBotsService(opts: {
       const b = repos.bots.get(id);
       if (!b) return null;
       if (patch.state && !STATES.has(patch.state as BotState)) throw new Error("invalid bot state");
+      // A patch must never persist a record a later read cannot load — the
+      // rc.14 field failure class: one bad field (a non-string name, a
+      // string modelSelection) was written straight through, and the bot
+      // then vanished from every list()/get() while its row still existed.
+      // Reject loudly (400) instead of "succeeding" into silent data loss.
+      const invalid = (field: string): never => {
+        throw Object.assign(new Error(`invalid bot patch: ${field}`), { status: 400 });
+      };
+      for (const field of ["name", "title", "description"] as const) {
+        if (patch[field] !== undefined && typeof patch[field] !== "string") invalid(field);
+      }
+      if (patch.modelSelection !== undefined && !validModelSelection(patch.modelSelection)) invalid("modelSelection");
+      for (const field of ["alwaysAllow", "requireApproval"] as const) {
+        if (patch[field] !== undefined && typeof patch[field] !== "boolean") invalid(field);
+      }
       const next: Partial<BotRecord> = { ...patch };
       if (patch.computer !== undefined) {
         const binding = normalizeComputerBinding(patch.computer);
@@ -117,7 +133,9 @@ export function createBotsService(opts: {
         else delete b.skillId;
       }
       Object.assign(b, next);
-      repos.bots.update(b);
+      // a write that matched no row must not report success — the caller
+      // would broadcast/answer with a record the store does not hold
+      if (!repos.bots.update(b)) throw new Error(`bot ${id} disappeared while patching`);
       return b;
     },
     deleteBot(id) {
