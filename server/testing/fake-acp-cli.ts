@@ -25,6 +25,11 @@
 //                     stdin first, then stays alive — the client's next
 //                     write hits a closed pipe: async EPIPE, which must be
 //                     handled, never an unhandled 'error' server crash)
+//                   | session-auth-error (initialize/authenticate succeed,
+//                     then session/new fails with ACP auth_required -32000
+//                     and FAKE_ACP_SESSION_AUTH_MESSAGE — the gemini-cli
+//                     signed-out shape, where auth methods are advertised
+//                     unconditionally and the login gate is session/new)
 //                   | ask-peer (spawn the injected "agents" MCP server from
 //                     session/new's mcpServers, call list_bots + ask_bot on a
 //                     peer, and reply with what the peer said — the comms e2e)
@@ -42,6 +47,15 @@
 //                   as `authenticate`, so tests can pin which method a
 //                   driver picked.
 //   FAKE_ACP_CREATE_NAME  bot name for create-bot mode (default "Ops")
+//   FAKE_ACP_SESSION_MODELS  comma-separated modelIds to advertise in the
+//                   session/new AND session/load results as
+//                   models.availableModels (first entry = currentModelId),
+//                   REPLACING initialize's _meta.modelState — the gemini-cli
+//                   shape, where the model truth arrives on the session
+//                   result, not the handshake
+//   FAKE_ACP_SESSION_AUTH_MESSAGE  the -32000 error text for
+//                   session-auth-error mode (default "Authentication
+//                   required.")
 //   FAKE_ACP_PERMISSION_KIND  toolCall.kind for permission/credential asks
 //                   (default "execute") — a scenario leg can pick "edit" so
 //                   its always-allow rule never collides with another leg's
@@ -53,6 +67,20 @@ import { closeSync, readFileSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_ACP_MODE ?? "happy";
 const AUTH_REQUIRED_CODE = -32000; // ACP's designated auth_required error code
+// gemini-cli shape: the session result advertises the session's models
+const sessionModelIds = (process.env.FAKE_ACP_SESSION_MODELS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const sessionModels = () =>
+  sessionModelIds.length
+    ? {
+        models: {
+          availableModels: sessionModelIds.map((id) => ({ modelId: id, name: id })),
+          currentModelId: sessionModelIds[0],
+        },
+      }
+    : {};
 const argv = process.argv.slice(2);
 const dumpPath = process.env.FAKE_ACP_DUMP;
 function writeDump(patch: Record<string, unknown>) {
@@ -227,7 +255,9 @@ function handle(msg: any) {
         protocolVersion: 1,
         authMethods,
         agentCapabilities: { promptCapabilities: { image: mode !== "no-image" } },
-        _meta: { modelState: { currentModelId: "fake-acp-model" } },
+        // gemini-cli's initialize carries no modelState — the model truth
+        // arrives on the session result instead
+        ...(sessionModelIds.length ? {} : { _meta: { modelState: { currentModelId: "fake-acp-model" } } }),
       });
       break;
     }
@@ -243,14 +273,28 @@ function handle(msg: any) {
       const servers: McpEntry[] = Array.isArray(msg.params?.mcpServers) ? msg.params.mcpServers : [];
       agentsMcp = servers.find((s: any) => s?.name === "agents") ?? null;
       writeDump({ sessionNew: msg.params });
-      result(msg.id, { sessionId: "fake-acp-session" });
+      if (mode === "session-auth-error") {
+        // the gemini-cli signed-out shape: methods were advertised, an
+        // authenticate even "succeeded" (it only selects a method) — the
+        // real login gate is here
+        out({
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: {
+            code: AUTH_REQUIRED_CODE,
+            message: process.env.FAKE_ACP_SESSION_AUTH_MESSAGE ?? "Authentication required.",
+          },
+        });
+        break;
+      }
+      result(msg.id, { sessionId: "fake-acp-session", ...sessionModels() });
       break;
     }
     case "session/load": {
       const servers: McpEntry[] = Array.isArray(msg.params?.mcpServers) ? msg.params.mcpServers : [];
       agentsMcp = servers.find((s: any) => s?.name === "agents") ?? agentsMcp;
       writeDump({ sessionLoad: msg.params });
-      result(msg.id, {});
+      result(msg.id, { ...sessionModels() });
       break;
     }
     case "session/prompt": {
