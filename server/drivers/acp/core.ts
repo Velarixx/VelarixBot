@@ -513,7 +513,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         // would otherwise show "available" while every turn fails (rc.12
         // hermes field failure). Verify it speaks ACP on the exact argv a
         // turn uses, and surface the resolved path + version when it doesn't.
-        const key = `${config.cli}@${version}`;
+        // The auth state is part of the cache key: a signed-out subscription
+        // CLI can refuse ACP mode entirely, and without this `hermes login`
+        // would leave the failed probe stuck for the rest of the 60s TTL —
+        // the picker must un-grey on the next describe() after login.
+        const key = `${config.cli}@${version}@auth:${support.isAuthenticated(env)}`;
         if (!identityCache || identityCache.key !== key || Date.now() - identityCache.at > 60_000) {
           const probeTurn = { threadId: "acp-identity-probe", text: "" } as SendTurnInput;
           const probe = await probeProtocol(

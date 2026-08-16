@@ -267,13 +267,14 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
 
-  const createStrict = async (opts: { fullAuto?: boolean; reject?: boolean } = {}) => {
+  const createStrict = async (opts: { fullAuto?: boolean; reject?: boolean; grammar?: string } = {}) => {
     instance = await HermesAgentDriver.create({
       instanceId: "hermes-strict",
       displayName: "Hermes Strict",
       environment: {
         FAKE_ACP_AUTH_IDS: "chatgpt-oauth",
         ...(opts.reject ? { FAKE_HERMES_GRAMMAR: "reject" } : {}),
+        ...(opts.grammar ? { FAKE_HERMES_GRAMMAR: opts.grammar } : {}),
       },
       enabled: true,
       config: { cli: STRICT_CLI, fullAuto: opts.fullAuto === true },
@@ -329,6 +330,29 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
       expect(snap.reason).toContain("does not speak ACP");
       expect(snap.reason).toContain("fake-hermes 0.9.0"); // --version alone no longer means available
       expect(snap.reason).toContain("fake-hermes-cli"); // resolved path — which binary is this?
+    } finally {
+      rmSync(authFile, { force: true });
+    }
+  });
+
+  it("`hermes login` un-sticks a failed probe immediately — the 60s identity cache never outlives the login", async () => {
+    // reject-signed-out models the real signed-out subscription binary:
+    // ACP mode refuses until ~/.hermes/auth.json exists. The identity
+    // cache is keyed on the auth state, so the snapshot right after login
+    // re-probes and recovers instead of serving the stale failure for the
+    // rest of the 60s TTL.
+    const authFile = join(homedir(), ".hermes", "auth.json");
+    rmSync(authFile, { force: true });
+    await createStrict({ grammar: "reject-signed-out" });
+    try {
+      const signedOut = await instance.snapshot();
+      expect(signedOut.state).toBe("unavailable");
+      expect(signedOut.reason).toContain("hermes login");
+
+      mkdirSync(dirname(authFile), { recursive: true });
+      writeFileSync(authFile, JSON.stringify({ tokens: "fake" }));
+      const signedIn = await instance.snapshot();
+      expect(signedIn).toMatchObject({ state: "available", authenticated: true, version: "fake-hermes 0.9.0" });
     } finally {
       rmSync(authFile, { force: true });
     }

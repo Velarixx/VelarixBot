@@ -85,6 +85,38 @@ describe("bots service", () => {
     expect(bots.patchBot("missing", { name: "x" })).toBeNull();
   });
 
+  it("a patch that would break the record on reload is a 400, and the bot never vanishes (rc.14 item 1)", () => {
+    const bot = bots.createBot();
+    for (const bad of [
+      { name: 123 as unknown as string },
+      { modelSelection: "gpt-5.6-terra" as unknown as { instanceId: string; model: string } },
+      { modelSelection: { model: "x" } as unknown as { instanceId: string; model: string } },
+      { alwaysAllow: "yes" as unknown as boolean },
+    ]) {
+      expect(() => bots.patchBot(bot.id, bad)).toThrow(/invalid bot patch/);
+    }
+    // still listed and addressable, unchanged — never dropped by a read
+    expect(bots.bots().some((b) => b.id === bot.id)).toBe(true);
+    expect(bots.bot(bot.id)).toMatchObject({ id: bot.id, name: "New Bot" });
+    expect(bots.patchBot(bot.id, { name: "Chief of Staff" })?.name).toBe("Chief of Staff");
+  });
+
+  it("field-scoped patches never write a stale name back (the suspected RMW clobber)", () => {
+    // The CoS field map suspected a whole-record read-modify-write race
+    // writing "New Bot" back over a rename. patchBot re-reads the row and
+    // assigns ONLY the patched fields, and every writer is synchronous over
+    // SQLite — a status flip after (or holding a record from before) a
+    // rename must keep the rename.
+    const stale = bots.createBot(); // record captured BEFORE the rename
+    bots.patchBot(stale.id, { name: "Chief of Staff" });
+    // turn-lifecycle style patches, as fired while a turn settles
+    bots.patchBot(stale.id, { busy: true, state: "RUNNING", stateDetail: undefined });
+    bots.recordTurnUsage(stale.id, { input: 3, output: 2, cost: null });
+    bots.patchBot(stale.id, { busy: false, unread: true, state: "DONE" });
+    expect(bots.bot(stale.id)).toMatchObject({ name: "Chief of Staff", state: "DONE", busy: false });
+    expect(stale.name).toBe("New Bot"); // the stale in-memory copy stayed stale — it is never written back
+  });
+
   it("seedIfEmpty creates Milind exactly once", () => {
     bots.seedIfEmpty();
     expect(bots.bots().map((b) => b.name)).toEqual(["Milind"]);
