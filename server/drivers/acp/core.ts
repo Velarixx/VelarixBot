@@ -535,19 +535,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         }
         const authenticated = support.isAuthenticated(env);
         if (!identityCache.ok) {
-          // A signed-out subscription CLI often refuses ACP mode outright —
-          // presenting that as "wrong or outdated CLI" is a dead grey trap
-          // (rc.14 Hermes field failure). When login is required and the
-          // login file is missing, the user action is `hermes login`, so
-          // say THAT; the wrong-CLI diagnosis is reserved for a binary that
-          // is signed in and still won't speak ACP.
-          if (support.authFailure === "fail" && !authenticated) {
-            return {
-              state: "unavailable",
-              authenticated: false,
-              reason: `${support.loginNote} (\`${displayCliPath(config.cli, env)}\` ${version} answered --version but did not speak ACP: ${identityCache.detail})`,
-            };
-          }
+          // The probe spawns the exact turn argv, so a failure here is the
+          // CLI rejecting THAT — surface the binary's own usage/exit detail
+          // verbatim (which names the resolved path + version: which binary
+          // is this?). Never substitute the login note: an argv rejection is
+          // a CLI/argv problem whatever the login state, and blaming login
+          // sent the rc.14 field user to `hermes login` when the real fault
+          // was our own spawn grammar. Genuine auth failures surface through
+          // ACP authenticate / auth_required, not through this probe.
           return {
             state: "unavailable",
             authenticated,
