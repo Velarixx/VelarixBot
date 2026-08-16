@@ -116,10 +116,17 @@ export function createBotsService(opts: {
         if (patch[field] !== undefined && typeof patch[field] !== "string") invalid(field);
       }
       if (patch.modelSelection !== undefined && !validModelSelection(patch.modelSelection)) invalid("modelSelection");
-      for (const field of ["alwaysAllow", "requireApproval"] as const) {
+      for (const field of ["alwaysAllow", "requireApproval", "mascotPinned"] as const) {
         if (patch[field] !== undefined && typeof patch[field] !== "boolean") invalid(field);
       }
       const next: Partial<BotRecord> = { ...patch };
+      // M1: the pin flag tells the mascot apart from the A1 seed. When the
+      // caller doesn't set it explicitly, derive it — a face the user picked
+      // pins (clearing it unpins), a face a re-roll derived never pins.
+      if (patch.mascotPinned === undefined) {
+        if (patch.mascotExpression !== undefined) next.mascotPinned = patch.mascotExpression !== null;
+        else if (patch.avatarNonce !== undefined) next.mascotPinned = false;
+      }
       // A1 re-roll: a nonce patch re-derives the whole face from the pure
       // seed function, so the persisted record and any future regeneration
       // agree. Explicit color/shape/expression in the same patch win — a

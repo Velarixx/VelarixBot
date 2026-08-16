@@ -35,7 +35,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const patch = (
     p: Partial<
-      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "iconShape" | "avatarNonce" | "requireApproval" | "alwaysAllow" | "enabledApps" | "skillId">
+      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "mascotPinned" | "iconShape" | "avatarNonce" | "requireApproval" | "alwaysAllow" | "enabledApps" | "skillId">
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   // Zero-key seeded re-roll: bump the persisted nonce and let the server
@@ -182,7 +182,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                   Re-roll
                 </button>
                 <button
-                  onClick={() => patch({ color: "green", mascotExpression: null, iconShape: "cursor" })}
+                  onClick={() => patch({ color: "green", mascotExpression: null, mascotPinned: false, iconShape: "cursor" })}
                   className="rounded-md px-2 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
                 >
                   Reset
@@ -198,7 +198,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 {PICKABLE_STATES.map((expression) => (
                   <button
                     key={expression}
-                    onClick={() => patch({ mascotExpression: expression })}
+                    onClick={() => patch({ mascotExpression: expression, mascotPinned: true })}
                     className={cn(
                       "flex h-[58px] items-center justify-center rounded-xl bg-inset transition-colors hover:bg-raised",
                       activeState === expression && "ring-2 ring-accent-border",

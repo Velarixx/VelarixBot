@@ -28,6 +28,11 @@ export interface Message {
 export interface BotRecord {
   id: string; threadId: ThreadId; name: string; title: string; description: string; notifications: boolean; color: MausColor;
   mascotExpression?: MausExpression | null; iconShape?: IconShape; unread: boolean; modelSelection: ModelSelection; resumeCursors: Record<string, unknown>;
+  /** M1: true only when the user explicitly picked a face; false when the
+   * stored expression came from the A1 seed (re-roll) and must not mask the
+   * live BotState face. Missing on pre-flag records — the client keeps the
+   * historical "any stored expression pins" behavior for those. */
+  mascotPinned?: boolean;
   /** A1 seeded procedural avatar: the re-roll counter. The face is always
    * `seedAvatar({ botId, nonce })` (server/avatar-seed.ts) — persisting the
    * nonce means the same face regenerates after any reload or PATCH
@@ -123,6 +128,7 @@ export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } 
     state: crashed ? "BLOCKED" : STATES.has(b.state as BotState) ? b.state! : "IDLE", ...(crashed ? { stateDetail: "interrupted" } : b.stateDetail ? { stateDetail: b.stateDetail } : {}),
     usage: validUsage(b.usage), currentTurnUsage: b.currentTurnUsage ? validUsage(b.currentTurnUsage) : undefined, createdAt: Number.isFinite(b.createdAt) ? b.createdAt! : Date.now(),
     ...(typeof b.avatarNonce === "number" && Number.isInteger(b.avatarNonce) && b.avatarNonce >= 0 ? { avatarNonce: b.avatarNonce } : {}),
+    ...(typeof b.mascotPinned === "boolean" ? { mascotPinned: b.mascotPinned } : {}),
     ...(b.requireApproval === true ? { requireApproval: true } : {}),
     ...(b.alwaysAllow === true ? { alwaysAllow: true } : {}),
     ...(validStringList(b.enabledApps) ? { enabledApps: validStringList(b.enabledApps) } : {}),

@@ -271,7 +271,17 @@ describe("harness HTTP API", () => {
       color: face.color,
       iconShape: face.iconShape,
       mascotExpression: face.mascotExpression,
+      // M1: a re-rolled face is seed-derived, never a user pin
+      mascotPinned: false,
     });
+
+    // an explicit pick over the same route pins; clearing unpins
+    const picked = await api("PATCH", `/api/bots/${bot.id}`, { mascotExpression: "happy" });
+    expect(picked.body.bot).toMatchObject({ mascotExpression: "happy", mascotPinned: true });
+    const cleared = await api("PATCH", `/api/bots/${bot.id}`, { mascotExpression: null });
+    expect(cleared.body.bot).toMatchObject({ mascotPinned: false });
+    const rerolled = await api("PATCH", `/api/bots/${bot.id}`, { avatarNonce: 5 });
+    expect(rerolled.body.bot).toMatchObject({ mascotExpression: face.mascotExpression, mascotPinned: false });
 
     // GET returns the persisted seed AND the derived face — reload-safe
     const listed = await api("GET", "/api/bots");

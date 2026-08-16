@@ -1,4 +1,5 @@
 import { CURSOR_STATES, type CursorState } from "@/components/CursorAvatar";
+import type { BotState } from "@/lib/product";
 
 /** The mascot's behaviour vocabulary — CursorAvatar's 39 states, under the
  * app's historical names. */
@@ -154,9 +155,25 @@ export type MascotBotProfile = {
   title?: string;
   description?: string;
   mascotExpression?: string | null;
+  /** True only when the user explicitly picked a face (Settings grid).
+   * False when `mascotExpression` was derived by the A1 seed (re-roll).
+   * Missing on records written before the flag existed — those keep the
+   * historical "any stored expression pins" behavior. */
+  mascotPinned?: boolean;
+  /** Live lifecycle state, as shown on the sidebar badge. */
+  state?: BotState;
   busy?: boolean;
   unread?: boolean;
   messages?: MascotMessage[];
+};
+
+/** M1: the badge and the face agree. IDLE is absent on purpose — an idle
+ * bot falls through to the live-signal and keyword rules below. */
+const BOT_STATE_FACES: Partial<Record<BotState, MausState>> = {
+  RUNNING: "working",
+  DONE: "proud",
+  BLOCKED: "alerting",
+  NEEDS_INPUT: "curious",
 };
 
 /**
@@ -165,13 +182,26 @@ export type MascotBotProfile = {
  * visual identity stays stable while its title and description are edited.
  */
 export function stateForBot(bot: MascotBotProfile): MausState {
-  const pinned = normalizeState(bot.mascotExpression);
-  if (pinned) return pinned;
+  const expression = normalizeState(bot.mascotExpression);
+  // Only an explicit user pick pins the face. An A1 seed-derived expression
+  // (mascotPinned === false) must not mask the live states below; it comes
+  // back in as the resting face once the live signals are quiet.
+  if (expression && bot.mascotPinned !== false) return expression;
+
+  const liveFace = bot.state ? BOT_STATE_FACES[bot.state] : undefined;
+  if (liveFace) return liveFace;
 
   const last = bot.messages?.[bot.messages.length - 1];
 
   if (last?.kind === "activity" && last.tool?.ok === false) return "alerting";
   if (bot.busy) return "working";
+
+  // The seed-derived (unpinned) expression is the bot's resting face. It
+  // yields to "the bot is doing/failing something right now" above, but wins
+  // over the passive attention nudges and keywords below — exactly where the
+  // pre-M1 seed face sat for an idle bot.
+  if (expression) return expression;
+
   if (bot.unread) return "notifying";
   if (last?.kind === "options") return "curious";
 

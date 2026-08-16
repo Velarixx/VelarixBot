@@ -89,6 +89,36 @@ describe("bots service", () => {
     expect(patched.iconShape).toBe(face.iconShape);
   });
 
+  it("a re-roll derives the expression but never pins it (M1)", () => {
+    const bot = bots.createBot();
+    const face = seedAvatar({ botId: bot.id, nonce: 3 });
+    expect(bots.patchBot(bot.id, { avatarNonce: 3 })).toMatchObject({
+      mascotExpression: face.mascotExpression,
+      mascotPinned: false,
+    });
+    // the unpinned flag survives restart — a reload must not resurrect a pin
+    expect(reopened().bot(bot.id)).toMatchObject({ mascotExpression: face.mascotExpression, mascotPinned: false });
+  });
+
+  it("an explicit expression pick pins the face; clearing it unpins (M1)", () => {
+    const bot = bots.createBot();
+    expect(bots.patchBot(bot.id, { mascotExpression: "happy" })).toMatchObject({ mascotPinned: true });
+    expect(bots.patchBot(bot.id, { mascotExpression: null })).toMatchObject({ mascotPinned: false });
+    // an explicit pick in the same patch as a re-roll pins the picked face
+    expect(bots.patchBot(bot.id, { avatarNonce: 4, mascotExpression: "proud" })).toMatchObject({
+      mascotExpression: "proud",
+      mascotPinned: true,
+    });
+    expect(reopened().bot(bot.id)).toMatchObject({ mascotExpression: "proud", mascotPinned: true });
+  });
+
+  it("rejects a non-boolean mascotPinned as a 400 patch", () => {
+    const bot = bots.createBot();
+    expect(() => bots.patchBot(bot.id, { mascotPinned: "yes" as unknown as boolean })).toThrow(
+      /invalid bot patch: mascotPinned/,
+    );
+  });
+
   it("rejects a damaged avatarNonce as a 400 patch, never a silent write", () => {
     const bot = bots.createBot();
     for (const bad of [-1, 1.5, "3", null]) {

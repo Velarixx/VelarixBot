@@ -72,6 +72,9 @@ export interface Bot {
   notifyEvents?: Partial<Record<NotifyEventType, boolean>>;
   color: MausColor;
   mascotExpression?: string | null;
+  /** True only for an explicit Settings-grid pick; false when the stored
+   * expression was derived by the A1 seed (re-roll). See stateForBot. */
+  mascotPinned?: boolean;
   iconShape?: string | null;
   /** Seeded avatar re-roll counter; the server derives the face from
    * seedAvatar({ botId, nonce }) whenever this is patched. */
@@ -248,6 +251,7 @@ type Action =
           | "computer"
           | "color"
           | "mascotExpression"
+          | "mascotPinned"
           | "iconShape"
           | "avatarNonce"
           | "pinned"
