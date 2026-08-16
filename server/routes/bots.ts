@@ -3,7 +3,19 @@ import { parseAllowedToolkits } from "../composio-filter.ts";
 import type { ComputerRegistry } from "../computer/registry.ts";
 import type { AppConfig } from "../config.ts";
 import type { ProviderRegistry } from "../harness/registry.ts";
-import { readBotMemory, readWorkspace, writeBotMemory, writeWorkspace } from "../memory.ts";
+import {
+  deleteMemoryRow,
+  editMemoryRow,
+  forgetEverything,
+  insertMemoryRow,
+  isMemoryRowType,
+  listMemoryRows,
+  pinMemoryRow,
+  readBotMemory,
+  readWorkspace,
+  writeBotMemory,
+  writeWorkspace,
+} from "../memory.ts";
 import type { Broadcast } from "../services/events.ts";
 import type { BotsService } from "../services/bots.ts";
 import type { TeachService } from "../services/teach.ts";
@@ -22,15 +34,82 @@ export function createBotsRoutes(deps: {
 }): RouteHandler {
   const { bots, turns, teach, registry, computers, cfg, broadcast } = deps;
   return async ({ req, res, path, method }) => {
-    // ── per-bot + shared workspace memory (local markdown; no embeddings) ──
+    // ── per-bot + shared workspace memory (markdown + structured rows) ──
     const memoryMatch = path.match(/^\/api\/bots\/([\w-]+)\/memory$/);
+    const memoryForget = path.match(/^\/api\/bots\/([\w-]+)\/memory\/forget$/);
+    const memoryRows = path.match(/^\/api\/bots\/([\w-]+)\/memory\/rows$/);
+    const memoryRow = path.match(/^\/api\/bots\/([\w-]+)\/memory\/rows\/([\w-]+)$/);
+    if (memoryForget && method === "POST") {
+      if (!bots.bot(memoryForget[1])) {
+        json(res, 404, { error: "no such bot" });
+        return true;
+      }
+      const body = await readBody(req);
+      const scope = body.workspace === true || body.scope === "workspace" ? "workspace" : "bot";
+      forgetEverything(memoryForget[1], scope);
+      json(res, 200, { ok: true, scope, rows: listMemoryRows(memoryForget[1]) });
+      return true;
+    }
+    if (memoryRows && method === "POST") {
+      if (!bots.bot(memoryRows[1])) {
+        json(res, 404, { error: "no such bot" });
+        return true;
+      }
+      const body = await readBody(req);
+      const type = String(body.type ?? "");
+      const text = String(body.text ?? "");
+      if (!isMemoryRowType(type)) {
+        json(res, 400, { error: "type must be preference, fact, or workflow" });
+        return true;
+      }
+      try {
+        const row = insertMemoryRow({ botId: memoryRows[1], type, text, pinned: body.pinned === true });
+        json(res, 201, { row });
+      } catch (e) {
+        json(res, 400, { error: e instanceof Error ? e.message : "could not save row" });
+      }
+      return true;
+    }
+    if (memoryRow && (method === "PATCH" || method === "PUT")) {
+      if (!bots.bot(memoryRow[1])) {
+        json(res, 404, { error: "no such bot" });
+        return true;
+      }
+      const body = await readBody(req);
+      let row = listMemoryRows(memoryRow[1]).find((r) => r.id === memoryRow[2]) ?? null;
+      if (!row) {
+        json(res, 404, { error: "no such memory row" });
+        return true;
+      }
+      if (typeof body.text === "string") row = editMemoryRow(memoryRow[2], body.text) ?? row;
+      if (typeof body.pinned === "boolean") row = pinMemoryRow(memoryRow[2], body.pinned) ?? row;
+      json(res, 200, { row });
+      return true;
+    }
+    if (memoryRow && method === "DELETE") {
+      if (!bots.bot(memoryRow[1])) {
+        json(res, 404, { error: "no such bot" });
+        return true;
+      }
+      if (!deleteMemoryRow(memoryRow[2])) {
+        json(res, 404, { error: "no such memory row" });
+        return true;
+      }
+      json(res, 200, { ok: true });
+      return true;
+    }
     if (memoryMatch && method === "GET") {
       if (!bots.bot(memoryMatch[1])) {
         json(res, 404, { error: "no such bot" });
         return true;
       }
       const botMem = readBotMemory(memoryMatch[1]);
-      json(res, 200, { user: botMem.user, distilled: botMem.distilled, workspace: readWorkspace() });
+      json(res, 200, {
+        user: botMem.user,
+        distilled: botMem.distilled,
+        workspace: readWorkspace(),
+        rows: listMemoryRows(memoryMatch[1]),
+      });
       return true;
     }
     if (memoryMatch && (method === "PUT" || method === "PATCH")) {
@@ -55,7 +134,12 @@ export function createBotsRoutes(deps: {
       }
       if (hasWorkspace) writeWorkspace(body.workspace);
       const botMem = readBotMemory(memoryMatch[1]);
-      json(res, 200, { user: botMem.user, distilled: botMem.distilled, workspace: readWorkspace() });
+      json(res, 200, {
+        user: botMem.user,
+        distilled: botMem.distilled,
+        workspace: readWorkspace(),
+        rows: listMemoryRows(memoryMatch[1]),
+      });
       return true;
     }
 

@@ -667,6 +667,21 @@ describe("harness HTTP API", () => {
     const all = await api("GET", `/api/bots/${bot.id}/memory`);
     expect(all.body.user).toContain("Timezone is CET.");
     expect(all.body.workspace).toContain("No deploys on Monday.");
+    expect(Array.isArray(all.body.rows)).toBe(true);
+
+    const createdRow = await api("POST", `/api/bots/${bot.id}/memory/rows`, {
+      type: "fact",
+      text: "Current city is Austin.",
+    });
+    expect(createdRow.status).toBe(201);
+    expect(createdRow.body.row.type).toBe("fact");
+    const rowId = createdRow.body.row.id as string;
+    const pinned = await api("PATCH", `/api/bots/${bot.id}/memory/rows/${rowId}`, { pinned: true });
+    expect(pinned.body.row.pinned).toBe(true);
+    const forgot = await api("POST", `/api/bots/${bot.id}/memory/forget`, {});
+    expect(forgot.status).toBe(200);
+    expect(forgot.body.rows).toEqual([]);
+    expect((await api("GET", `/api/bots/${bot.id}/memory`)).body.workspace).toContain("No deploys on Monday.");
 
     const nothing = await api("PUT", `/api/bots/${bot.id}/memory`, {});
     expect(nothing.status).toBe(400);

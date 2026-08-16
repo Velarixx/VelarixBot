@@ -161,6 +161,31 @@ export const MIGRATIONS: Migration[] = [
       db.exec("CREATE UNIQUE INDEX event_log_stream_sequence ON event_log(stream_id, sequence);");
     },
   },
+  {
+    // MEM v1: structured rows (preference | fact | workflow) are additive
+    // to markdown files. The unused-for-runtime v1 `memory(owner,
+    // user_text, distilled_text)` table stays the export snapshot of
+    // those files — we do not dual-write rows into it and do not treat
+    // it as a third store. Runtime retrieval reads markdown files +
+    // `memory_rows` through one composition function.
+    version: 4,
+    name: "memory-rows",
+    up(db) {
+      db.exec(`
+        CREATE TABLE memory_rows(
+          id TEXT PRIMARY KEY,
+          bot_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          text TEXT NOT NULL,
+          pinned INTEGER NOT NULL DEFAULT 0,
+          use_count INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX memory_rows_bot ON memory_rows(bot_id, updated_at);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

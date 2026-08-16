@@ -22,6 +22,7 @@ const MANDATED_TABLES = [
   "skills",
   "computer_bindings",
   "memory",
+  "memory_rows",
 ];
 
 describe("database + migrations", () => {

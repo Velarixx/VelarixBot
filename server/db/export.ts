@@ -30,6 +30,7 @@ export const EXPORT_TABLES: Array<{ table: string; columns: string[] }> = [
   { table: "approval_audit", columns: ["seq", "at", "bot", "tool", "matcher", "decision", "rule_id"] },
   { table: "skills", columns: ["id", "name", "bot_id", "markdown", "created_at"] },
   { table: "memory", columns: ["owner", "user_text", "distilled_text", "updated_at"] },
+  { table: "memory_rows", columns: ["id", "bot_id", "type", "text", "pinned", "use_count", "created_at", "updated_at"] },
   { table: "computer_bindings", columns: ["bot_id", "box_id", "created_at", "updated_at"] },
 ];
 

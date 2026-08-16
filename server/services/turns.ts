@@ -33,6 +33,7 @@ import { HANDOFF_CONTINUE, HANDOFF_TITLE, classifyOpenedRequest, handoffSubtitle
 import {
   deleteBotMemory,
   distillMemory,
+  extractMemory,
   fleetGenerateText,
   turnTextFromMessages,
   memoryPrompt,
@@ -688,10 +689,13 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         const thenStartTurn = deps.routines().settleTurn(event.threadId, event.ok, event.stopReason);
         if (thenStartTurn) proactive.routineCompleted(thenStartTurn);
         if (event.ok) {
-          void distillMemory({
-            botId: bot.id,
-            turnText: turnTextFromMessages(store.messagesFor(event.threadId)),
-            generateText: fleetGenerateText(registry.instances(), bot.modelSelection.instanceId),
+          const turnText = turnTextFromMessages(store.messagesFor(event.threadId));
+          const generateText = fleetGenerateText(registry.instances(), bot.modelSelection.instanceId);
+          void (async () => {
+            await distillMemory({ botId: bot.id, turnText, generateText });
+            await extractMemory({ botId: bot.id, turnText, generateText });
+          })().catch(() => {
+            /* post-turn distill/extract must not fail the turn or log prompts */
           });
         }
         broadcast({ kind: "bot", bot: store.bot(bot.id) });

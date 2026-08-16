@@ -1,16 +1,26 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "./config.ts";
+
 import {
+  BM25_TOP_K,
   DISTILL_MARKER,
+  USER_KNOWLEDGE_HEADING,
   botMemoryPath,
   capMemory,
+  composeUserKnowledge,
+  configureMemoryStore,
   distillMemory,
+  extractMemory,
   fleetGenerateText,
+  insertMemoryRow,
   joinMemory,
+  listMemoryRows,
   memoryPrompt,
+  pinMemoryRow,
   readBotMemory,
   readWorkspace,
   recallMemory,
@@ -20,14 +30,69 @@ import {
   workspacePath,
   writeBotMemory,
   writeWorkspace,
+  type MemoryRow,
+  type MemoryRowsStore,
 } from "./memory.ts";
+
+function createTestRowStore(): MemoryRowsStore {
+  const rows = new Map<string, MemoryRow>();
+  let n = 0;
+  return {
+    insert(input) {
+      const now = input.createdAt ?? 1;
+      const row: MemoryRow = {
+        id: input.id ?? `row-${++n}`,
+        botId: input.botId,
+        type: input.type,
+        text: input.text.trim(),
+        pinned: input.pinned === true,
+        useCount: input.useCount ?? 0,
+        createdAt: now,
+        updatedAt: input.updatedAt ?? now,
+      };
+      rows.set(row.id, row);
+      return row;
+    },
+    get(id) {
+      return rows.get(id) ?? null;
+    },
+    listByBot(botId) {
+      return [...rows.values()].filter((r) => r.botId === botId);
+    },
+    update(id, patch) {
+      const existing = rows.get(id);
+      if (!existing) return null;
+      const next = { ...existing, ...patch };
+      rows.set(id, next);
+      return next;
+    },
+    delete(id) {
+      return rows.delete(id);
+    },
+    deleteByBot(botId) {
+      let count = 0;
+      for (const [id, row] of rows) {
+        if (row.botId === botId) {
+          rows.delete(id);
+          count++;
+        }
+      }
+      return count;
+    },
+  };
+}
 
 const BOT = "bot-memory-1";
 
 beforeEach(() => {
+  configureMemoryStore(createTestRowStore());
   mkdirSync(join(DATA_DIR, "memory"), { recursive: true });
   writeFileSync(workspacePath(), "");
   writeFileSync(botMemoryPath(BOT), "");
+});
+
+afterEach(() => {
+  configureMemoryStore(null);
 });
 
 describe("memory files", () => {
@@ -137,5 +202,83 @@ describe("memory files", () => {
 
     const fallback = fleetGenerateText([grok, claude], "grok");
     await expect(fallback!("ping")).resolves.toBe("Lives in Austin.");
+  });
+
+  it("composes markdown and structured rows through one function", () => {
+    writeWorkspace("Team ships on Fridays.");
+    writeBotMemory(BOT, { user: "Call me Sam.", distilled: "Prefers bullet lists." });
+    insertMemoryRow({ botId: BOT, type: "fact", text: "Current city is Austin.", now: 5_000 });
+    const composed = composeUserKnowledge({ botId: BOT, now: 5_000 });
+    expect(composed).toContain(USER_KNOWLEDGE_HEADING);
+    expect(composed).toContain("Team ships on Fridays.");
+    expect(composed).toContain("Call me Sam.");
+    expect(composed).toContain("Current city is Austin.");
+    expect(memoryPrompt(BOT)).toBe(composed);
+  });
+
+  it("BM25 top-10 includes the right fact, excludes stale, excludes other botId", () => {
+    const now = 8 * 86_400_000;
+    insertMemoryRow({ botId: BOT, type: "fact", text: "Current city is Austin.", now });
+    insertMemoryRow({
+      botId: BOT,
+      type: "fact",
+      text: "Obsolete listing: Berlin office closed.",
+      now: 1_000,
+    });
+    insertMemoryRow({ botId: "bot-other", type: "fact", text: "Ops alias is pager-lee in Austin.", now });
+    for (let i = 0; i < 12; i++) {
+      insertMemoryRow({ botId: BOT, type: "workflow", text: `Filler checklist step ${i} about snacks.`, now });
+    }
+    const recalled = recallMemory(BOT, "Austin city", now);
+    expect(recalled).toContain("Austin");
+    expect(recalled).not.toContain("Berlin");
+    expect(recalled).not.toContain("pager-lee");
+    const hits = (recalled.match(/\[(preference|fact|workflow)\]/g) ?? []).length;
+    expect(hits).toBeLessThanOrEqual(BM25_TOP_K);
+  });
+
+  it("skips extract when there is no generateText hook, and a thrown hook does not fail the turn", async () => {
+    await expect(extractMemory({ botId: BOT, turnText: "hello" })).resolves.toBeUndefined();
+    expect(listMemoryRows(BOT)).toEqual([]);
+    await expect(
+      extractMemory({
+        botId: BOT,
+        turnText: "hello",
+        generateText: async () => {
+          throw new Error("haiku down");
+        },
+      }),
+    ).resolves.toBeUndefined();
+    expect(listMemoryRows(BOT)).toEqual([]);
+  });
+
+  it("extract writes typed rows and leaves a pin in place", async () => {
+    const pinned = insertMemoryRow({ botId: BOT, type: "preference", text: "Call me Sam.", pinned: true, now: 1 });
+    await extractMemory({
+      botId: BOT,
+      turnText: "User: I moved to Austin.\n\nBot: Got it.",
+      generateText: async () =>
+        JSON.stringify([
+          { type: "preference", text: "Call me Sam." },
+          { type: "fact", text: "Lives in Austin." },
+        ]),
+      now: 2,
+    });
+    const rows = listMemoryRows(BOT);
+    expect(rows.some((r) => r.id === pinned.id && r.pinned && r.text === "Call me Sam.")).toBe(true);
+    expect(rows.some((r) => r.type === "fact" && r.text.includes("Austin"))).toBe(true);
+    pinMemoryRow(pinned.id, true);
+    expect(listMemoryRows(BOT).find((r) => r.id === pinned.id)?.pinned).toBe(true);
+  });
+
+  it("does not log distill or extract prompts", () => {
+    const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
+    const impl = readFileSync(new URL("./memory.ts", import.meta.url), "utf8");
+    const turns = readFileSync(new URL("./services/turns.ts", import.meta.url), "utf8");
+    expect(src).not.toMatch(/console\.(log|info|debug|dir|table)\(/);
+    expect(impl).not.toMatch(/console\.(log|info|debug|dir|table)\(/);
+    expect(impl).toMatch(/must not log the prompt/);
+    expect(turns).toMatch(/if \(event\.ok\) \{[\s\S]*extractMemory/);
+    expect(turns).toMatch(/void \(async \(\) => \{[\s\S]*extractMemory/);
   });
 });
