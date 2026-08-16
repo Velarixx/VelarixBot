@@ -29,9 +29,10 @@ const hermesSel = { instanceId: "hermes", model: "gpt-5.6-sol" };
 const hermesPerm = { instanceId: "hermes-perm", model: "gpt-5.6-sol" };
 const hermesCreate = { instanceId: "hermes-create", model: "gpt-5.6-sol" };
 
-// Hermes speaks ACP with a chatgpt-oauth-only login — the same fake CLI,
-// advertising the method hermes picks.
-const hermesEnv = { FAKE_ACP_AUTH_IDS: "chatgpt-oauth" };
+// Hermes speaks ACP on its credential pool — the same fake CLI, advertising
+// what real v0.20.1 advertises when the pool resolves: the provider
+// (openai-codex = ChatGPT/Codex subscription) + the terminal setup method.
+const hermesEnv = { FAKE_ACP_AUTH_IDS: "openai-codex,hermes-setup:terminal" };
 
 let h: BootedHarness;
 

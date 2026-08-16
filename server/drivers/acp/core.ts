@@ -55,12 +55,29 @@ export interface AcpSupport {
   transformEnv?(env: Record<string, string | undefined>): void;
   /** Pick the ACP authenticate methodId from initialize's advertised
    * authMethods; return null to skip the authenticate step. */
-  pickAuthMethod(authMethods: Array<{ id?: string }>): string | null;
+  pickAuthMethod(authMethods: Array<{ id?: string; type?: string }>): string | null;
   /** "fail": abort the turn if auth is missing/errors (subscription CLIs).
    *  "continue": proceed anyway (CLIs that work off an ambient login). */
   authFailure: "fail" | "continue";
-  /** snapshot(): is the CLI signed in? (env already carries the merged config) */
-  isAuthenticated(env: Record<string, string | undefined>): boolean;
+  /** snapshot(): is the CLI signed in? Filesystem/env heuristic (env already
+   * carries the merged config). Omit when the CLI owns a richer credential
+   * store than one probe-able file and provide authenticatedFromInit
+   * instead — at least one of the two must exist when authFailure is
+   * "fail", or the sign-in hint could never show. */
+  isAuthenticated?(env: Record<string, string | undefined>): boolean;
+  /** snapshot(): derive the signed-in state from the identity probe's
+   * initialize RESULT — the same signal a turn's auth step rides — instead
+   * of a filesystem heuristic. When the probe itself fails (argv rejection,
+   * no protocol), the auth state is unknown and snapshot omits it rather
+   * than fabricating one from disk. */
+  authenticatedFromInit?(init: unknown): boolean;
+  /** Cheap change-signature of the CLI's credential store, mixed into the
+   * identity-cache key so an auth change re-probes immediately instead of
+   * waiting out the 60s TTL. May ask the CLI itself (gets the instance
+   * config for the binary name — e.g. hermes reduces `hermes auth list`),
+   * with a file stat as fallback. Defaults to isAuthenticated's boolean
+   * when omitted. */
+  authCacheHint?(config: AcpConfig, env: Record<string, string | undefined>): string | Promise<string>;
   /** Compose the session/prompt text. Default prepends the persona. */
   buildPromptText?(turn: SendTurnInput): string;
   /** Optional cheap one-shot text call (titles, memory distill) — e.g. a
@@ -503,7 +520,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
       // Protocol-identity cache: one handshake per binary+version per
       // minute, so the model picker doesn't spawn a process per describe().
-      let identityCache: { key: string; at: number; ok: boolean; detail: string } | null = null;
+      let identityCache: { key: string; at: number; ok: boolean; detail: string; init?: unknown } | null = null;
       const snapshot = async (): Promise<ProviderSnapshot> => {
         const env = childEnv();
         const version = await cliVersion(config.cli, 8000, env);
@@ -513,11 +530,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         // would otherwise show "available" while every turn fails (rc.12
         // hermes field failure). Verify it speaks ACP on the exact argv a
         // turn uses, and surface the resolved path + version when it doesn't.
-        // The auth state is part of the cache key: a signed-out subscription
-        // CLI can refuse ACP mode entirely, and without this `hermes login`
-        // would leave the failed probe stuck for the rest of the 60s TTL —
-        // the picker must un-grey on the next describe() after login.
-        const key = `${config.cli}@${version}@auth:${support.isAuthenticated(env)}`;
+        // The auth hint is part of the cache key: a signed-out subscription
+        // CLI can refuse ACP mode entirely, and without this a sign-in
+        // (`grok login`, `hermes auth add …`) would leave the failed probe
+        // stuck for the rest of the 60s TTL — the picker must un-grey on
+        // the next describe() after the credential store changes.
+        const authHint = support.authCacheHint
+          ? await support.authCacheHint(config, env)
+          : String(support.isAuthenticated?.(env) ?? "n/a");
+        const key = `${config.cli}@${version}@auth:${authHint}`;
         if (!identityCache || identityCache.key !== key || Date.now() - identityCache.at > 60_000) {
           const probeTurn = { threadId: "acp-identity-probe", text: "" } as SendTurnInput;
           const probe = await probeProtocol(
@@ -533,7 +554,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           );
           identityCache = { key, at: Date.now(), ...probe };
         }
-        const authenticated = support.isAuthenticated(env);
+        // Signed-in truth: the probe's initialize result when the harness
+        // derives auth from the handshake (undefined — unknown, omitted —
+        // when that probe failed), else the filesystem heuristic.
+        const authenticated = support.authenticatedFromInit
+          ? identityCache.ok
+            ? support.authenticatedFromInit(identityCache.init)
+            : undefined
+          : support.isAuthenticated?.(env);
         if (!identityCache.ok) {
           // The probe spawns the exact turn argv, so a failure here is the
           // CLI rejecting THAT — surface the binary's own usage/exit detail
@@ -545,17 +573,17 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           // ACP authenticate / auth_required, not through this probe.
           return {
             state: "unavailable",
-            authenticated,
+            ...(authenticated === undefined ? {} : { authenticated }),
             reason: `\`${displayCliPath(config.cli, env)}\` (${version}) does not speak ACP with the ${support.displayName} argv — wrong or outdated CLI on PATH (${identityCache.detail})`,
           };
         }
         // Signed-out but ACP-capable: models stay selectable (a turn fails
         // with the login note), and the picker shows the sign-in hint
         // instead of silently looking healthy.
-        if (support.authFailure === "fail" && !authenticated) {
+        if (support.authFailure === "fail" && authenticated === false) {
           return { state: "available", version, authenticated: false, reason: support.loginNote };
         }
-        return { state: "available", version, authenticated };
+        return { state: "available", version, ...(authenticated === undefined ? {} : { authenticated }) };
       };
 
       return {

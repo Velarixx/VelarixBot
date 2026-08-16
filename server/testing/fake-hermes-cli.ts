@@ -8,8 +8,9 @@
 // the shared ACP protocol fake:
 //
 //   default             accepts EXACTLY the v0.20.1 grammar hermes.ts emits —
-//                       `[-m <model>] acp` (and `exec -p <prompt>` for
-//                       one-shot generateText) — then delegates to
+//                       `[-m <model>] acp` (plus `exec -p <prompt>` for
+//                       one-shot generateText and `auth list` for the
+//                       snapshot cache hint) — then delegates to
 //                       fake-acp-cli.ts for the protocol. ANY other argv →
 //                       usage on stderr, exit 2. In particular the OLD
 //                       grammar (`--approval-policy … acp stdio`) and the
@@ -21,10 +22,11 @@
 //                       never speaks ACP. Turns must fail loudly and
 //                       snapshot must report unusable, not "available".
 //   FAKE_HERMES_GRAMMAR=reject-signed-out
-//                       models a signed-out binary that refuses ACP mode
-//                       (usage + exit 2) until ~/.hermes/auth.json exists,
-//                       then behaves like the default strict grammar. Pins
-//                       the login → identity-cache-recovers path.
+//                       models a credential-less binary that refuses ACP
+//                       mode (usage + exit 2) until the pool store
+//                       ~/.hermes/auth.json exists, then behaves like the
+//                       default strict grammar. Pins the `hermes auth add`
+//                       → identity-cache-recovers path.
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { existsSync } from "node:fs";
@@ -32,6 +34,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const argv = process.argv.slice(2);
+
+// The field binary prints its secret-manager status on stderr on EVERY
+// command (--version, exec, acp, rejected argv alike) when Bitwarden
+// Secrets Manager is enabled. Version parsing, the identity probe, turns,
+// and one-shot exec must all tolerate this stderr banner.
+process.stderr.write("Bitwarden Secrets Manager: applied 1 secret\n");
 
 if (argv.includes("--version")) {
   console.log("fake-hermes 0.20.1");
@@ -41,11 +49,14 @@ if (argv.includes("--version")) {
 // Mirrors the field CLI's rejection: unexpected argument → usage catalog on
 // stderr, exit 2. `hermes acp --help` (v0.20.1) only knows --accept-hooks,
 // --version, --check, --setup, --setup-browser, --yes — no --approval-policy,
-// no trailing stdio.
+// no trailing stdio. The command catalog matches v0.20.1: `login`/`logout`
+// are REMOVED (the field binary answers `hermes login` with "The 'hermes
+// login' command has been removed. Use 'hermes auth' …"); credentials are
+// managed by `hermes auth` / `hermes model` / `hermes setup`.
 const USAGE = [
   "error: unexpected argument found",
   "usage: hermes [-m MODEL] [--yolo] <command> [options]",
-  "commands: acp, exec, login, logout, orchestrator, pets, journey, plugins, skills",
+  "commands: acp, auth, exec, model, setup, orchestrator, pets, journey, plugins, skills",
 ].join("\n");
 
 function rejectArgv(): never {
@@ -62,6 +73,23 @@ if (process.env.FAKE_HERMES_GRAMMAR === "reject-signed-out" && !existsSync(join(
 if (argv[0] === "exec") {
   if (argv[1] !== "-p" || argv.length !== 3) rejectArgv();
   console.log("fake hermes one-shot");
+  process.exit(0);
+}
+
+// pool-listing surface (`hermes auth list`) — the v0.20.1 credential
+// manager the snapshot cache hint asks before any file. Strict: only the
+// exact `auth list` argv; the listing mirrors FAKE_ACP_AUTH_IDS'
+// agent-managed entries, like the real CLI mirrors its resolved pool.
+if (argv[0] === "auth") {
+  if (argv[1] !== "list" || argv.length !== 2) rejectArgv();
+  const pool = (process.env.FAKE_ACP_AUTH_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((spec) => spec.split(":"))
+    .filter(([id, type]) => id && id !== "hermes-setup" && type !== "terminal");
+  if (pool.length === 0) console.log("No credentials configured.");
+  for (const [id] of pool) console.log(`${id} (1 credential):\n  oauth device_code`);
   process.exit(0);
 }
 

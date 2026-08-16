@@ -1,12 +1,16 @@
 // Hermes driver contract tests, run against the scripted fake ACP CLI in
-// server/testing/fake-acp-cli.ts (FAKE_ACP_AUTH_IDS=chatgpt-oauth). Mirrors
+// server/testing/fake-acp-cli.ts, advertising the auth methods the REAL
+// hermes v0.20.1 ACP adapter advertises: the resolved pool provider (e.g.
+// openai-codex — the ChatGPT/Codex subscription) plus the unconditional
+// terminal setup method (hermes-setup, type "terminal"). Mirrors
 // acp.test.ts for the shared runtime, plus the Hermes-specific quirks:
 // the v0.20.1 spawn grammar (`[-m <model>] acp` — never the retired
 // `--approval-policy … acp stdio`, never `--yolo`), OPENAI_API_KEY stripped
-// from the child env, chatgpt-oauth-only auth that fails closed BOTH ways
-// (method not advertised / authenticate errors), and the expired-token shape
-// (auth ok, session/prompt -32000) settling as auth_required instead of
-// hanging.
+// from the child env, credential-pool auth that needs NO ~/.hermes/auth.json
+// on disk and NEVER says `hermes login` (that command was removed — the
+// v0.20.1 field failure), fails closed when only the setup method is
+// advertised (no pool credentials), and the expired-token shape (auth ok,
+// session/prompt -32000) settling as auth_required instead of hanging.
 //
 // This suite runs on Windows too: the fake CLI is a `.ts` path, which
 // resolveCliCommand always executes via process.execPath on every platform —
@@ -24,6 +28,28 @@ import { recordEvents, type EventRecorder } from "../../testing/events.ts";
 import { HermesAgentDriver } from "./hermes.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
+// What real hermes v0.20.1 advertises when the credential pool resolves:
+// the provider as an agent-managed method + the always-on terminal setup.
+const POOL_AUTH_IDS = "openai-codex,hermes-setup:terminal";
+// …and when NO credentials resolve: only the terminal setup method.
+const SETUP_ONLY_AUTH_IDS = "hermes-setup:terminal";
+// A clearly-fake credential-pool store, shaped like `hermes auth add
+// openai-codex` output — constructed at runtime, never a real secret.
+const FAKE_POOL_STORE = JSON.stringify({
+  version: 1,
+  credential_pool: {
+    "openai-codex": [
+      {
+        id: "fake01",
+        label: "velarixbot-test",
+        auth_type: "oauth",
+        source: "manual:device_code",
+        access_token: "fake-access-token-not-a-real-secret",
+        refresh_token: "fake-refresh-token-not-a-real-secret",
+      },
+    ],
+  },
+});
 // Strict-grammar hermes, shaped like the field binary (v0.20.1): rejects any
 // argv that isn't exactly what hermes.ts emits (usage + exit 2, like the real
 // CLI — including the OLD `--approval-policy … acp stdio` grammar), then
@@ -55,7 +81,7 @@ describe("Hermes decodeConfig", () => {
     // a per-instance override points at a custom binary verbatim
     expect(HermesAgentDriver.decodeConfig({ cli: "/opt/custom/hermes" }).cli).toBe("/opt/custom/hermes");
     // and the driver source carries no developer-machine absolute paths;
-    // the auth probe must stay homedir-relative (~/.hermes/auth.json)
+    // the auth-store cache hint must stay homedir-relative (~/.hermes)
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "hermes.ts"), "utf8");
     expect(source).not.toMatch(/[A-Za-z]:\\/); // no Windows drive letters
     expect(source).not.toMatch(/(\/Users\/|\/home\/|\\Users\\)/);
@@ -74,7 +100,7 @@ describe("Hermes turns (fake CLI)", () => {
       instanceId: "hermes-test",
       displayName: "Hermes Test",
       environment: {
-        FAKE_ACP_AUTH_IDS: "chatgpt-oauth",
+        FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS,
         ...(opts.mode ? { FAKE_ACP_MODE: opts.mode } : {}),
         ...opts.env,
       },
@@ -184,14 +210,55 @@ describe("Hermes turns (fake CLI)", () => {
     expect(JSON.stringify(recorder.events)).not.toContain("hunter2");
   });
 
-  it("fails closed when chatgpt-oauth is not among the advertised methods", async () => {
-    await create({ env: { FAKE_ACP_AUTH_IDS: "cached_token,api-key" } });
+  it("a pool credential is enough: ~/.hermes holds only plans/, openai-codex advertised → no login note", async () => {
+    // the v0.20.1 field failure: Dyon HAD authenticated (`hermes auth` shows
+    // openai-codex oauth) yet every turn demanded the removed `hermes login`
+    // because the driver required chatgpt-oauth + a legacy auth.json. His
+    // disk shape, verified: ~/.hermes contains ONLY plans\ — no auth.json
+    // anywhere, credentials hydrated by Bitwarden Secrets Manager at process
+    // start. The handshake is the truth: an advertised pool provider must
+    // complete the turn with zero login copy, whatever is (not) on disk.
+    const dump = join(scratch, "dump.json");
+    const hermesDir = join(homedir(), ".hermes");
+    rmSync(hermesDir, { recursive: true, force: true });
+    mkdirSync(join(hermesDir, "plans"), { recursive: true }); // the exact field shape
+    await create({ env: { FAKE_ACP_DUMP: dump } });
+    await instance.adapter.sendTurn({ threadId: "t-hermes-pool", text: "go", model: "gpt-5.6-sol" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true });
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
+    const all = JSON.stringify(recorder.events);
+    expect(all).not.toContain("hermes login");
+    expect(all).not.toContain("not signed in");
+    // and the driver authenticated with the subscription provider it found
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.authenticate).toEqual({ methodId: "openai-codex" });
+  });
+
+  it("whatever provider the pool resolved is accepted — never the terminal setup method", async () => {
+    // hermes advertises the CURRENTLY configured provider; a pool that
+    // resolved e.g. anthropic must still authenticate (the advertised id is
+    // the only one hermes accepts), while hermes-setup — advertised even
+    // with zero credentials — must never be picked as a login.
+    const dump = join(scratch, "dump.json");
+    await create({ env: { FAKE_ACP_AUTH_IDS: "hermes-setup:terminal,anthropic", FAKE_ACP_DUMP: dump } });
+    await instance.adapter.sendTurn({ threadId: "t-hermes-otherpool", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true });
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.authenticate).toEqual({ methodId: "anthropic" });
+  });
+
+  it("fails closed with the `hermes auth` message when only the setup method is advertised (no pool credentials)", async () => {
+    await create({ env: { FAKE_ACP_AUTH_IDS: SETUP_ONLY_AUTH_IDS } });
     await instance.adapter.sendTurn({ threadId: "t-hermes-noauth", text: "go" });
     const done = await recorder.until((e) => e.type === "turn.completed");
     expect(done).toMatchObject({ ok: false, stopReason: "auth_required" });
     const err = recorder.events.find((e) => e.type === "runtime.error")!;
-    expect(err.message).toMatch(/not signed in to ChatGPT/);
-    expect(err.message).toMatch(/hermes login/);
+    expect(err.message).toMatch(/hermes auth/);
+    expect(err.message).toMatch(/hermes setup/);
+    // the removed command must never come back into the failure copy
+    expect(err.message).not.toMatch(/hermes login/);
   });
 
   it("fails closed when authenticate itself errors (dead login)", async () => {
@@ -201,13 +268,14 @@ describe("Hermes turns (fake CLI)", () => {
     expect(done).toMatchObject({ ok: false, stopReason: "auth_required" });
   });
 
-  it("an expired token at session/prompt settles as auth_required — no hang", async () => {
+  it("an expired token at session/prompt settles as auth_required — no hang, no `hermes login`", async () => {
     await create({ mode: "expired-token" });
     await instance.adapter.sendTurn({ threadId: "t-hermes-expired", text: "go" });
     const done = await recorder.until((e) => e.type === "turn.completed");
     expect(done).toMatchObject({ ok: false, stopReason: "auth_required" });
     const err = recorder.events.find((e) => e.type === "runtime.error")!;
-    expect(err.message).toMatch(/not signed in to ChatGPT/);
+    expect(err.message).toMatch(/hermes auth/);
+    expect(err.message).not.toMatch(/hermes login/);
     expect(instance.adapter.hasSession("t-hermes-expired")).toBe(false);
   });
 
@@ -284,7 +352,7 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
       instanceId: "hermes-strict",
       displayName: "Hermes Strict",
       environment: {
-        FAKE_ACP_AUTH_IDS: "chatgpt-oauth",
+        FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS,
         ...(opts.reject ? { FAKE_HERMES_GRAMMAR: "reject" } : {}),
         ...(opts.grammar ? { FAKE_HERMES_GRAMMAR: opts.grammar } : {}),
       },
@@ -349,68 +417,58 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
     expect(await instance.generateText!("distill")).toBe("fake hermes one-shot");
   });
 
-  it("snapshot on a signed-in binary that rejects the argv reports the real usage/exit — never the login note", async () => {
-    // the rc.14 field shape: valid OAuth creds on disk, yet the CLI rejects
-    // the spawn argv (usage + exit 2). Blaming login here sends the user to
-    // `hermes login` for a fault that is the CLI/argv, not auth.
+  it("snapshot on a binary that rejects the argv reports the real usage/exit — never a login hint, whatever is on disk", async () => {
+    // the rc.14 field shape: the CLI rejects the spawn argv (usage + exit
+    // 2). That is a CLI/argv fault whatever the credential state — blaming
+    // login sent the field user to a removed command. And since the probe
+    // never completed a handshake, the auth state is UNKNOWN: it must be
+    // omitted, never fabricated from the presence/absence of a pool file.
     const authFile = join(homedir(), ".hermes", "auth.json");
-    mkdirSync(dirname(authFile), { recursive: true });
-    writeFileSync(authFile, JSON.stringify({ tokens: "fake" }));
-    try {
-      await createStrict({ reject: true });
-      const snap = await instance.snapshot();
+    rmSync(authFile, { force: true });
+    await createStrict({ reject: true });
+    const assertArgvFault = (snap: Awaited<ReturnType<typeof instance.snapshot>>) => {
       expect(snap.state).toBe("unavailable");
-      expect(snap.authenticated).toBe(true);
+      expect(snap.authenticated).toBeUndefined();
       expect(snap.reason).toContain("does not speak ACP");
+      expect(snap.reason).toContain("wrong or outdated CLI");
       expect(snap.reason).toContain("exited 2"); // the CLI's real exit …
       expect(snap.reason).toContain("usage: hermes"); // … and its own usage
       expect(snap.reason).toContain("fake-hermes 0.20.1"); // --version alone no longer means available
       expect(snap.reason).toContain("fake-hermes-cli"); // resolved path — which binary is this?
       expect(snap.reason).not.toContain("hermes login");
       expect(snap.reason).not.toContain("not signed in");
+    };
+    try {
+      assertArgvFault(await instance.snapshot()); // nothing on disk
+      mkdirSync(dirname(authFile), { recursive: true });
+      writeFileSync(authFile, FAKE_POOL_STORE); // valid pool creds on disk
+      assertArgvFault(await instance.snapshot()); // same fault, same copy
     } finally {
       rmSync(authFile, { force: true });
     }
   });
 
-  it("a signed-OUT hermes that rejects the argv ALSO reports the real usage/exit, not the login note", async () => {
-    // the rc.14 copy blamed login whenever auth.json was missing — but an
-    // argv rejection is the same CLI fault whatever the login state, and
-    // the login note pointed the field user at the wrong fix. The genuine
-    // signed-out hint lives on the ACP-capable path (available +
-    // authenticated:false), not on a probe failure.
-    rmSync(join(homedir(), ".hermes", "auth.json"), { force: true });
-    await createStrict({ reject: true });
-    const snap = await instance.snapshot();
-    expect(snap.state).toBe("unavailable");
-    expect(snap.authenticated).toBe(false);
-    expect(snap.reason).toContain("wrong or outdated CLI");
-    expect(snap.reason).toContain("exited 2");
-    expect(snap.reason).toContain("usage: hermes");
-    expect(snap.reason).toContain("fake-hermes 0.20.1"); // still says which binary answered
-    expect(snap.reason).not.toContain("hermes login");
-    expect(snap.reason).not.toContain("not signed in");
-  });
-
-  it("`hermes login` un-sticks a failed probe immediately — the 60s identity cache never outlives the login", async () => {
-    // reject-signed-out models a signed-out binary that refuses ACP mode
-    // until ~/.hermes/auth.json exists. The identity cache is keyed on the
-    // auth state, so the snapshot right after login re-probes and recovers
+  it("`hermes auth add` un-sticks a failed probe immediately — the 60s identity cache never outlives the pool", async () => {
+    // reject-signed-out models a credential-less binary that refuses ACP
+    // mode until the pool store ~/.hermes/auth.json exists. The identity
+    // cache is keyed on the pool hint (`hermes auth list`, file stat as
+    // fallback while the credential-less binary rejects even that), so the
+    // snapshot right after `hermes auth add …` re-probes and recovers
     // instead of serving the stale failure for the rest of the 60s TTL. The
-    // signed-out failure itself still reports the CLI's own usage/exit.
+    // credential-less failure itself still reports the CLI's own usage/exit.
     const authFile = join(homedir(), ".hermes", "auth.json");
     rmSync(authFile, { force: true });
     await createStrict({ grammar: "reject-signed-out" });
     try {
-      const signedOut = await instance.snapshot();
-      expect(signedOut.state).toBe("unavailable");
-      expect(signedOut.reason).toContain("exited 2");
-      expect(signedOut.reason).not.toContain("hermes login");
+      const noCreds = await instance.snapshot();
+      expect(noCreds.state).toBe("unavailable");
+      expect(noCreds.reason).toContain("exited 2");
+      expect(noCreds.reason).not.toContain("hermes login");
 
       mkdirSync(dirname(authFile), { recursive: true });
-      writeFileSync(authFile, JSON.stringify({ tokens: "fake" }));
-      const signedIn = await instance.snapshot();
-      expect(signedIn).toMatchObject({ state: "available", authenticated: true, version: "fake-hermes 0.20.1" });
+      writeFileSync(authFile, FAKE_POOL_STORE);
+      const withCreds = await instance.snapshot();
+      expect(withCreds).toMatchObject({ state: "available", authenticated: true, version: "fake-hermes 0.20.1" });
     } finally {
       rmSync(authFile, { force: true });
     }
@@ -418,7 +476,11 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
 
   it("snapshot stays available when the binary accepts the argv and speaks ACP", async () => {
     await createStrict();
-    expect(await instance.snapshot()).toMatchObject({ state: "available", version: "fake-hermes 0.20.1" });
+    expect(await instance.snapshot()).toMatchObject({
+      state: "available",
+      authenticated: true,
+      version: "fake-hermes 0.20.1",
+    });
   });
 });
 
@@ -476,28 +538,84 @@ describe("Hermes snapshot", () => {
     await instance.dispose();
   });
 
-  it("authenticated tracks the ~/.hermes/auth.json login file, with the sign-in hint while signed out", async () => {
+  it("authenticated comes from the ACP handshake — an advertised pool provider with NO ~/.hermes/auth.json is signed in", async () => {
+    // the v0.20.1 contract: hermes advertises the resolved pool provider as
+    // an auth method iff its credential pool resolves (env-seeded, imported,
+    // profile-scoped, or secret-manager-hydrated — Bitwarden Secrets Manager
+    // injects provider keys at process start with nothing under ~/.hermes) —
+    // no file on disk is required, and requiring one was the field failure.
+    // HOME is the per-suite sandbox (testing/setup.ts); recreate the field
+    // machine's shape: ~/.hermes with only plans\, no auth.json.
+    const hermesDir = join(homedir(), ".hermes");
+    rmSync(hermesDir, { recursive: true, force: true });
+    mkdirSync(join(hermesDir, "plans"), { recursive: true });
     const instance = await HermesAgentDriver.create({
-      instanceId: "hermes-auth-file",
+      instanceId: "hermes-auth-pool",
+      displayName: undefined,
+      environment: { FAKE_ACP_AUTH_IDS: "openai-codex,hermes-setup:terminal" },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    const snap = await instance.snapshot();
+    expect(snap).toMatchObject({ state: "available", authenticated: true });
+    expect(snap.reason).toBeUndefined();
+    await instance.dispose();
+  });
+
+  it("a pool change that never touches disk un-greys immediately — the cache hint asks `hermes auth list`, not a file", async () => {
+    // the Bitwarden field shape: credentials hydrate into the process env,
+    // ~/.hermes stays plans/-only forever. A `hermes auth add` there changes
+    // NOTHING on disk, so a file-stat hint would serve the stale signed-out
+    // probe for the rest of the 60s TTL. The hint asks the CLI's own pool
+    // listing instead. FAKE_ACP_AUTH_IDS rides process.env (not the pinned
+    // instance environment) so the test can flip the pool mid-instance the
+    // way the real pool changes out from under a running server.
+    const hermesDir = join(homedir(), ".hermes");
+    rmSync(hermesDir, { recursive: true, force: true });
+    mkdirSync(join(hermesDir, "plans"), { recursive: true });
+    const instance = await HermesAgentDriver.create({
+      instanceId: "hermes-diskless-pool",
       displayName: undefined,
       environment: {},
       enabled: true,
       config: { cli: FAKE_CLI, fullAuto: false },
     });
-    // HOME is the per-suite sandbox (testing/setup.ts) — never the real one
-    const authFile = join(homedir(), ".hermes", "auth.json");
-    rmSync(authFile, { force: true });
-    // signed out but ACP-capable: still available (models stay selectable)
-    // and the picker gets the sign-in hint instead of a silent healthy look
-    const signedOut = await instance.snapshot();
-    expect(signedOut).toMatchObject({ state: "available", authenticated: false });
-    expect(signedOut.reason).toContain("hermes login");
-    mkdirSync(dirname(authFile), { recursive: true });
-    writeFileSync(authFile, JSON.stringify({ tokens: "fake" }));
-    const signedIn = await instance.snapshot();
-    expect(signedIn).toMatchObject({ state: "available", authenticated: true });
-    expect(signedIn.reason).toBeUndefined();
-    rmSync(authFile, { force: true });
+    const prev = process.env.FAKE_ACP_AUTH_IDS;
+    try {
+      process.env.FAKE_ACP_AUTH_IDS = SETUP_ONLY_AUTH_IDS;
+      const before = await instance.snapshot();
+      expect(before).toMatchObject({ state: "available", authenticated: false });
+      expect(before.reason).toContain("hermes auth");
+      expect(before.reason).not.toContain("hermes login");
+
+      process.env.FAKE_ACP_AUTH_IDS = POOL_AUTH_IDS; // `hermes auth add openai-codex`, Bitwarden-side
+      const after = await instance.snapshot();
+      expect(after).toMatchObject({ state: "available", authenticated: true });
+      expect(after.reason).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.FAKE_ACP_AUTH_IDS;
+      else process.env.FAKE_ACP_AUTH_IDS = prev;
+      await instance.dispose();
+    }
+  });
+
+  it("only the terminal setup method advertised → available with the `hermes auth` hint, never `hermes login`", async () => {
+    // credential-less but ACP-capable: still available (models stay
+    // selectable) and the picker gets the honest hint instead of a silent
+    // healthy look. hermes-setup is advertised even with zero credentials,
+    // and a terminal-typed method must never read as signed-in.
+    const instance = await HermesAgentDriver.create({
+      instanceId: "hermes-auth-none",
+      displayName: undefined,
+      environment: { FAKE_ACP_AUTH_IDS: "hermes-setup:terminal" },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    const snap = await instance.snapshot();
+    expect(snap).toMatchObject({ state: "available", authenticated: false });
+    expect(snap.reason).toContain("hermes auth");
+    expect(snap.reason).toContain("hermes setup");
+    expect(snap.reason).not.toContain("hermes login");
     await instance.dispose();
   });
 });

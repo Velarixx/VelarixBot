@@ -8,7 +8,7 @@ export const SECRET_NAMES = Object.freeze({
   claude: "CLAUDE_CODE_OAUTH_TOKEN",
   codex: "CODEX_AUTH_JSON",
   grok: "XAI_API_KEY",
-  // full ~/.hermes/auth.json contents (`hermes login` output) — optional
+  // full ~/.hermes/auth.json contents (the `hermes auth` pool store) — optional
   hermes: "HERMES_AUTH_JSON",
 });
 

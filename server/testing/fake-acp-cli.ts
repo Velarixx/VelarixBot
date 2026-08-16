@@ -32,11 +32,15 @@
 //                     reply with the sidebar id the harness returned)
 //   FAKE_ACP_DUMP   path to write {argv, env} as JSON, so a test can assert
 //                   argv shape (agent/stdio flags) and env hygiene
-//   FAKE_ACP_AUTH_IDS  comma-separated authMethods ids that initialize
-//                   advertises (default "cached_token") — lets harnesses
-//                   that pick a different method (hermes → chatgpt-oauth)
-//                   run both the happy and the fail-closed path against the
-//                   same fake
+//   FAKE_ACP_AUTH_IDS  comma-separated authMethods that initialize
+//                   advertises (default "cached_token"), each as `id` or
+//                   `id:type` (e.g. "openai-codex,hermes-setup:terminal"
+//                   models hermes' provider + terminal-setup pair) — lets
+//                   harnesses that pick a different method run both the
+//                   happy and the fail-closed path against the same fake.
+//                   The methodId of the authenticate call lands in the dump
+//                   as `authenticate`, so tests can pin which method a
+//                   driver picked.
 //   FAKE_ACP_CREATE_NAME  bot name for create-bot mode (default "Ops")
 //   FAKE_ACP_PERMISSION_KIND  toolCall.kind for permission/credential asks
 //                   (default "execute") — a scenario leg can pick "edit" so
@@ -69,6 +73,21 @@ if (argv.includes("--version")) {
 if (argv[0] === "exec" && argv.includes("-p")) {
   if (dumpPath) writeDump({ execArgv: argv });
   console.log("User prefers concise replies. Last turn noted.");
+  process.exit(0);
+}
+// pool-listing surface (`cli auth list`) — hermes-style; the driver's
+// snapshot cache hint asks this BEFORE any file. Derived from
+// FAKE_ACP_AUTH_IDS (agent-managed entries only — terminal methods are not
+// credentials), so tests flip the pool through env, never through disk.
+if (argv[0] === "auth" && argv[1] === "list") {
+  const pool = (process.env.FAKE_ACP_AUTH_IDS ?? "cached_token")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((spec) => spec.split(":"))
+    .filter(([id, type]) => id && id !== "hermes-setup" && type !== "terminal");
+  if (pool.length === 0) console.log("No credentials configured.");
+  for (const [id] of pool) console.log(`${id} (1 credential):\n  oauth device_code`);
   process.exit(0);
 }
 if (dumpPath) writeDump({});
@@ -197,7 +216,13 @@ function handle(msg: any) {
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      const authMethods = mode === "no-auth" ? [] : authIds.map((id) => ({ id }));
+      const authMethods =
+        mode === "no-auth"
+          ? []
+          : authIds.map((spec) => {
+              const [id, type] = spec.split(":");
+              return type ? { id, type } : { id };
+            });
       result(msg.id, {
         protocolVersion: 1,
         authMethods,
@@ -207,6 +232,7 @@ function handle(msg: any) {
       break;
     }
     case "authenticate":
+      writeDump({ authenticate: msg.params });
       if (mode === "auth-error") {
         out({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "login expired — authenticate failed" } });
         break;
