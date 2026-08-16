@@ -155,11 +155,22 @@ describe("messages repository", () => {
     const shotHash = createHash("sha256").update(Buffer.from(PNG_BASE64, "base64")).digest("hex");
     expect(shotHash).not.toBe(avatarHash);
 
-    repos.messages.deleteThread("t-avatar");
-    expect(existsSync(join(blobsDir(), shotHash))).toBe(false);
+    const other = {
+      ...bot,
+      id: "bot-other",
+      threadId: "t-other",
+      avatarImageHash: undefined,
+    };
+    repos.bots.insert(other);
+    repos.messages.append("t-other", { role: "bot", kind: "screen", png: PNG_BASE64 });
+
+    // screenshot GC of the other thread must not take the avatar
+    expect(repos.deleteBotCascade(other.id)).toBe(true);
+    expect(existsSync(join(blobsDir(), shotHash))).toBe(true); // t-avatar still refs it
     expect(existsSync(join(blobsDir(), avatarHash))).toBe(true);
 
     expect(repos.deleteBotCascade(bot.id)).toBe(true);
     expect(existsSync(join(blobsDir(), avatarHash))).toBe(false);
+    expect(existsSync(join(blobsDir(), shotHash))).toBe(false);
   });
 });

@@ -131,7 +131,9 @@ describe("bots service", () => {
     });
     bots = reopened();
     expect(bots.bot(bot.id)).toMatchObject({ avatarImageHash: hash, avatarCandidates: [hash] });
-    expect(bots.patchBot(bot.id, { avatarImageHash: null })).toMatchObject({ avatarImageHash: undefined });
+    const cleared = bots.patchBot(bot.id, { avatarImageHash: null })!;
+    expect(cleared.avatarImageHash).toBeUndefined();
+    expect(cleared.avatarCandidates).toEqual([hash]);
     bots = reopened();
     expect(bots.bot(bot.id)?.avatarImageHash).toBeUndefined();
   });
@@ -164,7 +166,9 @@ describe("bots service", () => {
     bots.appendMessage(bot.threadId, { role: "bot", kind: "screen", png: shot });
     const other = bots.createBot();
     bots.appendMessage(other.threadId, { role: "bot", kind: "screen", png: shot });
-    repos.messages.deleteThread(other.threadId);
+    // deleting the other bot GCs its screenshot only if unreferenced —
+    // the accepted avatar must survive
+    bots.deleteBot(other.id);
     expect(existsSync(join(blobsDir(), accepted))).toBe(true);
 
     const image = bots.readAvatar(bot.id);
