@@ -1,11 +1,14 @@
 // Domain services over the real repositories (in a temp home), with a FAKE
 // CLOCK for the scheduler — the proactive.ts pattern: pass `now`, call
 // tick(), no sleeps, no timers.
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { fakeGenerateAvatarImages } from "../avatar-image.ts";
 import { seedAvatar } from "../avatar-seed.ts";
 import { DATA_DIR } from "../config.ts";
+import { blobsDir, putBlob } from "../db/blobs.ts";
 import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { createRepositories, type Repositories } from "../repositories/index.ts";
@@ -117,6 +120,60 @@ describe("bots service", () => {
     expect(() => bots.patchBot(bot.id, { mascotPinned: "yes" as unknown as boolean })).toThrow(
       /invalid bot patch: mascotPinned/,
     );
+  });
+
+  it("accepts a raster hash, persists it, and clears it back to the vector fallback", () => {
+    const bot = bots.createBot();
+    const hash = putBlob(Buffer.from("accepted-avatar-bytes"));
+    expect(bots.patchBot(bot.id, { avatarImageHash: hash, avatarCandidates: [hash] })).toMatchObject({
+      avatarImageHash: hash,
+      avatarCandidates: [hash],
+    });
+    bots = reopened();
+    expect(bots.bot(bot.id)).toMatchObject({ avatarImageHash: hash, avatarCandidates: [hash] });
+    expect(bots.patchBot(bot.id, { avatarImageHash: null })).toMatchObject({ avatarImageHash: undefined });
+    bots = reopened();
+    expect(bots.bot(bot.id)?.avatarImageHash).toBeUndefined();
+  });
+
+  it("rejects a damaged avatarImageHash as a 400 patch", () => {
+    const bot = bots.createBot();
+    expect(() => bots.patchBot(bot.id, { avatarImageHash: "not-a-hash" })).toThrow(/invalid bot patch: avatarImageHash/);
+    expect(bots.bot(bot.id)?.avatarImageHash).toBeUndefined();
+  });
+
+  it("generateAvatar stores four blobs, not bytes in SQLite, and screenshot GC keeps the accepted one", async () => {
+    const bot = bots.createBot();
+    const result = await bots.generateAvatar(bot.id, {
+      cfg: { xai: { key: "xai-fake-for-generate" } },
+      generate: fakeGenerateAvatarImages,
+    });
+    expect(result.candidates).toHaveLength(4);
+    expect(result.provider).toBe("xai");
+    expect(result.prompt).toContain(bot.name);
+    const hashes = result.candidates.map((c) => c.hash);
+    for (const hash of hashes) expect(existsSync(join(blobsDir(), hash))).toBe(true);
+
+    const accepted = hashes[0]!;
+    bots.patchBot(bot.id, { avatarImageHash: accepted });
+    const raw = JSON.stringify(bots.bot(bot.id));
+    expect(raw).toContain(accepted);
+    expect(raw).not.toMatch(/iVBORw0KGgo/); // no PNG base64 in the record
+
+    const shot = Buffer.from("screenshot-not-the-avatar").toString("base64");
+    bots.appendMessage(bot.threadId, { role: "bot", kind: "screen", png: shot });
+    const other = bots.createBot();
+    bots.appendMessage(other.threadId, { role: "bot", kind: "screen", png: shot });
+    repos.messages.deleteThread(other.threadId);
+    expect(existsSync(join(blobsDir(), accepted))).toBe(true);
+
+    const image = bots.readAvatar(bot.id);
+    expect(image?.bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))).toBe(true);
+    expect(bots.readAvatar(bot.id, hashes[1])).toBeTruthy();
+    expect(bots.readAvatar(bot.id, "a".repeat(64))).toBeNull();
+
+    bots.deleteBot(bot.id);
+    expect(existsSync(join(blobsDir(), accepted))).toBe(false);
   });
 
   it("rejects a damaged avatarNonce as a 400 patch, never a silent write", () => {

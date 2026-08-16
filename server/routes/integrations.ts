@@ -46,6 +46,7 @@ export function createIntegrationsRoutes(deps: {
       composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
       box: { configured: Boolean(cfg.box?.token) },
       github: { configured: Boolean(cfg.github?.token) },
+      openai: { configured: Boolean(cfg.openai?.key) },
       openrouter: { configured: Boolean(cfg.openrouter?.key) },
       omnirouter: { configured: Boolean(cfg.omnirouter?.key) },
     };
@@ -286,7 +287,7 @@ export function createIntegrationsRoutes(deps: {
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch: Record<string, object> = {};
-      for (const key of ["xai", "composio", "box", "github", "openrouter", "omnirouter"] as const) {
+      for (const key of ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter"] as const) {
         if (body[key] && typeof body[key] === "object") patch[key] = body[key];
       }
       if (!Object.keys(patch).length) {

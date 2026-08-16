@@ -1,6 +1,7 @@
 // One factory: every repository over the same database handle, so
 // cross-repo operations (bot delete → thread + messages + events + runs)
 // can share transactions through SQLite itself.
+import { collectAvatarHashes } from "../avatar-image.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { createBotsRepository, type BotsRepository } from "./bots.ts";
 import { createComputerBindingsRepository, type ComputerBindingsRepository } from "./computer-bindings.ts";
@@ -28,7 +29,9 @@ export interface Repositories {
 
 export function createRepositories(db: SqliteDatabase): Repositories {
   const bots = createBotsRepository(db);
-  const messages = createMessagesRepository(db);
+  const messages = createMessagesRepository(db, {
+    extraReferencedBlobs: () => collectAvatarHashes(bots.list()),
+  });
   const routines = createRoutinesRepository(db);
   const eventLog = createEventLogRepository(db);
   const computerBindings = createComputerBindingsRepository(db);
@@ -57,8 +60,9 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     snapshots,
     memoryRows,
     deleteBotCascade(botId) {
+      const dying = collectAvatarHashes(bots.get(botId) ? [bots.get(botId)!] : []);
       const { deleted, hashes } = deleteCascade(botId);
-      if (deleted) messages.gcBlobHashes(hashes);
+      if (deleted) messages.gcBlobHashes([...hashes, ...dying]);
       return deleted;
     },
   };

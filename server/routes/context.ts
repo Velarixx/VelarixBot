@@ -20,6 +20,15 @@ export function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(data);
 }
 
+export function sendBytes(res: ServerResponse, status: number, body: Buffer, contentType: string): void {
+  res.writeHead(status, {
+    "content-type": contentType,
+    "cache-control": "private, max-age=3600",
+    "content-length": body.length,
+  });
+  res.end(body);
+}
+
 export function readBody(req: IncomingMessage): Promise<any> {
   return new Promise((resolve, reject) => {
     let data = "";

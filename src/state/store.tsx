@@ -81,6 +81,10 @@ export interface Bot {
   /** Seeded avatar re-roll counter; the server derives the face from
    * seedAvatar({ botId, nonce }) whenever this is patched. */
   avatarNonce?: number;
+  /** A2 accepted raster — sha256 in the blob store. Missing = vector mascot. */
+  avatarImageHash?: string | null;
+  /** Last generate batch (hashes only). */
+  avatarCandidates?: string[];
   unread: boolean;
   busy?: boolean;
   state: BotState;
@@ -114,6 +118,7 @@ export interface ConfigStatus {
   composio: { configured: boolean; apiKeyConfigured?: boolean };
   box: { configured: boolean };
   github?: { configured: boolean };
+  openai?: { configured: boolean };
   openrouter?: { configured: boolean };
   omnirouter?: { configured: boolean };
 }
@@ -256,6 +261,7 @@ type Action =
           | "mascotPinned"
           | "iconShape"
           | "avatarNonce"
+          | "avatarImageHash"
           | "pinned"
           | "hidden"
           | "requireApproval"
@@ -952,6 +958,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               composio: frame.composio,
               box: frame.box,
               github: frame.github,
+              openai: frame.openai,
               openrouter: frame.openrouter,
               omnirouter: frame.omnirouter,
             },

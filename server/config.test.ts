@@ -126,12 +126,14 @@ describe("config persistence hardening", () => {
   it("migrates a pre-P1.5 plaintext config.json into the secret store", async () => {
     ensureDirs();
     const xaiKey = canary("xai");
+    const openaiKey = canary("openai");
     const composioKey = canary("composio");
     // simulate an old on-disk config with plaintext secrets
     writeFileSync(
       join(DATA_DIR, "config.json"),
       JSON.stringify({
         xai: { key: xaiKey },
+        openai: { key: openaiKey },
         composio: { key: composioKey, url: "https://composio.example" },
         instances: { mine: { driver: "codex" } },
       }),
@@ -140,9 +142,11 @@ describe("config persistence hardening", () => {
     expect(await migrateConfigSecrets()).toBe(true);
     const raw = readFileSync(join(DATA_DIR, "config.json"), "utf8");
     expect(raw).not.toContain(xaiKey);
+    expect(raw).not.toContain(openaiKey);
     expect(raw).not.toContain(composioKey);
     const disk = JSON.parse(raw);
     expect(disk.xai.key).toBe("secret://xai.key");
+    expect(disk.openai.key).toBe("secret://openai.key");
     expect(disk.composio.key).toBe("secret://composio.key");
     // non-secrets and unrelated sections survive untouched
     expect(disk.composio.url).toBe("https://composio.example");
@@ -150,6 +154,7 @@ describe("config persistence hardening", () => {
     // values still resolve for the runtime
     const cfg = loadConfig();
     expect(cfg.xai?.key).toBe(xaiKey);
+    expect(cfg.openai?.key).toBe(openaiKey);
     expect(cfg.composio?.key).toBe(composioKey);
     // second run is a no-op — the file is not rewritten
     expect(await migrateConfigSecrets()).toBe(false);

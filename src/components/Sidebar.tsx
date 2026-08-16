@@ -16,7 +16,7 @@ import {
   BookOpen,
 } from "lucide-react";
 import { useStore, formatTime, type Bot } from "@/state/store";
-import { MausAvatar } from "./Avatar";
+import { BotFace } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
 import { formatCompactTokens, formatUsageCost, stateLabel, type BotState } from "@/lib/product";
@@ -150,11 +150,10 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
         selected ? "bg-raised" : "hover:bg-raised/50",
       )}
     >
-      <MausAvatar
-        color={bot.color}
+      <BotFace
+        bot={bot}
         state={stateForBot(bot)}
         size={56}
-        iconShape={bot.iconShape}
         motion={mascotMotion?.kind ?? "none"}
         motionKey={mascotMotion?.nonce ?? 0}
       />

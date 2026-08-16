@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, Trash2, X } from "lucide-react";
 import { api, useStore, type Bot, type Skill } from "@/state/store";
-import { MausAvatar } from "./Avatar";
+import { BotFace, MausAvatar } from "./Avatar";
 import {
   PICKABLE_STATES,
   stateForBot,
@@ -35,7 +35,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const patch = (
     p: Partial<
-      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "mascotPinned" | "iconShape" | "avatarNonce" | "requireApproval" | "alwaysAllow" | "enabledApps" | "skillId">
+      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "mascotPinned" | "iconShape" | "avatarNonce" | "avatarImageHash" | "requireApproval" | "alwaysAllow" | "enabledApps" | "skillId">
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   // Zero-key seeded re-roll: bump the persisted nonce and let the server
@@ -60,7 +60,18 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [memory, setMemory] = useState({ user: "", distilled: "", workspace: "" });
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [candidates, setCandidates] = useState<string[]>(bot.avatarCandidates ?? []);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
   const lastBot = state.bots.length <= 1;
+  const imageReady = Boolean(
+    state.config?.xai?.configured || state.config?.openai?.configured || state.config?.openrouter?.configured,
+  );
+
+  useEffect(() => {
+    setCandidates(bot.avatarCandidates ?? []);
+    setGenerateError(null);
+  }, [bot.id, bot.avatarCandidates]);
 
   useEffect(() => {
     let alive = true;
@@ -156,11 +167,10 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 
       <div className="flex-1 overflow-y-auto px-5 pb-5">
         <div className="flex justify-center py-5">
-          <MausAvatar
-            color={bot.color}
+          <BotFace
+            bot={bot}
             state={activeState}
             size={112}
-            iconShape={bot.iconShape}
             motion={mascotMotion?.kind ?? "none"}
             motionKey={mascotMotion?.nonce ?? 0}
           />
@@ -191,6 +201,83 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
 
             <div className="p-3">
+              <div className="mb-2 text-[12px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
+                Portrait
+              </div>
+              <div className="mb-3 text-[12px] text-ink-secondary">
+                {imageReady
+                  ? "Generate four portraits from this bot's name and personality, then pick one. The seeded mascot stays the fallback."
+                  : "Add an xAI, OpenAI, or OpenRouter key in App Settings to generate portraits. The seeded mascot works without keys."}
+              </div>
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={!imageReady || generating}
+                  onClick={() => {
+                    setGenerating(true);
+                    setGenerateError(null);
+                    api(`/api/bots/${bot.id}/avatar/generate`, { method: "POST", body: JSON.stringify({}) })
+                      .then((r) => {
+                        const hashes = (r.candidates ?? []).map((c: { hash: string }) => c.hash);
+                        setCandidates(hashes);
+                        if (r.bot) dispatch({ type: "botPatched", bot: r.bot });
+                      })
+                      .catch((e) => setGenerateError(e instanceof Error ? e.message : String(e)))
+                      .finally(() => setGenerating(false));
+                  }}
+                  className="rounded-md bg-raised px-3 py-1.5 text-[13px] text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {generating ? "Generating…" : candidates.length ? "Regenerate" : "Generate portraits"}
+                </button>
+                {bot.avatarImageHash && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      api(`/api/bots/${bot.id}`, {
+                        method: "PATCH",
+                        body: JSON.stringify({ avatarImageHash: null }),
+                      })
+                        .then(({ bot: next }) => dispatch({ type: "botPatched", bot: next }))
+                        .catch(() => {});
+                    }}
+                    className="rounded-md px-2 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
+                  >
+                    Use vector
+                  </button>
+                )}
+              </div>
+              {generateError && <div className="mb-3 text-[12px] text-danger">{generateError}</div>}
+              {candidates.length > 0 && (
+                <div className="mb-4 grid grid-cols-4 gap-2">
+                  {candidates.map((hash) => (
+                    <button
+                      key={hash}
+                      type="button"
+                      onClick={() => {
+                        api(`/api/bots/${bot.id}`, {
+                          method: "PATCH",
+                          body: JSON.stringify({ avatarImageHash: hash }),
+                        })
+                          .then(({ bot: next }) => dispatch({ type: "botPatched", bot: next }))
+                          .catch(() => {});
+                      }}
+                      className={cn(
+                        "flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-inset transition-colors hover:bg-raised",
+                        bot.avatarImageHash === hash && "ring-2 ring-accent-border",
+                      )}
+                      title="Use this portrait"
+                      aria-label="Use this portrait"
+                    >
+                      <img
+                        src={`/api/bots/${bot.id}/avatar/${hash}`}
+                        alt=""
+                        className="size-full object-cover"
+                      />
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <div className="mb-2 text-[12px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
                 Expression
               </div>

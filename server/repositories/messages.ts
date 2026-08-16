@@ -61,7 +61,10 @@ export interface MessagesRepository {
   blobRefCount(hash: string): number;
 }
 
-export function createMessagesRepository(db: SqliteDatabase): MessagesRepository {
+export function createMessagesRepository(
+  db: SqliteDatabase,
+  opts?: { extraReferencedBlobs?: () => ReadonlySet<string> },
+): MessagesRepository {
   const ensureThread = db.prepare("INSERT OR IGNORE INTO threads(id, bot_id, created_at) VALUES (?, NULL, ?)");
   const insert = db.prepare("INSERT INTO messages(id, thread_id, at, png_hash, data) VALUES (?, ?, ?, ?, ?)");
   const update = db.prepare("UPDATE messages SET at = ?, png_hash = ?, data = ? WHERE thread_id = ? AND id = ?");
@@ -126,8 +129,10 @@ export function createMessagesRepository(db: SqliteDatabase): MessagesRepository
     },
     gcBlobHashes(hashes) {
       // after commit only: content-addressed files are harmless while a
-      // hash is still referenced by another thread
+      // hash is still referenced by another thread OR a bot avatar
+      const extra = opts?.extraReferencedBlobs?.() ?? new Set<string>();
       for (const hash of hashes) {
+        if (extra.has(hash)) continue;
         if ((countHashRefs.get(hash)?.n ?? 0) === 0) deleteBlob(hash);
       }
     },

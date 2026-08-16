@@ -204,6 +204,32 @@ function MausAvatarComponent(
 
 export const MausAvatar = memo(forwardRef(MausAvatarComponent));
 
+/** Sidebar/header/settings face: accepted raster when present, else the
+ * A1 vector mascot. Callers that are picking a seed face keep using
+ * MausAvatar directly. */
+export function BotFace({
+  bot,
+  size,
+  ...mascot
+}: {
+  bot: { id: string; avatarImageHash?: string | null; color: MausColor; iconShape?: string | null };
+  size: number;
+} & Omit<MausAvatarProps, "color" | "size" | "iconShape">) {
+  if (bot.avatarImageHash) {
+    return (
+      <img
+        src={`/api/bots/${bot.id}/avatar?h=${bot.avatarImageHash}`}
+        alt=""
+        width={size}
+        height={size}
+        className="shrink-0 rounded-full object-cover"
+        style={{ width: size, height: size }}
+      />
+    );
+  }
+  return <MausAvatar color={bot.color} size={size} iconShape={bot.iconShape} {...mascot} />;
+}
+
 export function InitialsAvatar({
   initials,
   size = 32,

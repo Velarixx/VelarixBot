@@ -1,5 +1,6 @@
 // NDJSON export / restore of the whole database. One line per row, a meta
-// header, inline base64 blob lines for every referenced screenshot (the
+// header, inline base64 blob lines for every referenced screenshot and
+// avatar (the
 // export file is self-contained), and a trailing checksum line so restore
 // can prove it read exactly what export wrote. Written with the P0.2
 // atomic-write path (fsync + 0600).
@@ -7,8 +8,22 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { atomicWriteFileSync } from "../atomic.ts";
-import { putBlobBase64, readBlobBase64 } from "./blobs.ts";
+import { HASH_RE, putBlobBase64, readBlobBase64 } from "./blobs.ts";
 import type { SqliteDatabase } from "./sqlite-native.ts";
+
+function avatarHashesFromBotData(data: string): string[] {
+  try {
+    const rec = JSON.parse(data) as { avatarImageHash?: unknown; avatarCandidates?: unknown };
+    const out: string[] = [];
+    if (typeof rec.avatarImageHash === "string") out.push(rec.avatarImageHash);
+    if (Array.isArray(rec.avatarCandidates)) {
+      for (const h of rec.avatarCandidates) if (typeof h === "string") out.push(h);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
 
 export const EXPORT_FORMAT = "velarixbot-export";
 export const EXPORT_VERSION = 1;
@@ -55,8 +70,11 @@ export function exportNdjson(db: SqliteDatabase, outPath: string): ExportResult 
     for (const row of all) {
       lines.push(JSON.stringify({ kind: "row", table, row }));
       rows++;
-      const hash = table === "messages" ? (row.png_hash as string | null) : null;
-      if (hash && !seenHashes.has(hash)) {
+      const hashes: string[] = [];
+      if (table === "messages" && typeof row.png_hash === "string") hashes.push(row.png_hash);
+      if (table === "bots" && typeof row.data === "string") hashes.push(...avatarHashesFromBotData(row.data));
+      for (const hash of hashes) {
+        if (!HASH_RE.test(hash) || seenHashes.has(hash)) continue;
         seenHashes.add(hash);
         const data = readBlobBase64(hash);
         if (data !== null) {

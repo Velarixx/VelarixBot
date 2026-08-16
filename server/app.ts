@@ -8,6 +8,7 @@ import { extname, join } from "node:path";
 
 import { requireApiAuth } from "./auth.ts";
 import { createComputerRegistry, type ComputerRegistry } from "./computer/registry.ts";
+import { defaultAvatarImageGenerator, type GenerateAvatarImages } from "./avatar-image.ts";
 import type { AppConfig } from "./config.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { EventBus } from "./harness/bus.ts";
@@ -64,6 +65,8 @@ export interface CreateApplicationInput {
   staticDir: string | null;
   stamp: string;
   reloadProviders(): Promise<void>;
+  /** A2: injectable so tests never hit a live image API. */
+  generateAvatarImages?: GenerateAvatarImages;
 }
 
 export interface Application {
@@ -194,7 +197,17 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     createEventsRoutes({ hub, bots }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
-    createBotsRoutes({ bots, turns, teach, routines, registry, computers, cfg, broadcast }),
+    createBotsRoutes({
+      bots,
+      turns,
+      teach,
+      routines,
+      registry,
+      computers,
+      cfg,
+      broadcast,
+      generateAvatarImages: input.generateAvatarImages ?? defaultAvatarImageGenerator(),
+    }),
     createTurnsRoutes({ turns }),
     createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
     createDiagnosticsRoutes({ diagnostics }),

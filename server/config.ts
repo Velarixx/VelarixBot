@@ -26,6 +26,8 @@ export interface AppConfig {
   box?: { token?: string; url?: string };
   /** Personal GitHub token for private VelarixBot Releases (updater). Write-only. */
   github?: { token?: string };
+  /** OpenAI BYO key (sk-…). Write-only. Used by A2 avatar generate. */
+  openai?: { key?: string; url?: string };
   /** OpenRouter BYO key (sk-or-…). Write-only. */
   openrouter?: { key?: string; url?: string };
   /** OmniRouter BYO key. Write-only. Optional url for a self-hosted gateway. */
@@ -84,11 +86,12 @@ export const SECRET_FIELDS = [
   { section: "composio", prop: "apiKey" },
   { section: "box", prop: "token" },
   { section: "github", prop: "token" },
+  { section: "openai", prop: "key" },
   { section: "openrouter", prop: "key" },
   { section: "omnirouter", prop: "key" },
 ] as const;
 
-const CONFIG_SECTIONS = ["xai", "composio", "box", "github", "openrouter", "omnirouter"] as const;
+const CONFIG_SECTIONS = ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter"] as const;
 
 export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};
@@ -102,6 +105,7 @@ export function loadConfig(): AppConfig {
   cfg.composio = { key: process.env.COMPOSIO_KEY, ...cfg.composio };
   cfg.box = { token: process.env.BOX_TOKEN, ...cfg.box };
   cfg.github = { token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN, ...cfg.github };
+  cfg.openai = { key: process.env.OPENAI_API_KEY, url: process.env.OPENAI_BASE_URL, ...cfg.openai };
   cfg.openrouter = { key: process.env.OPENROUTER_API_KEY, url: process.env.OPENROUTER_BASE_URL, ...cfg.openrouter };
   cfg.omnirouter = { key: process.env.OMNIROUTER_API_KEY, url: process.env.OMNIROUTER_BASE_URL, ...cfg.omnirouter };
   return cfg;
