@@ -39,13 +39,102 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { cliExec } from "../cli.ts";
-import { createAcpDriver, type AcpSupport } from "./core.ts";
+import { cliExec, killProcessTree, spawnCliHidden } from "../cli.ts";
+import { createAcpDriver, type AcpConfig, type AcpSupport } from "./core.ts";
 
 // Where gemini-cli keeps its user-scope state. settings.json's
 // security.auth.selectedType is written by every completed auth flow;
 // oauth_creds.json is the cached "Log in with Google" credential.
 const GEMINI_DIR = join(homedir(), ".gemini");
+
+// The auth method ids a live gemini-cli 0.55.1 advertises in
+// initialize.authMethods (verified 2026-08-16) — the historical trio plus
+// the newer gateway method. Advertised UNCONDITIONALLY, signed in or not,
+// so presence is not an auth signal; pinned here (and against the live CLI
+// in gemini.test.ts) so a rename shows up as a test failure, not a guess.
+export const GEMINI_AUTH_METHOD_IDS = ["oauth-personal", "gemini-api-key", "vertex-ai", "gateway"] as const;
+
+// ACP-mode argv verified live against 0.55.1: `--acp` is the current flag
+// (`--experimental-acp` still works but is documented deprecated), and
+// `--approval-mode default` + `-m <model>` compose with it (`-m` confirmed
+// to set the session's models.currentModelId).
+const ACP_ARGS = ["--acp", "--approval-mode", "default"];
+
+const ACP_AUTH_REQUIRED_CODE = -32000;
+const AUTH_PROBE_TIMEOUT = 8_000;
+
+/** Ask the CLI itself whether it is signed in: spawn the exact ACP argv a
+ * turn uses, initialize, then attempt session/new — gemini's real login
+ * gate (verified against 0.55.1: it fails with ACP auth_required -32000
+ * when no usable credential resolves, and succeeds without any network
+ * validation when one does). true/false only on a conclusive answer; a
+ * non-auth error, a spawn failure, or a timeout — the signed-out-OAuth
+ * shape hangs session/new on an interactive login flow — resolve undefined
+ * so the disk/env heuristic below stays the fallback. */
+function probeSessionAuth(config: AcpConfig, env: Record<string, string | undefined>): Promise<boolean | undefined> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawnCliHidden>;
+    try {
+      child = spawnCliHidden(config.cli, ACP_ARGS, {
+        env: env as NodeJS.ProcessEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: true,
+      });
+    } catch {
+      return resolve(undefined);
+    }
+    let done = false;
+    const finish = (v: boolean | undefined) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      killProcessTree(child.pid);
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish(undefined), AUTH_PROBE_TIMEOUT);
+    timer.unref?.();
+    const send = (obj: unknown) => {
+      try {
+        child.stdin.write(JSON.stringify(obj) + "\n");
+      } catch {
+        /* stream gone — close/timeout resolves */
+      }
+    };
+    let buf = "";
+    child.stdout.on("data", (chunk) => {
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        let msg: { id?: unknown; result?: unknown; error?: { code?: unknown } };
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue; // stderr-grade noise on stdout — keep reading
+        }
+        if (msg.id === 1) {
+          send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: homedir(), mcpServers: [] } });
+        } else if (msg.id === 2) {
+          if (msg.result !== undefined) return finish(true);
+          return finish(msg.error?.code === ACP_AUTH_REQUIRED_CODE ? false : undefined);
+        }
+      }
+    });
+    child.on("error", () => finish(undefined));
+    child.stdin.on("error", () => {
+      /* close/timeout resolves */
+    });
+    child.on("close", () => finish(undefined));
+    send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } } },
+    });
+  });
+}
 
 /** The auth method the user themselves configured (nested current schema,
  * with the pre-migration flat key as fallback); undefined when never set. */
@@ -96,12 +185,7 @@ const support: AcpSupport = {
   // `--approval-mode default` is always explicit: settings.json can set a
   // default approval mode of auto_edit/yolo, which would silently make every
   // session self-approving and never fire session/request_permission.
-  spawnArgs: (_config, turn) => [
-    "--acp",
-    "--approval-mode",
-    "default",
-    ...(turn.model ? ["-m", turn.model] : []),
-  ],
+  spawnArgs: (_config, turn) => [...ACP_ARGS, ...(turn.model ? ["-m", turn.model] : [])],
 
   // A revoked/absent Google login makes the CLI start an interactive OAuth
   // flow inside session/new; without this it opens a browser window out of
@@ -121,11 +205,20 @@ const support: AcpSupport = {
   pickAuthMethod: () => null,
   authFailure: "continue",
 
-  // Sign-in heuristic for snapshot(), keyed on the auth method the USER
-  // selected (~/.gemini/settings.json), mirroring how session/new resolves
-  // it. Tri-state: undefined = unknown, never a fabricated "signed out" —
-  // vertex/gateway credentials (ADC, custom gateways) and .env-file-seeded
-  // API keys are not probeable from one file.
+  // Sign-in truth for snapshot(): ASK THE CLI — attempt the same
+  // session/new gate a turn rides (Hermes-style: the CLI's own answer, not
+  // a file). Runs on identity-cache refresh only; the cache key still
+  // carries the isAuthenticated hint, so a login that touches the disk/env
+  // signature re-probes immediately instead of waiting out the 60s TTL.
+  probeAuthenticated: (config, env) => probeSessionAuth(config, env),
+
+  // FALLBACK heuristic only — used when the CLI probe is inconclusive
+  // (non-auth session error, or the signed-out-OAuth interactive hang).
+  // Keyed on the auth method the USER selected (~/.gemini/settings.json),
+  // mirroring how session/new resolves it. Tri-state: undefined = unknown,
+  // never a fabricated "signed out" — vertex/gateway credentials (ADC,
+  // custom gateways) and .env-file-seeded API keys are not probeable from
+  // one file.
   isAuthenticated: (env) => {
     const selected = selectedAuthType();
     if (selected === "oauth-personal") return existsSync(join(GEMINI_DIR, "oauth_creds.json"));

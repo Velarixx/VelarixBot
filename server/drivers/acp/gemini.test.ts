@@ -16,7 +16,7 @@
 // This suite runs on Windows too: the fakes are `.ts` paths, which
 // resolveCliCommand always executes via process.execPath on every platform —
 // no shebang, no chmodSync, no posixOnly.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -26,7 +26,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ensureDirs, NATIVE_DIR } from "../../config.ts";
 import type { ProviderInstance } from "../../contracts.ts";
 import { recordEvents, type EventRecorder } from "../../testing/events.ts";
-import { GeminiAgentDriver } from "./gemini.ts";
+import { probeProtocol } from "../cli.ts";
+import { GEMINI_AUTH_METHOD_IDS, GeminiAgentDriver } from "./gemini.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
 // Strict-grammar gemini, shaped like the live binary (0.55.1): rejects any
@@ -416,20 +417,45 @@ describe("Gemini spawn grammar (strict fake CLI)", () => {
     });
   });
 
+  it("signed-in truth is the CLI's own session gate — empty disk, no env key, session/new succeeds → authenticated", async () => {
+    // Hermes-parallel: whatever is (not) on disk, the CLI's own answer
+    // wins. The strict fake's session/new succeeds, so the snapshot must
+    // report signed-in even though every file/env heuristic says otherwise.
+    await createStrict();
+    const snap = await instance.snapshot();
+    expect(snap).toMatchObject({ state: "available", authenticated: true });
+    expect(snap.reason).toBeUndefined();
+  });
+
+  it("signed-out truth beats a stale env key — session/new -32000 wins over GEMINI_API_KEY in the env", async () => {
+    // the reverse direction: the heuristic would say signed-in (a key sits
+    // in the env), but the CLI's session gate says no — the CLI is asked
+    // first, the file/env heuristic is fallback only
+    await createStrict({ env: { FAKE_GEMINI_AUTH: "signed-out", GEMINI_API_KEY: "fake-key-canary" } });
+    const snap = await instance.snapshot();
+    expect(snap).toMatchObject({ state: "available", authenticated: false });
+    expect(snap.reason).toContain("GEMINI_API_KEY");
+    expect(snap.reason).not.toMatch(/gemini login/);
+  });
+
   it("one-shot generateText uses the accepted `-p` grammar", async () => {
     await createStrict();
     expect(await instance.generateText!("distill")).toBe("fake gemini one-shot");
   });
 });
 
-describe("Gemini snapshot & sign-in heuristic", () => {
+describe("Gemini snapshot & sign-in FALLBACK heuristic", () => {
+  // The CLI-asked probe (session/new gate) is the primary signal — pinned
+  // in the strict-fake suite above. This suite pins the fallback: the fake
+  // fails session/new with a generic NON-auth error, so the probe is
+  // inconclusive and the selectedType-keyed disk/env heuristic must decide.
   let instance: ProviderInstance | null = null;
 
   const create = async (env: Record<string, string> = {}) => {
     instance = await GeminiAgentDriver.create({
       instanceId: "gemini-snap",
       displayName: undefined,
-      environment: env,
+      environment: { FAKE_ACP_MODE: "session-new-error", ...env },
       enabled: true,
       config: { cli: FAKE_CLI, fullAuto: false },
     });
@@ -530,5 +556,98 @@ describe("Gemini snapshot & sign-in heuristic", () => {
     // SELECTED method, not the key
     const snap = await inst.snapshot();
     expect(snap).toMatchObject({ state: "available", authenticated: false });
+  });
+});
+
+// ── live CLI conformance ─────────────────────────────────────────────────
+// Runs only where a real `gemini` binary is installed (skipped in CI, which
+// has none) — the backing for every "verified live" claim in gemini.ts.
+// Local-only handshakes: initialize / session/new never call Google (a
+// signed-out session/new fails before any network, and the suite's sandbox
+// HOME carries no credentials), so default `pnpm test` stays offline.
+const hasGeminiCli = (() => {
+  try {
+    const r = spawnSync(process.platform === "win32" ? "where" : "which", ["gemini"], {
+      encoding: "utf8",
+      timeout: 4000,
+      windowsHide: true,
+    });
+    return r.status === 0 && Boolean(r.stdout.trim());
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!hasGeminiCli)("Gemini live CLI (skipped when `gemini` is not installed)", () => {
+  const initMessage = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } } },
+  };
+
+  it("speaks ACP on the exact spawn argv (with and without -m) and still accepts the deprecated flag", { timeout: 90_000 }, async () => {
+    // the grammar gemini.ts actually emits…
+    const bare = await probeProtocol("gemini", ["--acp", "--approval-mode", "default"], initMessage, {
+      timeoutMs: 30_000,
+    });
+    expect(bare.ok).toBe(true);
+    const withModel = await probeProtocol(
+      "gemini",
+      ["--acp", "--approval-mode", "default", "-m", "gemini-2.5-pro"],
+      initMessage,
+      { timeoutMs: 30_000 },
+    );
+    expect(withModel.ok).toBe(true);
+    // …and the deprecated `--experimental-acp` the driver used to spawn is
+    // (still) accepted by this version — documented, not relied upon
+    const deprecated = await probeProtocol("gemini", ["--experimental-acp"], initMessage, { timeoutMs: 30_000 });
+    expect(deprecated.ok).toBe(true);
+  });
+
+  it("advertises the pinned auth method ids in initialize.authMethods", { timeout: 60_000 }, async () => {
+    // the ids gemini.ts documents are pinned against the LIVE CLI here —
+    // if Google renames one, this fails instead of the driver guessing
+    const probe = await probeProtocol("gemini", ["--acp", "--approval-mode", "default"], initMessage, {
+      timeoutMs: 30_000,
+    });
+    expect(probe.ok).toBe(true);
+    const init = probe.init as { protocolVersion?: number; authMethods?: Array<{ id?: string }> } | undefined;
+    expect(init?.protocolVersion).toBe(1);
+    const ids = (init?.authMethods ?? []).map((m) => m.id);
+    for (const pinned of ["oauth-personal", "gemini-api-key", "vertex-ai"]) {
+      expect(ids).toContain(pinned);
+    }
+    // the full advertised set should stay a superset of what we pinned;
+    // NEW ids are fine (gateway arrived this way), renames are not
+    expect(ids).toEqual(expect.arrayContaining([...GEMINI_AUTH_METHOD_IDS.filter((id) => id !== "gateway")]));
+  });
+
+  it("driver snapshot against the real binary degrades honestly — never a grey-out lie", { timeout: 90_000 }, async () => {
+    const inst = await GeminiAgentDriver.create({
+      instanceId: "gemini-live",
+      displayName: undefined,
+      environment: {},
+      enabled: true,
+      config: { cli: "gemini", fullAuto: false },
+    });
+    try {
+      const snap = await inst.snapshot();
+      // a real gemini speaks ACP on our argv whatever its login state
+      expect(snap.state).toBe("available");
+      expect(snap.version).toBeTruthy();
+      if (snap.authenticated === false) {
+        // signed out (the suite's sandbox HOME has no credentials): the
+        // hint names the real sign-in paths, never an invented command
+        expect(snap.reason).toContain("GEMINI_API_KEY");
+        expect(snap.reason).not.toMatch(/gemini login/);
+      } else {
+        // signed in via ambient env (e.g. GEMINI_API_KEY on the dev
+        // machine) or inconclusive — either way, no login nag
+        expect(snap.reason).toBeUndefined();
+      }
+    } finally {
+      await inst.dispose();
+    }
   });
 });

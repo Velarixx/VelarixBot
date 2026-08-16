@@ -30,6 +30,10 @@
 //                     and FAKE_ACP_SESSION_AUTH_MESSAGE — the gemini-cli
 //                     signed-out shape, where auth methods are advertised
 //                     unconditionally and the login gate is session/new)
+//                   | session-new-error (session/new fails with a generic
+//                     -32603, NOT auth_required — an auth probe riding the
+//                     session gate must read this as inconclusive and fall
+//                     back to its disk heuristic, never as signed-out)
 //                   | ask-peer (spawn the injected "agents" MCP server from
 //                     session/new's mcpServers, call list_bots + ask_bot on a
 //                     peer, and reply with what the peer said — the comms e2e)
@@ -285,6 +289,11 @@ function handle(msg: any) {
             message: process.env.FAKE_ACP_SESSION_AUTH_MESSAGE ?? "Authentication required.",
           },
         });
+        break;
+      }
+      if (mode === "session-new-error") {
+        // a NON-auth session failure — auth probes must read "inconclusive"
+        out({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "session/new failed (not an auth error)" } });
         break;
       }
       result(msg.id, { sessionId: "fake-acp-session", ...sessionModels() });
