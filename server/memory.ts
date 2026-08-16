@@ -1,10 +1,14 @@
-// Memory v1: per-bot markdown + shared workspace notes, injected into
-// startTurn and optionally distilled after a successful turn. Distill
-// uses any live generateText hook in the fleet (Claude or Grok-API), not
-// only the bot's own driver — Codex/ACP/Box still get a memory file when
-// another capable instance exists. remember/recall and the settings
-// editor write the same files. ~/.velarixbot/memory/. No embeddings, no
-// cloud, no secrets in logs.
+// Memory v1: per-bot markdown + shared workspace notes, plus additive
+// structured rows (preference | fact | workflow). Markdown stays at
+// ~/.velarixbot/memory/{botId,workspace}.md. Rows live in SQLite
+// `memory_rows`. The unused-for-runtime v1 `memory(owner, user_text,
+// distilled_text)` table is left untouched as the markdown export
+// snapshot — not a third store, not dual-written with rows.
+//
+// Inject and recall both go through composeUserKnowledge into
+// "What you know about this user." Distill + extract run after a
+// successful turn (failures swallowed). No embeddings, no cloud, no
+// secrets or prompts in logs.
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,9 +17,68 @@ import { DATA_DIR } from "./config.ts";
 export const MEMORY_DIR = join(DATA_DIR, "memory");
 export const DISTILL_MARKER = "<!-- velarixbot:distilled -->";
 export const MEMORY_CHAR_CAP = 6_000;
+export const USER_KNOWLEDGE_HEADING = "What you know about this user.";
+export const BM25_TOP_K = 10;
+export const MEMORY_ROW_TYPES = ["preference", "fact", "workflow"] as const;
 
 export type MemoryScope = "bot" | "workspace";
 export type TextGenerator = (prompt: string) => Promise<string>;
+export type MemoryRowType = (typeof MEMORY_ROW_TYPES)[number];
+
+export function isMemoryRowType(value: string): value is MemoryRowType {
+  return (MEMORY_ROW_TYPES as readonly string[]).includes(value);
+}
+
+export interface MemoryRow {
+  id: string;
+  botId: string;
+  type: MemoryRowType;
+  text: string;
+  pinned: boolean;
+  useCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MemoryRowsStore {
+  insert(input: {
+    id?: string;
+    botId: string;
+    type: MemoryRowType;
+    text: string;
+    pinned?: boolean;
+    useCount?: number;
+    createdAt?: number;
+    updatedAt?: number;
+  }): MemoryRow;
+  get(id: string): MemoryRow | null;
+  listByBot(botId: string): MemoryRow[];
+  update(
+    id: string,
+    patch: Partial<Pick<MemoryRow, "text" | "type" | "pinned" | "useCount" | "updatedAt">>,
+  ): MemoryRow | null;
+  delete(id: string): boolean;
+  deleteByBot(botId: string): number;
+}
+
+let rowsStore: MemoryRowsStore | null = null;
+
+/** Composition root wires the SQLite row store. Tests inject a fake. */
+export function configureMemoryStore(store: MemoryRowsStore | null): void {
+  rowsStore = store;
+}
+
+export function memoryRowsStore(): MemoryRowsStore | null {
+  return rowsStore;
+}
+
+function safeListRows(botId: string): MemoryRow[] {
+  try {
+    return rowsStore?.listByBot(botId) ?? [];
+  } catch {
+    return [];
+  }
+}
 
 export function memoryDir(): string {
   mkdirSync(MEMORY_DIR, { recursive: true });
@@ -72,17 +135,199 @@ export function writeBotMemory(botId: string, parts: { user: string; distilled: 
   writeFileSync(botMemoryPath(botId), joinMemory(parts.user, parts.distilled));
 }
 
-/** System-prompt fragment. Empty when neither file has content. */
-export function memoryPrompt(botId: string): string {
-  const workspace = capMemory(readWorkspace().trim());
+export interface MemoryDocument {
+  id: string;
+  kind: "workspace" | "bot-user" | "bot-distilled" | "row";
+  botId?: string;
+  text: string;
+  label: string;
+  row?: MemoryRow;
+}
+
+/** Markdown sections + this bot's structured rows. Other botIds never appear. */
+export function collectMemoryDocuments(botId: string): MemoryDocument[] {
+  const docs: MemoryDocument[] = [];
+  const workspace = readWorkspace().trim();
+  if (workspace) {
+    docs.push({
+      id: "md:workspace",
+      kind: "workspace",
+      text: workspace,
+      label: `Shared workspace notes:\n${workspace}`,
+    });
+  }
   const bot = readBotMemory(botId);
-  const user = capMemory(bot.user.trim());
-  const distilled = capMemory(bot.distilled.trim());
+  const user = bot.user.trim();
+  const distilled = bot.distilled.trim();
+  if (user) {
+    docs.push({
+      id: `md:${botId}:user`,
+      kind: "bot-user",
+      botId,
+      text: user,
+      label: `Notes for this bot:\n${user}`,
+    });
+  }
+  if (distilled) {
+    docs.push({
+      id: `md:${botId}:distilled`,
+      kind: "bot-distilled",
+      botId,
+      text: distilled,
+      label: `Distilled notes:\n${distilled}`,
+    });
+  }
+  for (const row of safeListRows(botId)) {
+    if (row.botId !== botId) continue;
+    docs.push({
+      id: row.id,
+      kind: "row",
+      botId,
+      text: row.text,
+      label: `[${row.type}] ${row.text}`,
+      row,
+    });
+  }
+  return docs;
+}
+
+const BM25_K1 = 1.2;
+const BM25_B = 0.75;
+const DAY_MS = 86_400_000;
+
+function stem(token: string): string {
+  if (token.length > 4 && token.endsWith("ies")) return `${token.slice(0, -3)}y`;
+  if (token.length > 3 && token.endsWith("es")) return token.slice(0, -2);
+  if (token.length > 3 && token.endsWith("s")) return token.slice(0, -1);
+  return token;
+}
+
+export function tokenizeMemory(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 1)
+    .map(stem);
+}
+
+/** Recency × use. Pinned rows keep a floor so extract/decay cannot bury them. */
+export function memoryDecayScore(row: Pick<MemoryRow, "pinned" | "useCount" | "updatedAt">, now: number): number {
+  const ageDays = Math.max(0, (now - row.updatedAt) / DAY_MS);
+  const recency = 1 / (1 + ageDays);
+  const use = 1 + Math.log1p(row.useCount);
+  const base = recency * use;
+  return row.pinned ? base + 10 : base;
+}
+
+export function bm25Scores(query: string, documents: string[]): number[] {
+  const qTokens = tokenizeMemory(query);
+  if (!qTokens.length || !documents.length) return documents.map(() => 0);
+  const docs = documents.map((d) => tokenizeMemory(d));
+  const avgdl = docs.reduce((sum, d) => sum + d.length, 0) / docs.length || 1;
+  const df = new Map<string, number>();
+  for (const tok of new Set(qTokens)) {
+    df.set(tok, docs.filter((d) => d.includes(tok)).length);
+  }
+  const n = docs.length;
+  return docs.map((tokens) => {
+    if (!tokens.length) return 0;
+    const tf = new Map<string, number>();
+    for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
+    let score = 0;
+    for (const tok of qTokens) {
+      const freq = tf.get(tok) ?? 0;
+      if (!freq) continue;
+      const nq = df.get(tok) ?? 0;
+      const idf = Math.log((n - nq + 0.5) / (nq + 0.5) + 1);
+      score += idf * ((freq * (BM25_K1 + 1)) / (freq + BM25_K1 * (1 - BM25_B + BM25_B * (tokens.length / avgdl))));
+    }
+    return score;
+  });
+}
+
+export function rankMemoryDocuments(
+  docs: MemoryDocument[],
+  query: string | undefined,
+  now: number,
+): MemoryDocument[] {
+  if (!docs.length) return [];
+  if (!query?.trim()) {
+    return [...docs].sort((a, b) => {
+      const as = a.row ? memoryDecayScore(a.row, now) : 0;
+      const bs = b.row ? memoryDecayScore(b.row, now) : 0;
+      if (as !== bs) return bs - as;
+      return a.id.localeCompare(b.id);
+    });
+  }
+  const raw = bm25Scores(
+    query,
+    docs.map((d) => d.text),
+  );
+  const scored = docs.map((doc, i) => {
+    const lexical = raw[i] ?? 0;
+    const decay = doc.row ? memoryDecayScore(doc.row, now) : 1;
+    return { doc, score: lexical * decay };
+  });
+  return scored
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score || a.doc.id.localeCompare(b.doc.id))
+    .slice(0, BM25_TOP_K)
+    .map((s) => s.doc);
+}
+
+function formatRowBlock(rows: MemoryRow[]): string {
+  if (!rows.length) return "";
+  return `Structured memories:\n${rows.map((r) => `- [${r.type}]${r.pinned ? " (pinned)" : ""} ${r.text}`).join("\n")}`;
+}
+
+function bumpRetrievedRows(docs: MemoryDocument[], now: number): void {
+  if (!rowsStore) return;
+  for (const doc of docs) {
+    if (!doc.row) continue;
+    try {
+      rowsStore.update(doc.row.id, { useCount: doc.row.useCount + 1, updatedAt: now });
+    } catch {
+      /* retrieval must not fail the turn */
+    }
+  }
+}
+
+/**
+ * Single composition function for inject + recall. Markdown files are
+ * always eligible; structured rows are additive. Query uses BM25 (top 10).
+ */
+export function composeUserKnowledge(opts: { botId: string; query?: string; now?: number; bumpUse?: boolean }): string {
+  const now = opts.now ?? Date.now();
+  const docs = collectMemoryDocuments(opts.botId);
+  if (!docs.length) return opts.query?.trim() ? `No memory matching ${opts.query.trim()}.` : "";
+
+  const query = opts.query?.trim();
+  const picked = query ? rankMemoryDocuments(docs, query, now) : docs;
+  if (!picked.length) return query ? `No memory matching ${query}.` : "";
+  if (opts.bumpUse !== false && query) bumpRetrievedRows(picked, now);
+
   const chunks: string[] = [];
-  if (workspace) chunks.push(`Shared workspace notes:\n${workspace}`);
-  const botBits = [user, distilled].filter(Boolean).join("\n\n");
-  if (botBits) chunks.push(`Memory for this bot:\n${botBits}`);
-  return chunks.length ? `\n\n${chunks.join("\n\n")}` : "";
+  const workspace = picked.find((d) => d.kind === "workspace");
+  if (workspace) chunks.push(workspace.label);
+  const user = picked.find((d) => d.kind === "bot-user");
+  const distilled = picked.find((d) => d.kind === "bot-distilled");
+  if (query) {
+    if (user) chunks.push(user.label);
+    if (distilled) chunks.push(distilled.label);
+  } else {
+    const botBits = [user?.text, distilled?.text].filter(Boolean).join("\n\n");
+    if (botBits) chunks.push(`Memory for this bot:\n${botBits}`);
+  }
+  const rows = picked.filter((d) => d.kind === "row" && d.row).map((d) => d.row!);
+  const rowBlock = formatRowBlock(rows);
+  if (rowBlock) chunks.push(rowBlock);
+  if (!chunks.length) return query ? `No memory matching ${query}.` : "";
+  return capMemory(`\n\n${USER_KNOWLEDGE_HEADING}\n\n${chunks.join("\n\n")}`);
+}
+
+/** System-prompt fragment. Empty when neither markdown nor rows have content. */
+export function memoryPrompt(botId: string, now?: number): string {
+  return composeUserKnowledge({ botId, now, bumpUse: false });
 }
 
 const DISTILL_INSTRUCTIONS =
@@ -98,8 +343,15 @@ export function distillPrompt(existingDistilled: string, turnText: string): stri
   ].join("\n\n");
 }
 
+const EXTRACT_INSTRUCTIONS =
+  'You extract durable structured memories for a personal bot. Reply with only a JSON array, no heading or markdown fence. Each item is {"type":"preference"|"fact"|"workflow","text":"one short note"}. Skip chit-chat and secrets. Empty array if nothing durable.';
+
+export function extractPrompt(turnText: string): string {
+  return [EXTRACT_INSTRUCTIONS, `Turn:\n${capMemory(turnText.trim(), 4_000)}`].join("\n\n");
+}
+
 /** Prefer the bot's own generateText; otherwise any other live hook
- * (Claude CLI or Grok-API). Empty chain → undefined (distill skips). */
+ * (Claude CLI or Grok-API). Empty chain → undefined (distill/extract skip). */
 export function fleetGenerateText(
   instances: Array<{ instanceId: string; generateText?: TextGenerator }>,
   preferredInstanceId?: string,
@@ -142,6 +394,67 @@ export async function distillMemory(opts: {
   }
 }
 
+export function parseExtractedRows(raw: string): Array<{ type: MemoryRowType; text: string }> {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  const start = trimmed.indexOf("[");
+  const end = trimmed.lastIndexOf("]");
+  if (start < 0 || end <= start) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed.slice(start, end + 1));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: Array<{ type: MemoryRowType; text: string }> = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as { type?: unknown; text?: unknown };
+    const type = typeof rec.type === "string" ? rec.type : "";
+    const text = typeof rec.text === "string" ? rec.text.trim() : "";
+    if (!isMemoryRowType(type) || !text) continue;
+    out.push({ type, text });
+  }
+  return out;
+}
+
+function normalizeNote(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** After a successful turn, same swallow-failure contract as distill. */
+export async function extractMemory(opts: {
+  botId: string;
+  turnText: string;
+  generateText?: TextGenerator;
+  now?: number;
+}): Promise<void> {
+  if (!opts.generateText || !rowsStore) return;
+  const turnText = opts.turnText.trim();
+  if (!turnText) return;
+  try {
+    const out = (await opts.generateText(extractPrompt(turnText))).trim();
+    if (!out) return;
+    const items = parseExtractedRows(out);
+    if (!items.length) return;
+    const now = opts.now ?? Date.now();
+    const existing = safeListRows(opts.botId);
+    for (const item of items) {
+      const match = existing.find((row) => normalizeNote(row.text) === normalizeNote(item.text));
+      if (match?.pinned) continue;
+      if (match) {
+        rowsStore.update(match.id, { type: item.type, text: item.text, updatedAt: now });
+        continue;
+      }
+      const created = rowsStore.insert({ botId: opts.botId, type: item.type, text: item.text, createdAt: now, updatedAt: now });
+      existing.push(created);
+    }
+  } catch {
+    /* extract failure must not fail the turn — and must not log the prompt */
+  }
+}
+
 export function rememberNote(botId: string, note: string, scope: MemoryScope = "bot"): void {
   const text = note.trim();
   if (!text) return;
@@ -155,22 +468,61 @@ export function rememberNote(botId: string, note: string, scope: MemoryScope = "
   writeBotMemory(botId, { user: user ? `${user}\n${text}` : text, distilled: parts.distilled });
 }
 
-/** Plain-text recall. Optional query is a case-insensitive substring filter
- * over chunks — no embeddings. */
-export function recallMemory(botId: string, query?: string): string {
-  const workspace = readWorkspace().trim();
-  const bot = readBotMemory(botId);
-  const user = bot.user.trim();
-  const distilled = bot.distilled.trim();
-  const chunks: string[] = [];
-  if (workspace) chunks.push(`Shared workspace notes:\n${workspace}`);
-  if (user) chunks.push(`Notes for this bot:\n${user}`);
-  if (distilled) chunks.push(`Distilled notes:\n${distilled}`);
-  if (!chunks.length) return "(no memory yet)";
-  const q = query?.trim().toLowerCase();
-  const picked = q ? chunks.filter((c) => c.toLowerCase().includes(q)) : chunks;
-  if (!picked.length) return `No memory matching ${query!.trim()}.`;
-  return capMemory(picked.join("\n\n"));
+/** BM25 recall over markdown sections + this bot's rows. No embeddings. */
+export function recallMemory(botId: string, query?: string, now?: number): string {
+  const composed = composeUserKnowledge({ botId, query, now });
+  if (!composed) return "(no memory yet)";
+  return composed;
+}
+
+export function insertMemoryRow(input: {
+  botId: string;
+  type: MemoryRowType;
+  text: string;
+  pinned?: boolean;
+  id?: string;
+  now?: number;
+}): MemoryRow {
+  if (!rowsStore) throw new Error("memory row store is not configured");
+  const now = input.now ?? Date.now();
+  return rowsStore.insert({
+    id: input.id,
+    botId: input.botId,
+    type: input.type,
+    text: input.text,
+    pinned: input.pinned,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+export function pinMemoryRow(id: string, pinned = true, now?: number): MemoryRow | null {
+  if (!rowsStore) return null;
+  return rowsStore.update(id, { pinned, updatedAt: now ?? Date.now() });
+}
+
+export function editMemoryRow(id: string, text: string, now?: number): MemoryRow | null {
+  if (!rowsStore) return null;
+  return rowsStore.update(id, { text, updatedAt: now ?? Date.now() });
+}
+
+export function deleteMemoryRow(id: string): boolean {
+  return rowsStore?.delete(id) ?? false;
+}
+
+export function listMemoryRows(botId: string): MemoryRow[] {
+  return safeListRows(botId);
+}
+
+/** Per-bot forget. Does not wipe workspace.md unless scope is workspace. */
+export function forgetEverything(botId: string, scope: MemoryScope = "bot"): void {
+  try {
+    rowsStore?.deleteByBot(botId);
+  } catch {
+    /* missing store is fine */
+  }
+  deleteBotMemory(botId);
+  if (scope === "workspace") writeWorkspace("");
 }
 
 export function deleteBotMemory(botId: string): void {
@@ -179,9 +531,14 @@ export function deleteBotMemory(botId: string): void {
   } catch {
     /* missing is fine */
   }
+  try {
+    rowsStore?.deleteByBot(botId);
+  } catch {
+    /* missing store is fine */
+  }
 }
 
-/** Collect recent user/assistant text for a distill prompt. */
+/** Collect recent user/assistant text for a distill/extract prompt. */
 export function turnTextFromMessages(
   messages: Array<{ role: string; kind: string; text?: string }>,
   limit = 20,

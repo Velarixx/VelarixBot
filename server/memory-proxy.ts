@@ -40,7 +40,7 @@ const TOOLS = [
   {
     name: "recall",
     description:
-      "Read this bot's notes and the shared workspace notes. Optional query is a plain substring filter (no embeddings).",
+      "Read this bot's notes, shared workspace notes, and structured memories. Optional query is BM25 lexical retrieval (no embeddings).",
     inputSchema: {
       type: "object",
       properties: {

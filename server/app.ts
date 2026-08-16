@@ -32,6 +32,7 @@ import { createRoutinesService, type RoutinesService } from "./services/routines
 import { createTeachService, type TeachService } from "./services/teach.ts";
 import { createTurnsService, type TurnsService } from "./services/turns.ts";
 import type { ModelSelection } from "./contracts.ts";
+import { configureMemoryStore } from "./memory.ts";
 import { getSkill, skillPrompt } from "./teach.ts";
 
 const MIME: Record<string, string> = {
@@ -82,6 +83,7 @@ export interface Application {
 export async function createApplication(input: CreateApplicationInput): Promise<Application> {
   const { repos, providers: registry, bus, cfg, port, apiToken, commsToken, staticDir, stamp } = input;
   const clock: Clock = input.clock ?? { now: () => Date.now() };
+  configureMemoryStore(repos.memoryRows);
 
   // the hub's semantic frames are durable on the event log's "ui" stream
   // (P1.3): SSE id:/Last-Event-ID resume replays exactly the missed frames

@@ -1,6 +1,7 @@
 // P2.6 memory retrieval evals (GATE). Deterministic cases over a fixed
-// fixture corpus — substring recall + whole-file inject as they exist
-// today. No live model, no new ranker, no Playwright chat flow.
+// fixture corpus — BM25 recall + whole-file markdown inject composed
+// with structured rows (none in this fixture). No live model, no
+// Playwright chat flow. Markdown files remain the v1 source.
 // Runs in existing ci.yml via `pnpm test` (eval/**/*.test.ts).
 // Assertions report only missing/leaked tokens — never the corpus text,
 // distill prompts, or memory file contents.
@@ -11,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "../server/config.ts";
-import { memoryPrompt, recallMemory, writeBotMemory, writeWorkspace } from "../server/memory.ts";
+import { composeUserKnowledge, memoryPrompt, recallMemory, writeBotMemory, writeWorkspace } from "../server/memory.ts";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(ROOT, "retrieval", "fixture.json");
@@ -52,6 +53,7 @@ function seedCorpus(): void {
 }
 
 function retrieve(c: RetrievalCase): string {
+  // One composition function for inject + recall — split-brain guard.
   if (c.mode === "inject") return memoryPrompt(c.botId);
   return recallMemory(c.botId, c.query);
 }
@@ -89,6 +91,11 @@ describe("P2.6 memory retrieval evals", () => {
     const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
     expect(src).not.toMatch(/console\.(log|info|debug|dir|table)\(/);
     expect(src).not.toMatch(/\bimport\b[^;]*\bdistill/);
+  });
+
+  it("inject and recall share composeUserKnowledge", () => {
+    expect(memoryPrompt("bot-a")).toBe(composeUserKnowledge({ botId: "bot-a", bumpUse: false }));
+    expect(recallMemory("bot-a", "Austin")).toBe(composeUserKnowledge({ botId: "bot-a", query: "Austin" }));
   });
 
   for (const c of fixture.cases) {
