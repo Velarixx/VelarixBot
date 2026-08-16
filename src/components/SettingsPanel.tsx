@@ -35,7 +35,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const patch = (
     p: Partial<
-      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "iconShape" | "requireApproval" | "enabledApps" | "skillId">
+      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "iconShape" | "requireApproval" | "alwaysAllow" | "enabledApps" | "skillId">
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   const activeState = stateForBot(bot);
@@ -417,9 +417,37 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 
           <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
             <div>
+              <div className="text-[15px] font-medium text-ink">Always allow</div>
+              <div className="mt-0.5 text-[13px] text-ink-secondary">
+                Let this bot do routine reads, writes, tool calls, and connected-app actions without
+                asking. Only this bot — never workspace-wide. Sign-in and credential requests still ask
+                you, and Require approval below overrides this.
+              </div>
+            </div>
+            <button
+              role="switch"
+              aria-label="Always allow"
+              aria-checked={bot.alwaysAllow === true}
+              onClick={() => patch({ alwaysAllow: !bot.alwaysAllow })}
+              className={cn(
+                "relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors",
+                bot.alwaysAllow ? "bg-accent" : "bg-raised",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-[3px] size-5 rounded-full bg-white transition-all",
+                  bot.alwaysAllow ? "left-[21px]" : "left-[3px]",
+                )}
+              />
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
+            <div>
               <div className="text-[15px] font-medium text-ink">Require approval</div>
               <div className="mt-0.5 text-[13px] text-ink-secondary">
-                Always show a permission card, even when a stored Allow or full auto would skip it
+                Always show a permission card, even when a stored Allow, Always allow, or full auto would skip it
               </div>
             </div>
             <button

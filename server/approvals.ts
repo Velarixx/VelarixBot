@@ -256,18 +256,28 @@ export function resolveOpenedRequest(
 }
 
 /** Skip stored Allow when the bot's Require-approval toggle is on, and
- * never auto-resolve credential/sign-in asks no matter what rules exist. */
+ * never auto-resolve credential/sign-in asks no matter what rules exist.
+ * The bot's Always-allow settings toggle (`bot.alwaysAllow`) resolves to
+ * allow AFTER explicit rules — a stored deny rule still wins — and is
+ * scoped to this one bot: it writes no rule, no workspace grant, and no
+ * `*` matcher anywhere. Every auto-decision lands in the audit log. */
 export function autoResolvePermission(
-  bot: { id: string; requireApproval?: boolean },
+  bot: { id: string; requireApproval?: boolean; alwaysAllow?: boolean },
   tool: string,
   summary: string,
 ): { behavior: RuleAction; source: "rule" } | null {
   if (bot.requireApproval === true) return null;
   if (isCredentialAsk("permission", tool, summary)) return null;
   const rule = matchRule(bot.id, tool, summary);
-  if (!rule) return null;
-  appendAudit({ bot: bot.id, tool, matcher: rule.pattern, decision: `rule.${rule.action}`, ruleId: rule.id });
-  return { behavior: rule.action, source: "rule" };
+  if (rule) {
+    appendAudit({ bot: bot.id, tool, matcher: rule.pattern, decision: `rule.${rule.action}`, ruleId: rule.id });
+    return { behavior: rule.action, source: "rule" };
+  }
+  if (bot.alwaysAllow === true) {
+    appendAudit({ bot: bot.id, tool, matcher: argumentPattern(summary), decision: "bot.always-allow" });
+    return { behavior: "allow", source: "rule" };
+  }
+  return null;
 }
 
 // ── append-only audit log ────────────────────────────────────────────────

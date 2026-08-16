@@ -774,10 +774,13 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     }
     const configured = cfg.instances?.[bot.modelSelection.instanceId];
     const fullAuto = configured?.config && typeof configured.config === "object" && (configured.config as { fullAuto?: unknown }).fullAuto === true;
-    if (bot.computer === "local" && fullAuto) {
-      bots.patchBot(bot.id, { state: "BLOCKED", stateDetail: "local computer cannot be combined with provider full-auto" });
+    // per-bot Always allow is the same hazard class as provider full-auto:
+    // no cards while driving THIS machine is never a valid combination
+    if (bot.computer === "local" && (fullAuto || bot.alwaysAllow === true)) {
+      const what = fullAuto ? "provider full-auto" : "Always allow";
+      bots.patchBot(bot.id, { state: "BLOCKED", stateDetail: `local computer cannot be combined with ${what}` });
       proactive.noteState(bot.id, "BLOCKED");
-      throw Object.assign(new Error("unsafe configuration: local computer cannot be combined with provider full-auto"), { status: 409 });
+      throw Object.assign(new Error(`unsafe configuration: local computer cannot be combined with ${what}`), { status: 409 });
     }
 
     const userMessage = store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
