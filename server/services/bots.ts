@@ -3,9 +3,19 @@
 // deletion cascade), now over the SQLite repositories.
 import { rmSync } from "node:fs";
 
+import {
+  avatarPrompt,
+  collectAvatarHashes,
+  generateAvatarImagesForConfig,
+  validBlobHash,
+  type AvatarCandidate,
+  type AvatarProvider,
+  type GenerateAvatarImages,
+} from "../avatar-image.ts";
 import { seedAvatar, validAvatarNonce } from "../avatar-seed.ts";
 import { normalizeComputerBinding } from "../computer/provider.ts";
-import { botWorkspaceDir } from "../config.ts";
+import { botWorkspaceDir, type AppConfig } from "../config.ts";
+import { deleteBlob, readBlob } from "../db/blobs.ts";
 import { newId, type ModelSelection } from "../contracts.ts";
 import type { Repositories } from "../repositories/index.ts";
 import {
@@ -41,6 +51,12 @@ export interface BotsService {
   messagesFor(threadId: string): Message[];
   appendMessage(threadId: string, message: Omit<Message, "id" | "at"> & { at?: number }): Message;
   patchMessage(threadId: string, id: string, patch: Partial<Message>): Message | null;
+  generateAvatar(
+    id: string,
+    opts: { cfg: AppConfig; requested?: string | null; generate?: GenerateAvatarImages },
+  ): Promise<{ provider: AvatarProvider; prompt: string; candidates: AvatarCandidate[]; bot: BotRecord }>;
+  /** Accepted raster, or a candidate hash this bot still references. */
+  readAvatar(id: string, hash?: string | null): { bytes: Buffer; mime: string } | null;
 }
 
 export function createBotsService(opts: {
@@ -138,6 +154,17 @@ export function createBotsService(opts: {
         if (patch.iconShape === undefined) next.iconShape = face.iconShape;
         if (patch.mascotExpression === undefined) next.mascotExpression = face.mascotExpression;
       }
+      if (Object.prototype.hasOwnProperty.call(patch, "avatarImageHash")) {
+        if (patch.avatarImageHash == null || patch.avatarImageHash === "") {
+          delete next.avatarImageHash;
+        } else if (!validBlobHash(patch.avatarImageHash)) invalid("avatarImageHash");
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "avatarCandidates")) {
+        if (patch.avatarCandidates == null) delete next.avatarCandidates;
+        else if (!Array.isArray(patch.avatarCandidates) || !patch.avatarCandidates.every(validBlobHash)) {
+          invalid("avatarCandidates");
+        }
+      }
       if (patch.computer !== undefined) {
         const binding = normalizeComputerBinding(patch.computer);
         if (!validComputerBinding(binding)) throw new Error(`invalid computer binding "${binding}"`);
@@ -156,6 +183,12 @@ export function createBotsService(opts: {
         else delete b.skillId;
       }
       Object.assign(b, next);
+      if (Object.prototype.hasOwnProperty.call(patch, "avatarImageHash") && (patch.avatarImageHash == null || patch.avatarImageHash === "")) {
+        delete b.avatarImageHash;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "avatarCandidates") && patch.avatarCandidates == null) {
+        delete b.avatarCandidates;
+      }
       // a write that matched no row must not report success — the caller
       // would broadcast/answer with a record the store does not hold. The
       // bot is gone, so this is a 404 to HTTP callers, never a 500.
@@ -213,6 +246,39 @@ export function createBotsService(opts: {
     messagesFor: (threadId) => repos.messages.forThread(threadId),
     appendMessage: (threadId, message) => repos.messages.append(threadId, message),
     patchMessage: (threadId, id, patch) => repos.messages.patch(threadId, id, patch),
+    async generateAvatar(id, opts) {
+      const bot = repos.bots.get(id);
+      if (!bot) return Promise.reject(Object.assign(new Error("no such bot"), { status: 404 }));
+      const prompt = avatarPrompt(bot);
+      const previous = new Set(bot.avatarCandidates ?? []);
+      const { provider, candidates } = await generateAvatarImagesForConfig(opts.cfg, {
+        prompt,
+        requested: opts.requested,
+        generate: opts.generate,
+      });
+      const hashes = candidates.map((c) => c.hash);
+      const patched = service.patchBot(id, { avatarCandidates: hashes })!;
+      // drop previous candidates this bot (and no one else) no longer names
+      const keep = collectAvatarHashes(repos.bots.list());
+      for (const hash of previous) {
+        if (keep.has(hash)) continue;
+        if (repos.messages.blobRefCount(hash) > 0) continue;
+        deleteBlob(hash);
+      }
+      return { provider, prompt, candidates, bot: patched };
+    },
+    readAvatar(id, hash) {
+      const bot = repos.bots.get(id);
+      if (!bot) return null;
+      const want = hash && validBlobHash(hash) ? hash : bot.avatarImageHash;
+      if (!validBlobHash(want)) return null;
+      const allowed = new Set<string>([...(bot.avatarCandidates ?? [])]);
+      if (validBlobHash(bot.avatarImageHash)) allowed.add(bot.avatarImageHash);
+      if (!allowed.has(want)) return null;
+      const bytes = readBlob(want);
+      if (!bytes) return null;
+      return { bytes, mime: "image/png" };
+    },
   };
   return service;
 }

@@ -9,8 +9,11 @@ import { DATA_DIR } from "../config.ts";
 import { blobsDir } from "../db/blobs.ts";
 import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
+import { putBlob } from "../db/blobs.ts";
+import { zeroUsage } from "../store.ts";
 import { createEventLogRepository } from "./event-log.ts";
 import { createMessagesRepository } from "./messages.ts";
+import { createRepositories } from "./index.ts";
 
 const PNG_BASE64 = Buffer.from("not-really-a-png-but-bytes-are-bytes").toString("base64");
 
@@ -123,5 +126,51 @@ describe("messages repository", () => {
     expect(existsSync(join(blobsDir(), hash))).toBe(true); // t-b still refs it
     messages.deleteThread("t-b");
     expect(existsSync(join(blobsDir(), hash))).toBe(false);
+  });
+
+  it("screenshot GC does not delete an avatar blob the bot still references", () => {
+    const repos = createRepositories(db);
+    const avatarHash = putBlob(Buffer.from("bot-avatar-raster"));
+    const bot = {
+      id: "bot-avatar",
+      threadId: "t-avatar",
+      name: "Face",
+      title: "",
+      description: "",
+      notifications: true,
+      color: "blue" as const,
+      iconShape: "cursor" as const,
+      unread: false,
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+      resumeCursors: {},
+      computer: "off",
+      busy: false,
+      state: "IDLE" as const,
+      usage: zeroUsage(),
+      createdAt: Date.now(),
+      avatarImageHash: avatarHash,
+    };
+    repos.bots.insert(bot);
+    repos.messages.append("t-avatar", { role: "bot", kind: "screen", png: PNG_BASE64 });
+    const shotHash = createHash("sha256").update(Buffer.from(PNG_BASE64, "base64")).digest("hex");
+    expect(shotHash).not.toBe(avatarHash);
+
+    const other = {
+      ...bot,
+      id: "bot-other",
+      threadId: "t-other",
+      avatarImageHash: undefined,
+    };
+    repos.bots.insert(other);
+    repos.messages.append("t-other", { role: "bot", kind: "screen", png: PNG_BASE64 });
+
+    // screenshot GC of the other thread must not take the avatar
+    expect(repos.deleteBotCascade(other.id)).toBe(true);
+    expect(existsSync(join(blobsDir(), shotHash))).toBe(true); // t-avatar still refs it
+    expect(existsSync(join(blobsDir(), avatarHash))).toBe(true);
+
+    expect(repos.deleteBotCascade(bot.id)).toBe(true);
+    expect(existsSync(join(blobsDir(), avatarHash))).toBe(false);
+    expect(existsSync(join(blobsDir(), shotHash))).toBe(false);
   });
 });

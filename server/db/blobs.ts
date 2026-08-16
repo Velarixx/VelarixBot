@@ -14,7 +14,11 @@ export function blobsDir(): string {
   return join(DATA_DIR, "blobs");
 }
 
-const HASH_RE = /^[0-9a-f]{64}$/;
+export const HASH_RE = /^[0-9a-f]{64}$/;
+
+export function validBlobHash(v: unknown): v is string {
+  return typeof v === "string" && HASH_RE.test(v);
+}
 
 export function blobPath(hash: string): string {
   if (!HASH_RE.test(hash)) throw new Error("invalid blob hash");
@@ -25,9 +29,8 @@ export function hashBytes(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** Store base64 content; returns its content hash. Idempotent. */
-export function putBlobBase64(base64: string): string {
-  const bytes = Buffer.from(base64, "base64");
+/** Store raw bytes; returns the content hash. Idempotent. */
+export function putBlob(bytes: Buffer): string {
   const hash = hashBytes(bytes);
   const path = blobPath(hash);
   if (!existsSync(path)) {
@@ -37,13 +40,24 @@ export function putBlobBase64(base64: string): string {
   return hash;
 }
 
-/** Read a blob back as base64, or null when the file is missing. */
-export function readBlobBase64(hash: string): string | null {
+/** Store base64 content; returns its content hash. Idempotent. */
+export function putBlobBase64(base64: string): string {
+  return putBlob(Buffer.from(base64, "base64"));
+}
+
+/** Read a blob back as bytes, or null when the file is missing. */
+export function readBlob(hash: string): Buffer | null {
   try {
-    return readFileSync(blobPath(hash)).toString("base64");
+    return readFileSync(blobPath(hash));
   } catch {
     return null;
   }
+}
+
+/** Read a blob back as base64, or null when the file is missing. */
+export function readBlobBase64(hash: string): string | null {
+  const bytes = readBlob(hash);
+  return bytes ? bytes.toString("base64") : null;
 }
 
 export function deleteBlob(hash: string): void {

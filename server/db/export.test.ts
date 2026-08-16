@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "../config.ts";
+import { putBlob } from "./blobs.ts";
 import { createRepositories, type Repositories } from "../repositories/index.ts";
 import { openDatabase } from "./database.ts";
 import { EXPORT_TABLES, exportNdjson, restoreNdjson } from "./export.ts";
@@ -31,6 +32,7 @@ function populate(repos: Repositories): void {
     state: "IDLE",
     usage: { input: 0, output: 0, cost: null },
     createdAt: 1_700_000_000_000,
+    avatarImageHash: putBlob(Buffer.from("export-me-avatar")),
   });
   repos.messages.append("thread-1", { role: "user", kind: "text", text: "hello" });
   repos.messages.append("thread-1", { role: "bot", kind: "screen", png: PNG_BASE64, mime: "image/png" });
@@ -102,7 +104,7 @@ describe("NDJSON export / restore", () => {
     const exportPath = join(DATA_DIR, "export.ndjson");
     const exported = exportNdjson(source, exportPath);
     expect(exported.rows).toBeGreaterThan(0);
-    expect(exported.blobs).toBe(1);
+    expect(exported.blobs).toBe(2);
 
     // the export is self-contained: wipe the blob store and prove restore
     // brings the screenshot bytes back

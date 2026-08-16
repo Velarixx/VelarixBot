@@ -6,6 +6,16 @@ import { normalizeComputerBinding } from "./computer/provider.ts";
 import type { ModelSelection, ThreadId } from "./contracts.ts";
 import { isValidTimeZone, zonedNextClockRun } from "./timezone.ts";
 
+const BLOB_HASH_RE = /^[0-9a-f]{64}$/;
+function validStoredHash(v: unknown): v is string {
+  return typeof v === "string" && BLOB_HASH_RE.test(v);
+}
+function validStoredHashList(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out = v.filter((h): h is string => validStoredHash(h));
+  return out.length ? out : undefined;
+}
+
 export type MausColor = "green" | "blue" | "red" | "orange" | "purple" | "cyan" | "pink" | "yellow" | "teal" | "coral";
 export type MausExpression = string;
 export const ICON_SHAPES = ["cursor", "blob", "circle", "squircle", "diamond", "hexagon", "teardrop", "shield"] as const;
@@ -49,6 +59,12 @@ export interface BotRecord {
    * nonce means the same face regenerates after any reload or PATCH
    * round-trip, with zero keys and zero raster storage. */
   avatarNonce?: number;
+  /** A2 accepted raster: sha256 of bytes in ~/.velarixbot/blobs/<hash>.
+   * Missing/null = vector mascot fallback. Never store image bytes here. */
+  avatarImageHash?: string | null;
+  /** Last generate batch (hashes only). Lets the picker survive a reload
+   * and keeps screenshot GC from deleting unused candidates. */
+  avatarCandidates?: string[];
   /** Computer provider BINDING: "off", "local", or a configured provider id
    * (e.g. "box"). Legacy "cloud" records normalize to "box". A binding to a
    * provider that is no longer configured stays on the record and simply
@@ -139,6 +155,8 @@ export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } 
     state: crashed ? "BLOCKED" : STATES.has(b.state as BotState) ? b.state! : "IDLE", ...(crashed ? { stateDetail: "interrupted" } : b.stateDetail ? { stateDetail: b.stateDetail } : {}),
     usage: validUsage(b.usage), currentTurnUsage: b.currentTurnUsage ? validUsage(b.currentTurnUsage) : undefined, createdAt: Number.isFinite(b.createdAt) ? b.createdAt! : Date.now(),
     ...(typeof b.avatarNonce === "number" && Number.isInteger(b.avatarNonce) && b.avatarNonce >= 0 ? { avatarNonce: b.avatarNonce } : {}),
+    ...(validStoredHash(b.avatarImageHash) ? { avatarImageHash: b.avatarImageHash } : {}),
+    ...(validStoredHashList(b.avatarCandidates) ? { avatarCandidates: validStoredHashList(b.avatarCandidates) } : {}),
     ...(typeof b.mascotPinned === "boolean" ? { mascotPinned: b.mascotPinned } : {}),
     ...(b.requireApproval === true ? { requireApproval: true } : {}),
     ...(b.alwaysAllow === true ? { alwaysAllow: true } : {}),

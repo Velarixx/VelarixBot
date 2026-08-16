@@ -6,12 +6,14 @@ import { Check, Loader2 } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 
-export type ConfigSection = "composio" | "composioApi" | "box" | "github" | "openrouter" | "omnirouter";
+export type ConfigSection = "xai" | "openai" | "composio" | "composioApi" | "box" | "github" | "openrouter" | "omnirouter";
 
 const SECTIONS: Record<
   ConfigSection,
   { body: (value: string) => unknown; flag: (config: ConfigStatus) => boolean }
 > = {
+  xai: { body: (v) => ({ xai: { key: v } }), flag: (c) => c.xai?.configured ?? false },
+  openai: { body: (v) => ({ openai: { key: v } }), flag: (c) => c.openai?.configured ?? false },
   composio: { body: (v) => ({ composio: { key: v } }), flag: (c) => c.composio.configured },
   composioApi: {
     body: (v) => ({ composio: { apiKey: v } }),

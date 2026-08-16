@@ -23,7 +23,8 @@ import type { TeachService } from "../services/teach.ts";
 import type { TurnsService } from "../services/turns.ts";
 import { acceptSuggestion, isSuggestionAccept, isSuggestionCard } from "../suggestions.ts";
 import { deleteSkill, getRecordingSession, getSkill, listTeachSessions, loadSkills, saveSkill } from "../teach.ts";
-import { json, readBody, type RouteHandler } from "./context.ts";
+import type { GenerateAvatarImages } from "../avatar-image.ts";
+import { json, readBody, sendBytes, type RouteHandler } from "./context.ts";
 
 export function createBotsRoutes(deps: {
   bots: BotsService;
@@ -34,8 +35,9 @@ export function createBotsRoutes(deps: {
   computers: ComputerRegistry;
   cfg: AppConfig;
   broadcast: Broadcast;
+  generateAvatarImages?: GenerateAvatarImages;
 }): RouteHandler {
-  const { bots, turns, teach, routines, registry, computers, cfg, broadcast } = deps;
+  const { bots, turns, teach, routines, registry, computers, cfg, broadcast, generateAvatarImages } = deps;
   return async ({ req, res, path, method }) => {
     // ── per-bot + shared workspace memory (markdown + structured rows) ──
     const memoryMatch = path.match(/^\/api\/bots\/([\w-]+)\/memory$/);
@@ -235,9 +237,10 @@ export function createBotsRoutes(deps: {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: Record<string, unknown> = {};
-      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "mascotPinned", "iconShape", "avatarNonce", "pinned", "hidden", "requireApproval", "alwaysAllow", "enabledApps", "skillId", "threadParticipants"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "mascotPinned", "iconShape", "avatarNonce", "avatarImageHash", "pinned", "hidden", "requireApproval", "alwaysAllow", "enabledApps", "skillId", "threadParticipants"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
+      if (body.avatarImageHash === null) patch.avatarImageHash = null;
       if (patch.enabledApps !== undefined) patch.enabledApps = parseAllowedToolkits(patch.enabledApps);
       // bot.computer is a provider BINDING — canonicalize (legacy "cloud" →
       // the bundled box binding) and reject anything not registered, so a
@@ -306,6 +309,45 @@ export function createBotsRoutes(deps: {
       json(res, 200, { bot });
       return true;
     }
+    const generateMatch = path.match(/^\/api\/bots\/([\w-]+)\/avatar\/generate$/);
+    if (generateMatch && method === "POST") {
+      if (!bots.bot(generateMatch[1])) {
+        json(res, 404, { error: "no such bot" });
+        return true;
+      }
+      const body = await readBody(req).catch(() => ({}));
+      const requested = typeof body.provider === "string" ? body.provider : undefined;
+      const result = await bots.generateAvatar(generateMatch[1], { cfg, requested, generate: generateAvatarImages });
+      broadcast({ kind: "bot", bot: result.bot });
+      json(res, 200, {
+        provider: result.provider,
+        prompt: result.prompt,
+        candidates: result.candidates,
+        bot: result.bot,
+      });
+      return true;
+    }
+    const avatarHashMatch = path.match(/^\/api\/bots\/([\w-]+)\/avatar\/([0-9a-f]{64})$/);
+    if (avatarHashMatch && method === "GET") {
+      const image = bots.readAvatar(avatarHashMatch[1], avatarHashMatch[2]);
+      if (!image) {
+        json(res, 404, { error: "no such avatar" });
+        return true;
+      }
+      sendBytes(res, 200, image.bytes, image.mime);
+      return true;
+    }
+    const avatarMatch = path.match(/^\/api\/bots\/([\w-]+)\/avatar$/);
+    if (avatarMatch && method === "GET") {
+      const image = bots.readAvatar(avatarMatch[1]);
+      if (!image) {
+        json(res, 404, { error: "no raster avatar" });
+        return true;
+      }
+      sendBytes(res, 200, image.bytes, image.mime);
+      return true;
+    }
+
     m = path.match(/^\/api\/bots\/([\w-]+)$/);
     if (m && method === "DELETE") {
       const removed = await turns.removeSidebarBot(m[1]);

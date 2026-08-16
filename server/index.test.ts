@@ -128,6 +128,7 @@ beforeAll(async () => {
         OMB_PORT: String(PORT),
         OMB_COMMS_TOKEN: COMMS_TOKEN,
         VELARIX_DEV_TOKEN: API_TOKEN,
+        VELARIX_AVATAR_IMAGE_FAKE: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -299,6 +300,77 @@ describe("harness HTTP API", () => {
     expect(deleted.status).toBe(200);
   });
 
+  it("generates four avatar candidates behind the launch token, stores blobs, and serves the accepted raster", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    expect(bot.avatarImageHash).toBeFalsy();
+
+    const denied = await fetch(`${BASE}/api/bots/${bot.id}/avatar/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(denied.status).toBe(401);
+
+    const generated = await api("POST", `/api/bots/${bot.id}/avatar/generate`, {});
+    expect(generated.status).toBe(200);
+    expect(generated.body.provider).toBe("xai");
+    expect(generated.body.prompt).toContain(bot.name);
+    expect(generated.body.candidates).toHaveLength(4);
+    const hashes = generated.body.candidates.map((c: { hash: string }) => c.hash);
+    expect(new Set(hashes).size).toBe(4);
+    expect(JSON.stringify(generated.body)).not.toMatch(/iVBORw0KGgo/);
+    expect(JSON.stringify(generated.body)).not.toContain(SEEDED_XAI_KEY);
+
+    const blobDir = join(home, ".velarixbot", "blobs");
+    for (const hash of hashes) expect(existsSync(join(blobDir, hash))).toBe(true);
+
+    const picked = hashes[0] as string;
+    const accepted = await api("PATCH", `/api/bots/${bot.id}`, { avatarImageHash: picked });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.bot.avatarImageHash).toBe(picked);
+    expect(JSON.stringify(accepted.body.bot)).not.toMatch(/iVBORw0KGgo/);
+
+    const listed = await api("GET", "/api/bots");
+    expect(listed.body.bots.find((b: { id: string }) => b.id === bot.id).avatarImageHash).toBe(picked);
+
+    const img = await fetch(`${BASE}/api/bots/${bot.id}/avatar`, {
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+    });
+    expect(img.status).toBe(200);
+    expect(img.headers.get("content-type")).toMatch(/image\//);
+    const bytes = Buffer.from(await img.arrayBuffer());
+    expect(bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))).toBe(true);
+
+    const unauthImg = await fetch(`${BASE}/api/bots/${bot.id}/avatar`);
+    expect(unauthImg.status).toBe(401);
+
+    const cleared = await api("PATCH", `/api/bots/${bot.id}`, { avatarImageHash: null });
+    expect(cleared.body.bot.avatarImageHash).toBeFalsy();
+
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
+  it("refuses generate when no image key is configured and leaves the seeded face intact", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const face = { color: bot.color, iconShape: bot.iconShape, avatarNonce: bot.avatarNonce };
+
+    await api("PUT", "/api/config", { xai: { key: "" } });
+    const none = await api("POST", `/api/bots/${bot.id}/avatar/generate`, {});
+    expect(none.status).toBe(409);
+    expect(none.body.error).toMatch(/no image provider/i);
+
+    const after = await api("GET", "/api/bots");
+    const still = after.body.bots.find((b: { id: string }) => b.id === bot.id);
+    expect(still).toMatchObject(face);
+    expect(still.avatarImageHash).toBeFalsy();
+
+    // restore the key so later tests that assume xai configured stay green
+    await api("PUT", "/api/config", { xai: { key: ["fake", "restored", "xai", Date.now().toString(36)].join("-") } });
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
   it("persists an answered onboarding card", async () => {
     const { body } = await api("GET", "/api/bots");
     const bot = body.bots[0];
@@ -342,6 +414,14 @@ describe("harness HTTP API", () => {
     const githubGet = await api("GET", "/api/config");
     expect(githubGet.body.github).toEqual({ configured: true });
     expect(JSON.stringify(githubGet.body)).not.toContain("ghp_test_secret_token");
+
+    const openai = await api("PUT", "/api/config", { openai: { key: "sk-test-secret-openai" } });
+    expect(openai.status).toBe(200);
+    expect(openai.body.openai).toEqual({ configured: true });
+    expect(JSON.stringify(openai.body)).not.toContain("sk-test-secret-openai");
+    const openaiGet = await api("GET", "/api/config");
+    expect(openaiGet.body.openai).toEqual({ configured: true });
+    expect(JSON.stringify(openaiGet.body)).not.toContain("sk-test-secret-openai");
 
     const or = await api("PUT", "/api/config", { openrouter: { key: "sk-or-v1-secret-openrouter" } });
     expect(or.status).toBe(200);
