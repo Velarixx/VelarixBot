@@ -10,6 +10,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { seedAvatar } from "./avatar-seed.ts";
+
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SERVER_DIR, "..");
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
@@ -241,6 +243,50 @@ describe("harness HTTP API", () => {
     expect(deleted.status).toBe(200);
     const after = await api("GET", "/api/bots");
     expect(after.body.bots.find((b: { id: string }) => b.id === bot.id)).toBeUndefined();
+  });
+
+  it("seeds the avatar at create and regenerates the same face from the persisted nonce", async () => {
+    const created = await api("POST", "/api/bots");
+    expect(created.status).toBe(201);
+    const bot = created.body.bot;
+    // create derives from the seed, and the seed is on the record
+    expect(bot.avatarNonce).toBe(0);
+    const birth = seedAvatar({ botId: bot.id, nonce: 0 });
+    expect(bot.color).toBe(birth.color);
+    expect(bot.iconShape).toBe(birth.iconShape);
+
+    // re-roll over the SAME gated PATCH route every other bot field uses
+    const denied = await fetch(`${BASE}/api/bots/${bot.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ avatarNonce: 5 }),
+    });
+    expect(denied.status).toBe(401);
+
+    const face = seedAvatar({ botId: bot.id, nonce: 5 });
+    const patched = await api("PATCH", `/api/bots/${bot.id}`, { avatarNonce: 5 });
+    expect(patched.status).toBe(200);
+    expect(patched.body.bot).toMatchObject({
+      avatarNonce: 5,
+      color: face.color,
+      iconShape: face.iconShape,
+      mascotExpression: face.mascotExpression,
+    });
+
+    // GET returns the persisted seed AND the derived face — reload-safe
+    const listed = await api("GET", "/api/bots");
+    expect(listed.body.bots.find((b: { id: string }) => b.id === bot.id)).toMatchObject({
+      avatarNonce: 5,
+      color: face.color,
+      iconShape: face.iconShape,
+      mascotExpression: face.mascotExpression,
+    });
+
+    const bad = await api("PATCH", `/api/bots/${bot.id}`, { avatarNonce: -3 });
+    expect(bad.status).toBe(400);
+
+    const deleted = await api("DELETE", `/api/bots/${bot.id}`);
+    expect(deleted.status).toBe(200);
   });
 
   it("persists an answered onboarding card", async () => {

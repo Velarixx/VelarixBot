@@ -4,6 +4,7 @@
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { seedAvatar } from "../avatar-seed.ts";
 import { DATA_DIR } from "../config.ts";
 import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
@@ -44,11 +45,56 @@ describe("bots service", () => {
     expect(bots.messagesFor(bot.threadId).map((m) => m.kind)).toEqual(["text", "options"]);
   });
 
-  it("rotates colors and icon shapes", () => {
-    const first = bots.createBot();
-    const second = bots.createBot();
-    expect(first.color).not.toBe(second.color);
-    expect(first.iconShape).not.toBe(second.iconShape);
+  it("derives a new bot's face from its persisted seed (botId + nonce 0), not count rotation", () => {
+    const bot = bots.createBot();
+    expect(bot.avatarNonce).toBe(0);
+    const face = seedAvatar({ botId: bot.id, nonce: 0 });
+    expect(bot.color).toBe(face.color);
+    expect(bot.iconShape).toBe(face.iconShape);
+    // expression stays live (unpinned) at birth
+    expect(bot.mascotExpression ?? null).toBeNull();
+  });
+
+  it("re-rolls the face deterministically on an avatarNonce patch and it survives restart", () => {
+    const bot = bots.createBot();
+    const face = seedAvatar({ botId: bot.id, nonce: 7 });
+    const patched = bots.patchBot(bot.id, { avatarNonce: 7 })!;
+    expect(patched).toMatchObject({
+      avatarNonce: 7,
+      color: face.color,
+      iconShape: face.iconShape,
+      mascotExpression: face.mascotExpression,
+    });
+    const restarted = reopened();
+    expect(restarted.bot(bot.id)).toMatchObject({
+      avatarNonce: 7,
+      color: face.color,
+      iconShape: face.iconShape,
+      mascotExpression: face.mascotExpression,
+    });
+    // patching the SAME nonce again regenerates the SAME face
+    expect(restarted.patchBot(bot.id, { avatarNonce: 7 })).toMatchObject({
+      color: face.color,
+      iconShape: face.iconShape,
+      mascotExpression: face.mascotExpression,
+    });
+  });
+
+  it("an explicit pick in the same patch beats the seed derivation", () => {
+    const bot = bots.createBot();
+    const face = seedAvatar({ botId: bot.id, nonce: 2 });
+    const explicit = face.color === "pink" ? "teal" : "pink";
+    const patched = bots.patchBot(bot.id, { avatarNonce: 2, color: explicit })!;
+    expect(patched.color).toBe(explicit);
+    expect(patched.iconShape).toBe(face.iconShape);
+  });
+
+  it("rejects a damaged avatarNonce as a 400 patch, never a silent write", () => {
+    const bot = bots.createBot();
+    for (const bad of [-1, 1.5, "3", null]) {
+      expect(() => bots.patchBot(bot.id, { avatarNonce: bad as unknown as number })).toThrow(/invalid bot patch: avatarNonce/);
+    }
+    expect(bots.bot(bot.id)).toMatchObject({ avatarNonce: 0 });
   });
 
   it("persists messages, cursors, usage, and notify overrides across restart", () => {

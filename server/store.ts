@@ -28,6 +28,11 @@ export interface Message {
 export interface BotRecord {
   id: string; threadId: ThreadId; name: string; title: string; description: string; notifications: boolean; color: MausColor;
   mascotExpression?: MausExpression | null; iconShape?: IconShape; unread: boolean; modelSelection: ModelSelection; resumeCursors: Record<string, unknown>;
+  /** A1 seeded procedural avatar: the re-roll counter. The face is always
+   * `seedAvatar({ botId, nonce })` (server/avatar-seed.ts) — persisting the
+   * nonce means the same face regenerates after any reload or PATCH
+   * round-trip, with zero keys and zero raster storage. */
+  avatarNonce?: number;
   /** Computer provider BINDING: "off", "local", or a configured provider id
    * (e.g. "box"). Legacy "cloud" records normalize to "box". A binding to a
    * provider that is no longer configured stays on the record and simply
@@ -117,6 +122,7 @@ export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } 
     computer: normalizeComputerBinding(b.computer), pinned: b.pinned, hidden: b.hidden, busy: crashed ? false : b.busy === true,
     state: crashed ? "BLOCKED" : STATES.has(b.state as BotState) ? b.state! : "IDLE", ...(crashed ? { stateDetail: "interrupted" } : b.stateDetail ? { stateDetail: b.stateDetail } : {}),
     usage: validUsage(b.usage), currentTurnUsage: b.currentTurnUsage ? validUsage(b.currentTurnUsage) : undefined, createdAt: Number.isFinite(b.createdAt) ? b.createdAt! : Date.now(),
+    ...(typeof b.avatarNonce === "number" && Number.isInteger(b.avatarNonce) && b.avatarNonce >= 0 ? { avatarNonce: b.avatarNonce } : {}),
     ...(b.requireApproval === true ? { requireApproval: true } : {}),
     ...(b.alwaysAllow === true ? { alwaysAllow: true } : {}),
     ...(validStringList(b.enabledApps) ? { enabledApps: validStringList(b.enabledApps) } : {}),
