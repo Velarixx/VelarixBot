@@ -35,9 +35,22 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const patch = (
     p: Partial<
-      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "iconShape" | "requireApproval" | "alwaysAllow" | "enabledApps" | "skillId">
+      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "iconShape" | "avatarNonce" | "requireApproval" | "alwaysAllow" | "enabledApps" | "skillId">
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
+  // Zero-key seeded re-roll: bump the persisted nonce and let the server
+  // derive the face (seedAvatar(botId, nonce)) — the PATCH response carries
+  // the derived color/shape/expression, so the preview updates immediately
+  // and the exact same face regenerates on every future load. Keeping the
+  // face is just… not re-rolling: it's already persisted.
+  const rerollFace = () => {
+    api(`/api/bots/${bot.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ avatarNonce: (bot.avatarNonce ?? 0) + 1 }),
+    })
+      .then(({ bot: next }) => dispatch({ type: "botPatched", bot: next }))
+      .catch(() => {});
+  };
   const activeState = stateForBot(bot);
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const [apps, setApps] = useState<Array<{ slug: string; label: string }>>([]);
@@ -159,12 +172,22 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               <span className="rounded-lg bg-raised px-3 py-1.5 text-[14px] font-medium text-ink">
                 Bot
               </span>
-              <button
-                onClick={() => patch({ color: "green", mascotExpression: null, iconShape: "cursor" })}
-                className="rounded-md px-2 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
-              >
-                Reset
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={rerollFace}
+                  title="Roll a new seeded face (color, shape, expression). It saves instantly — keep it by leaving it."
+                  aria-label="Re-roll face"
+                  className="rounded-md px-2 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
+                >
+                  Re-roll
+                </button>
+                <button
+                  onClick={() => patch({ color: "green", mascotExpression: null, iconShape: "cursor" })}
+                  className="rounded-md px-2 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
+                >
+                  Reset
+                </button>
+              </div>
             </div>
 
             <div className="p-3">

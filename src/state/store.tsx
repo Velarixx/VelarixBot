@@ -73,6 +73,9 @@ export interface Bot {
   color: MausColor;
   mascotExpression?: string | null;
   iconShape?: string | null;
+  /** Seeded avatar re-roll counter; the server derives the face from
+   * seedAvatar({ botId, nonce }) whenever this is patched. */
+  avatarNonce?: number;
   unread: boolean;
   busy?: boolean;
   state: BotState;
@@ -246,6 +249,7 @@ type Action =
           | "color"
           | "mascotExpression"
           | "iconShape"
+          | "avatarNonce"
           | "pinned"
           | "hidden"
           | "requireApproval"

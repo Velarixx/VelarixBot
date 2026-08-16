@@ -3,14 +3,13 @@
 // deletion cascade), now over the SQLite repositories.
 import { rmSync } from "node:fs";
 
+import { seedAvatar, validAvatarNonce } from "../avatar-seed.ts";
 import { normalizeComputerBinding } from "../computer/provider.ts";
 import { botWorkspaceDir } from "../config.ts";
 import { newId, type ModelSelection } from "../contracts.ts";
 import type { Repositories } from "../repositories/index.ts";
 import {
   BASE_COMPUTER_BINDINGS,
-  COLORS,
-  ICON_SHAPES,
   STATES,
   onboardingCard,
   resolveIconShape,
@@ -71,16 +70,22 @@ export function createBotsService(opts: {
       return { ...bot, messages: repos.messages.forThread(bot.threadId) };
     },
     createBot() {
-      const count = repos.bots.count();
+      const id = newId();
+      // Seeded, not count-rotated: the face is a pure function of the bot's
+      // own id + persisted nonce, so it regenerates identically after any
+      // reload. Expression stays unpinned at birth — the mascot keeps its
+      // live states (busy/unread/profile) until the user re-rolls or picks.
+      const face = seedAvatar({ botId: id, nonce: 0 });
       const bot: BotRecord = {
-        id: newId(),
+        id,
         threadId: newId(),
         name: "New Bot",
         title: "",
         description: "",
         notifications: true,
-        color: COLORS[count % COLORS.length],
-        iconShape: ICON_SHAPES[count % ICON_SHAPES.length],
+        color: face.color,
+        iconShape: face.iconShape,
+        avatarNonce: 0,
         unread: false,
         modelSelection: defaultSelection(),
         resumeCursors: {},
@@ -115,6 +120,17 @@ export function createBotsService(opts: {
         if (patch[field] !== undefined && typeof patch[field] !== "boolean") invalid(field);
       }
       const next: Partial<BotRecord> = { ...patch };
+      // A1 re-roll: a nonce patch re-derives the whole face from the pure
+      // seed function, so the persisted record and any future regeneration
+      // agree. Explicit color/shape/expression in the same patch win — a
+      // manual pick must never be clobbered by a merged re-roll.
+      if (patch.avatarNonce !== undefined) {
+        if (!validAvatarNonce(patch.avatarNonce)) invalid("avatarNonce");
+        const face = seedAvatar({ botId: id, nonce: patch.avatarNonce });
+        if (patch.color === undefined) next.color = face.color;
+        if (patch.iconShape === undefined) next.iconShape = face.iconShape;
+        if (patch.mascotExpression === undefined) next.mascotExpression = face.mascotExpression;
+      }
       if (patch.computer !== undefined) {
         const binding = normalizeComputerBinding(patch.computer);
         if (!validComputerBinding(binding)) throw new Error(`invalid computer binding "${binding}"`);
