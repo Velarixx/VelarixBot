@@ -14,7 +14,6 @@ import {
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotState, Usage } from "@/lib/product";
 import { appendStreamingResponseText } from "../../server/response-options";
-import { cardAnswerStartsTurn } from "../../server/suggestions";
 import { notifyCopy, unreadBotCount, type NotifyEventType } from "@/lib/notify";
 import {
   cancelPrompt,
@@ -691,7 +690,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 ...(action.always === true ? { persistScope: action.persistScope ?? "bot" } : {}),
               }),
             }).catch(showError);
-          } else if (!cardAnswerStartsTurn(card)) {
+          } else if (card?.requestType === "suggestion") {
             persistCard(action.botId, action.messageId, { answered: action.answer });
           } else {
             persistCard(action.botId, action.messageId, { answered: action.answer });

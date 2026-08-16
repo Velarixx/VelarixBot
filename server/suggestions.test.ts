@@ -102,21 +102,15 @@ describe("PRO suggestion cards", () => {
   });
 
   it("card answers never start a turn for suggestion or live asks", () => {
-    expect(cardAnswerStartsTurn({ title: "Next", subtitle: "", options: ["A"] })).toBe(true);
-    expect(cardAnswerStartsTurn({ title: "Ask", subtitle: "", options: ["Yes"], requestId: "r1" })).toBe(false);
-    expect(
-      cardAnswerStartsTurn({
-        title: "Remember this?",
-        subtitle: "Lives in Austin.",
-        options: [SUGGESTION_ACCEPT_MEMORY],
-        requestType: "suggestion",
-      }),
-    ).toBe(false);
+    expect(cardAnswerStartsTurn({ requestType: undefined })).toBe(true);
+    expect(cardAnswerStartsTurn({ requestId: "r1" })).toBe(false);
+    expect(cardAnswerStartsTurn({ requestType: "suggestion" })).toBe(false);
   });
 
   it("fake extract produces one workflow + one fact card; accept writes; dismiss does not; no cross-bot card", async () => {
     const a = bots.createBot();
     const b = bots.createBot();
+    repos.memoryRows.insert({ botId: b.id, type: "fact", text: "Ops alias is pager-lee in Austin." });
     const extracted = await extractMemory({
       botId: a.id,
       turnText: "User: I live in Austin. Please check PRs every weekday morning.\n\nBot: Noted.",
@@ -127,7 +121,7 @@ describe("PRO suggestion cards", () => {
       { type: "fact", text: "Lives in Austin." },
     ]);
     expect(listMemoryRows(a.id)).toEqual([]);
-    expect(listMemoryRows(b.id)).toEqual([]);
+    expect(listMemoryRows(b.id).map((r) => r.text)).toEqual(["Ops alias is pager-lee in Austin."]);
     expect(routines.routines()).toEqual([]);
 
     const cards = suggestionCardsFor(a.id, extracted, {
@@ -137,7 +131,7 @@ describe("PRO suggestion cards", () => {
     expect(cards).toHaveLength(2);
     expect(cards.map((c) => c.suggestion?.type)).toEqual(["workflow", "fact"]);
     expect(cards.every((c) => c.suggestion?.botId === a.id)).toBe(true);
-    expect(suggestionCardsFor(b.id, extracted, { existingRows: listMemoryRows(b.id) })).toEqual([]);
+    expect(cards.some((c) => /pager-lee/i.test(c.subtitle))).toBe(false);
 
     const workflowMsg = bots.appendMessage(a.threadId, { role: "bot", kind: "options", card: cards[0] });
     const factMsg = bots.appendMessage(a.threadId, { role: "bot", kind: "options", card: cards[1] });
@@ -170,7 +164,7 @@ describe("PRO suggestion cards", () => {
     const pinned = pinMemoryRow(rows[0]!.id, true);
     expect(pinned?.pinned).toBe(true);
     expect(editMemoryRow(rows[0]!.id, "Current city is Austin.")?.text).toBe("Current city is Austin.");
-    expect(listMemoryRows(b.id)).toEqual([]);
+    expect(listMemoryRows(b.id).map((r) => r.text)).toEqual(["Ops alias is pager-lee in Austin."]);
     expect(startedTurns).toEqual([]);
 
     const dismissed = suggestionCardsFor(a.id, [{ type: "preference", text: "Prefers short answers." }]);
@@ -187,7 +181,7 @@ describe("PRO suggestion cards", () => {
         createRoutine: (input) => routines.createRoutine(input),
       }),
     ).toEqual({ kind: "none" });
-    expect(listMemoryRows(b.id)).toEqual([]);
+    expect(listMemoryRows(b.id).map((r) => r.text)).toEqual(["Ops alias is pager-lee in Austin."]);
   });
 
   it("PATCH accept/dismiss on the existing card route writes only on accept", async () => {
@@ -225,7 +219,7 @@ describe("PRO suggestion cards", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         });
-        return { status: res.status, body: await res.json() };
+        return { status: res.status, body: (await res.json()) as { message?: { card?: { dismissed?: boolean } } } };
       };
 
       const acceptedWorkflow = await patch(a.id, workflowMsg.id, { answered: SUGGESTION_ACCEPT_WORKFLOW });
@@ -240,7 +234,7 @@ describe("PRO suggestion cards", () => {
 
       const dismissed = await patch(a.id, dismissMsg.id, { dismissed: true });
       expect(dismissed.status).toBe(200);
-      expect(dismissed.body.message.card.dismissed).toBe(true);
+      expect(dismissed.body.message?.card?.dismissed).toBe(true);
       expect(listMemoryRows(a.id)).toHaveLength(1);
       expect(routines.routines()).toHaveLength(1);
 

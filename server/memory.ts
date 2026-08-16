@@ -431,6 +431,7 @@ export async function extractMemory(opts: {
   botId: string;
   turnText: string;
   generateText?: TextGenerator;
+  /** Kept so existing callers can pass a clock; extract no longer writes. */
   now?: number;
 }): Promise<Array<{ type: MemoryRowType; text: string }>> {
   if (!opts.generateText) return [];
