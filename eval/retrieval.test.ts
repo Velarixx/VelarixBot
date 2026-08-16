@@ -87,7 +87,7 @@ describe("P2.6 memory retrieval evals", () => {
   it("does not log distill prompts or memory file contents", () => {
     const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
     expect(src).not.toMatch(/console\.(log|info|debug|dir|table)\(/);
-    expect(src).not.toContain("distillPrompt(");
+    expect(src).not.toMatch(/\bimport\b[^;]*\bdistill/);
   });
 
   for (const c of fixture.cases) {
