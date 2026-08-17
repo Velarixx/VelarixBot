@@ -335,8 +335,16 @@ export function createRoutinesService(deps: {
     const result = await deps.pollListener(routine.schedule, routine.listenerCursor ?? null);
     const cursorPatch = result.cursor ? { listenerCursor: result.cursor } : {};
     if (result.status === "match") {
+      // persist the cursor before the turn so a crash mid-startTurn cannot
+      // re-fire the same event on the next tick
+      if (result.cursor) {
+        const live = repos.routines.get(routine.id);
+        if (live) {
+          live.listenerCursor = result.cursor;
+          repos.routines.update(live);
+        }
+      }
       await startRun(routine, at, { kind: "scheduled", scheduledFor: firstDue, nextRunAt: next });
-      if (result.cursor) service.markRoutine(routine.id, cursorPatch);
       return;
     }
     if (result.status === "skip") {
@@ -346,7 +354,7 @@ export function createRoutinesService(deps: {
         at,
         scheduledFor: firstDue,
         idempotencyKey: occurrenceKey(routine.id, firstDue),
-        reason: result.reason,
+        reason: result.reason ?? "skipped: listener poll failed",
       });
       service.markRoutine(routine.id, { lastRunAt: at, lastResult: result.reason, nextRunAt: next, ...cursorPatch });
       return;

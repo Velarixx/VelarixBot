@@ -635,10 +635,14 @@ describe("routines service (fake clock)", () => {
     const { bot, routine } = makeRoutine({
       schedule: { kind: "listener", source: "github", repo: { owner: "Velarixx", name: "VelarixBot" }, events: ["pull_request"] },
     });
+    const flush = async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    };
     now = routine.nextRunAt + 1;
     routines.tick(now);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(started).toEqual([]);
     expect(routines.routine(routine.id)?.listenerCursor).toBe("10");
     expect(routines.routine(routine.id)?.lastResult).toMatch(/watching from now|no matching event/);
@@ -647,8 +651,7 @@ describe("routines service (fake clock)", () => {
     feed = [{ id: "20", type: "PullRequestEvent" }, { id: "10", type: "PullRequestEvent" }];
     now = routines.routine(routine.id)!.nextRunAt + 1;
     routines.tick(now);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(started).toEqual([{ botId: bot.id, text: "Brief me" }]);
     expect(routines.routine(routine.id)?.listenerCursor).toBe("20");
     routines.settleTurn(bot.threadId, true);
@@ -656,8 +659,7 @@ describe("routines service (fake clock)", () => {
     started = [];
     now = routines.routine(routine.id)!.nextRunAt + 1;
     routines.tick(now);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(started).toEqual([]);
     expect(routines.routine(routine.id)?.lastResult).toBe("polled: no matching event");
   });

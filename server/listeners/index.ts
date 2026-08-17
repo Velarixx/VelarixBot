@@ -6,10 +6,11 @@ import type { RoutineSchedule } from "../store.ts";
 import { createGithubFeed, pollGithubListener, type GithubFeed } from "./github.ts";
 import { createSlackFeed, pollSlackListener, type SlackFeed } from "./slack.ts";
 
-export type ListenerPollResult =
-  | { status: "match"; cursor: string | null }
-  | { status: "no-match"; cursor: string | null }
-  | { status: "skip"; reason: string; cursor: string | null };
+export type ListenerPollResult = {
+  status: "match" | "no-match" | "skip";
+  reason?: string;
+  cursor: string | null;
+};
 
 export type ListenerPoller = (
   schedule: Extract<RoutineSchedule, { kind: "listener" }>,

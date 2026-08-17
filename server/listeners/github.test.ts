@@ -55,14 +55,16 @@ describe("pollGithubListener", () => {
 
   it("does not put the token on the request URL", async () => {
     const token = "ghp_not_a_real_token_for_tests";
-    let seen: { url: string; auth?: string } | null = null;
+    const seen: { url: string; auth?: string } = { url: "", auth: undefined };
     const feed = createGithubFeed(async (url, init) => {
-      seen = { url: String(url), auth: (init as RequestInit | undefined)?.headers && (init as { headers?: Record<string, string> }).headers?.authorization };
+      const headers = (init as RequestInit | undefined)?.headers as Record<string, string> | undefined;
+      seen.url = String(url);
+      seen.auth = headers?.authorization;
       return new Response(JSON.stringify([]), { status: 200 });
     });
     await feed.listEvents(repo, token);
-    expect(seen?.url).toContain("/repos/Velarixx/VelarixBot/events");
-    expect(seen?.url).not.toContain(token);
-    expect(seen?.auth).toBe(`Bearer ${token}`);
+    expect(seen.url).toContain("/repos/Velarixx/VelarixBot/events");
+    expect(seen.url).not.toContain(token);
+    expect(seen.auth).toBe(`Bearer ${token}`);
   });
 });
