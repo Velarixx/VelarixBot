@@ -45,6 +45,8 @@ export interface OptionCardData {
 export interface Message {
   id: string; role: "bot" | "user"; kind: "text" | "options" | "activity" | "screen"; text?: string;
   card?: OptionCardData; tool?: { name: string; ok?: boolean }; png?: string; mime?: string; at: number; usage?: Usage;
+  /** Paged hydration: a screen frame whose pixels live at the per-image fetch. */
+  hasImage?: boolean;
 }
 export interface BotRecord {
   id: string; threadId: ThreadId; name: string; title: string; description: string; notifications: boolean; color: MausColor;

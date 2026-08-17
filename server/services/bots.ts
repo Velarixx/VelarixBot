@@ -37,7 +37,11 @@ import {
 
 /** Wire-safe bot: allowlist of BotRecord fields plus transcript. Never
  * resumeCursors (session tokens) or any other non-public field. */
-export type PublicBot = Omit<BotRecord, "resumeCursors"> & { messages: Message[] };
+export type PublicBot = Omit<BotRecord, "resumeCursors"> & { messages: Message[]; hasMore?: boolean };
+
+/** `messages` omitted = full transcript (desktop back-compat). Present =
+ * newest n, slim screens, and `hasMore`. */
+export type HydrateMessages = { messages?: number };
 
 /** Field-by-field allowlist. A denylist would leak the next private field. */
 export function toPublicBot(bot: BotRecord, messages: Message[] = []): PublicBot {
@@ -78,6 +82,13 @@ export function toPublicBot(bot: BotRecord, messages: Message[] = []): PublicBot
   return pub;
 }
 
+function hydrateBot(repos: Repositories, bot: BotRecord, hydrate?: HydrateMessages): PublicBot {
+  if (hydrate?.messages === undefined) return toPublicBot(bot, repos.messages.forThread(bot.threadId));
+  const page = repos.messages.pageForThread(bot.threadId, { limit: hydrate.messages, slim: true });
+  // no `before` cursor — pageForThread cannot miss
+  return { ...toPublicBot(bot, page?.messages ?? []), hasMore: page?.hasMore ?? false };
+}
+
 /** Project a {kind:"bot"} SSE/API payload through the allowlist. */
 export function projectPublicBotFrame(
   payload: unknown,
@@ -99,8 +110,15 @@ export interface BotsService {
   count(): number;
   bot(id: string): BotRecord | null;
   botByThread(threadId: string): BotRecord | null;
-  publicBot(id: string): PublicBot | null;
-  publicBots(): PublicBot[];
+  publicBot(id: string, hydrate?: HydrateMessages): PublicBot | null;
+  publicBots(hydrate?: HydrateMessages): PublicBot[];
+  /** Scrollback: the page before a message the client already holds. */
+  pageMessages(threadId: string, opts: { limit: number; before?: string | null }):
+    | { ok: true; messages: Message[]; hasMore: boolean }
+    | { ok: false; status: 404; error: string };
+  readMessageImage(threadId: string, messageId: string):
+    | { ok: true; bytes: Buffer; mime: string }
+    | { ok: false; status: 404; error: string };
   createBot(): BotRecord;
   patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null;
   /** Repo-level cascade + workspace dir removal. Callers own the runtime
@@ -142,13 +160,25 @@ export function createBotsService(opts: {
     count: () => repos.bots.count(),
     bot: (id) => repos.bots.get(id),
     botByThread: (threadId) => repos.bots.getByThread(threadId),
-    publicBot(id) {
+    publicBot(id, hydrate) {
       const bot = repos.bots.get(id);
       if (!bot) return null;
-      return toPublicBot(bot, repos.messages.forThread(bot.threadId));
+      return hydrateBot(repos, bot, hydrate);
     },
-    publicBots() {
-      return repos.bots.list().map((bot) => toPublicBot(bot, repos.messages.forThread(bot.threadId)));
+    publicBots(hydrate) {
+      return repos.bots.list().map((bot) => hydrateBot(repos, bot, hydrate));
+    },
+    pageMessages(threadId, opts) {
+      if (!repos.bots.getByThread(threadId)) return { ok: false, status: 404, error: "no such conversation" };
+      const page = repos.messages.pageForThread(threadId, { ...opts, slim: true });
+      if (!page) return { ok: false, status: 404, error: "no such message" };
+      return { ok: true, ...page };
+    },
+    readMessageImage(threadId, messageId) {
+      if (!repos.bots.getByThread(threadId)) return { ok: false, status: 404, error: "no such conversation" };
+      const image = repos.messages.readImage(threadId, messageId);
+      if (!image) return { ok: false, status: 404, error: "no image on that message" };
+      return { ok: true, ...image };
     },
     createBot() {
       const id = newId();

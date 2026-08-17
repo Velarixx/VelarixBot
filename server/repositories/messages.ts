@@ -3,7 +3,7 @@
 // append #100,001 leaves the first 100,000 bytes of the main db file
 // untouched). Screenshot payloads never enter SQLite: png bytes go to the
 // content-hash blob store and the row carries only the hash.
-import { deleteBlob, putBlobBase64, readBlobBase64 } from "../db/blobs.ts";
+import { deleteBlob, putBlobBase64, readBlob, readBlobBase64 } from "../db/blobs.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { normalizeMessage, type Message } from "../store.ts";
 import { newId } from "../contracts.ts";
@@ -14,9 +14,10 @@ interface MessageRow {
   at: number;
   png_hash: string | null;
   data: string;
+  seq?: number;
 }
 
-function rowToMessage(row: MessageRow): Message | null {
+function rowToMessage(row: MessageRow, slim = false): Message | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(row.data);
@@ -28,8 +29,13 @@ function rowToMessage(row: MessageRow): Message | null {
   message.id = row.id;
   message.at = row.at;
   if (row.png_hash) {
-    const png = readBlobBase64(row.png_hash);
-    if (png) message.png = png;
+    if (slim) {
+      delete message.png;
+      message.hasImage = true;
+    } else {
+      const png = readBlobBase64(row.png_hash);
+      if (png) message.png = png;
+    }
   }
   return message;
 }
@@ -43,9 +49,19 @@ function toRow(message: Message): { data: string; pngHash: string | null } {
   return { data: JSON.stringify(message), pngHash: null };
 }
 
+export interface MessagePage {
+  messages: Message[];
+  hasMore: boolean;
+}
+
 export interface MessagesRepository {
   forThread(threadId: string): Message[];
+  /** Newest `limit` messages before an optional cursor. `null` means the
+   * `before` id is not in this thread — callers must 404, not wrap. */
+  pageForThread(threadId: string, opts: { limit: number; before?: string | null; slim?: boolean }): MessagePage | null;
   find(threadId: string, id: string): Message | null;
+  /** Raw screenshot bytes for one message, or null when it has none. */
+  readImage(threadId: string, id: string): { bytes: Buffer; mime: string } | null;
   append(threadId: string, message: Omit<Message, "id" | "at"> & { at?: number; id?: string }): Message;
   patch(threadId: string, id: string, patch: Partial<Message>): Message | null;
   /** All-or-nothing: the thread row, its messages, and its event-log rows
@@ -74,6 +90,14 @@ export function createMessagesRepository(
   const selectOne = db.prepare<MessageRow>(
     "SELECT id, thread_id, at, png_hash, data FROM messages WHERE thread_id = ? AND id = ?",
   );
+  const selectSeq = db.prepare<{ seq: number }>("SELECT seq FROM messages WHERE thread_id = ? AND id = ?");
+  const selectNewest = db.prepare<MessageRow>(
+    "SELECT id, thread_id, at, png_hash, data, seq FROM messages WHERE thread_id = ? ORDER BY seq DESC LIMIT ?",
+  );
+  const selectBefore = db.prepare<MessageRow>(
+    "SELECT id, thread_id, at, png_hash, data, seq FROM messages WHERE thread_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
+  );
+  const countOlder = db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages WHERE thread_id = ? AND seq < ?");
   const selectThreadHashes = db.prepare<{ png_hash: string }>(
     "SELECT DISTINCT png_hash FROM messages WHERE thread_id = ? AND png_hash IS NOT NULL",
   );
@@ -99,11 +123,51 @@ export function createMessagesRepository(
 
   return {
     forThread(threadId) {
-      return selectThread.all(threadId).map(rowToMessage).filter((m): m is Message => !!m);
+      return selectThread.all(threadId).map((row) => rowToMessage(row)).filter((m): m is Message => !!m);
+    },
+    pageForThread(threadId, opts) {
+      let beforeSeq: number | undefined;
+      if (opts.before) {
+        const cursor = selectSeq.get(threadId, opts.before);
+        if (!cursor) return null;
+        beforeSeq = cursor.seq;
+      }
+      if (opts.limit === 0) {
+        const older = beforeSeq !== undefined
+          ? (countOlder.get(threadId, beforeSeq)?.n ?? 0)
+          : (countThread.get(threadId)?.n ?? 0);
+        return { messages: [], hasMore: older > 0 };
+      }
+      const rows = beforeSeq !== undefined
+        ? selectBefore.all(threadId, beforeSeq, opts.limit)
+        : selectNewest.all(threadId, opts.limit);
+      rows.reverse();
+      const oldestSeq = rows[0]?.seq;
+      const hasMore = oldestSeq !== undefined
+        ? (countOlder.get(threadId, oldestSeq)?.n ?? 0) > 0
+        : false;
+      return {
+        messages: rows.map((row) => rowToMessage(row, opts.slim === true)).filter((m): m is Message => !!m),
+        hasMore,
+      };
     },
     find(threadId, id) {
       const row = selectOne.get(threadId, id);
       return row ? rowToMessage(row) : null;
+    },
+    readImage(threadId, id) {
+      const row = selectOne.get(threadId, id);
+      if (!row?.png_hash) return null;
+      const bytes = readBlob(row.png_hash);
+      if (!bytes) return null;
+      let mime = "image/png";
+      try {
+        const parsed = JSON.parse(row.data) as { mime?: unknown };
+        if (typeof parsed.mime === "string" && parsed.mime) mime = parsed.mime;
+      } catch {
+        /* default */
+      }
+      return { bytes, mime };
     },
     append(threadId, message) {
       const full: Message = { id: message.id ?? newId(), at: Date.now(), ...message } as Message;

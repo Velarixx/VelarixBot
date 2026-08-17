@@ -70,6 +70,30 @@ describe("messages repository", () => {
     expect(messages.forThread("t1")[0].png).toBe(PNG_BASE64);
   });
 
+  it("pages newest-n and before= without loading slim png bytes", () => {
+    const messages = createMessagesRepository(db);
+    const ids: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      ids.push(messages.append("t-page", { role: "user", kind: "text", text: `m${i}` }).id);
+    }
+    const screen = messages.append("t-page", { role: "bot", kind: "screen", png: PNG_BASE64, mime: "image/png" });
+    const newest = messages.pageForThread("t-page", { limit: 2, slim: true })!;
+    expect(newest.messages.map((m) => m.id)).toEqual([ids[5], screen.id]);
+    expect(newest.hasMore).toBe(true);
+    expect(newest.messages[1]).toMatchObject({ kind: "screen", hasImage: true });
+    expect(newest.messages[1].png).toBeUndefined();
+
+    const older = messages.pageForThread("t-page", { limit: 2, before: ids[5], slim: true })!;
+    expect(older.messages.map((m) => m.id)).toEqual([ids[3], ids[4]]);
+    expect(older.hasMore).toBe(true);
+    expect(messages.pageForThread("t-page", { limit: 2, before: "missing" })).toBeNull();
+
+    const image = messages.readImage("t-page", screen.id)!;
+    expect(image.bytes.toString("base64")).toBe(PNG_BASE64);
+    expect(image.mime).toBe("image/png");
+    expect(messages.readImage("t-page", ids[0])).toBeNull();
+  });
+
   it("append #100,001 does not rewrite the prior 100,000", () => {
     const messages = createMessagesRepository(db);
     const insertAll = db.transaction(() => {
