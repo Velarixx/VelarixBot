@@ -24,7 +24,7 @@ import type { TurnsService } from "../services/turns.ts";
 import { acceptSuggestion, isSuggestionAccept, isSuggestionCard } from "../suggestions.ts";
 import { deleteSkill, getRecordingSession, getSkill, listTeachSessions, loadSkills, saveSkill } from "../teach.ts";
 import type { GenerateAvatarImages } from "../avatar-image.ts";
-import { json, readBody, sendBytes, type RouteHandler } from "./context.ts";
+import { DEFAULT_MESSAGE_PAGE, json, parsePageSize, readBody, sendBytes, type RouteHandler } from "./context.ts";
 
 export function createBotsRoutes(deps: {
   bots: BotsService;
@@ -38,7 +38,7 @@ export function createBotsRoutes(deps: {
   generateAvatarImages?: GenerateAvatarImages;
 }): RouteHandler {
   const { bots, turns, teach, routines, registry, computers, cfg, broadcast, generateAvatarImages } = deps;
-  return async ({ req, res, path, method }) => {
+  return async ({ req, res, url, path, method }) => {
     // ── per-bot + shared workspace memory (markdown + structured rows) ──
     const memoryMatch = path.match(/^\/api\/bots\/([\w-]+)\/memory$/);
     const memoryForget = path.match(/^\/api\/bots\/([\w-]+)\/memory\/forget$/);
@@ -239,7 +239,44 @@ export function createBotsRoutes(deps: {
 
     // ── bots ──
     if (method === "GET" && path === "/api/bots") {
-      json(res, 200, { bots: bots.publicBots() });
+      const limit = parsePageSize(url.searchParams.get("messages"));
+      if (limit === null) {
+        json(res, 400, { error: "messages must be a non-negative whole number" });
+        return true;
+      }
+      json(res, 200, { bots: bots.publicBots(limit === undefined ? undefined : { messages: limit }) });
+      return true;
+    }
+
+    // scrollback: the page before a message the client already holds
+    const threadMessages = path.match(/^\/api\/threads\/([\w-]+)\/messages$/);
+    if (threadMessages && method === "GET") {
+      const limit = parsePageSize(url.searchParams.get("limit"));
+      if (limit === null) {
+        json(res, 400, { error: "limit must be a non-negative whole number" });
+        return true;
+      }
+      const page = bots.pageMessages(threadMessages[1], {
+        limit: limit ?? DEFAULT_MESSAGE_PAGE,
+        before: url.searchParams.get("before"),
+      });
+      if (!page.ok) {
+        json(res, page.status, { error: page.error });
+        return true;
+      }
+      json(res, 200, { messages: page.messages, hasMore: page.hasMore });
+      return true;
+    }
+
+    // pixels of one screen message — fetched only when something shows it
+    const threadImage = path.match(/^\/api\/threads\/([\w-]+)\/messages\/([\w-]+)\/image$/);
+    if (threadImage && method === "GET") {
+      const image = bots.readMessageImage(threadImage[1], threadImage[2]);
+      if (!image.ok) {
+        json(res, image.status, { error: image.error });
+        return true;
+      }
+      sendBytes(res, 200, image.bytes, image.mime);
       return true;
     }
     if (method === "POST" && path === "/api/bots") {

@@ -20,6 +20,18 @@ export function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(data);
 }
 
+/** Opt-in hydration page. `undefined` = parameter absent (full transcript).
+ * `null` = present but unusable (caller answers 400). */
+export const MESSAGE_PAGE_MAX = 200;
+export const DEFAULT_MESSAGE_PAGE = 50;
+
+export function parsePageSize(raw: string | null): number | null | undefined {
+  if (raw === null) return undefined;
+  const size = Number(raw);
+  if (!Number.isInteger(size) || size < 0) return null;
+  return Math.min(size, MESSAGE_PAGE_MAX);
+}
+
 export function sendBytes(res: ServerResponse, status: number, body: Buffer, contentType: string): void {
   res.writeHead(status, {
     "content-type": contentType,

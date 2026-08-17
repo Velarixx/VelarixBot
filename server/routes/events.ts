@@ -9,9 +9,11 @@
 //   GET /api/events/snapshot        — full state + the ui-stream cursor it
 //       was taken at: hydrate from the snapshot, subscribe from its
 //       cursor, and nothing is lost or applied twice.
+//   GET /api/events/snapshot?messages=n — same, but newest n per thread
+//       (slim screens). Omitting the query is the original full transcript.
 import type { BotsService } from "../services/bots.ts";
 import type { SseHub } from "../services/events.ts";
-import { json, type RouteHandler } from "./context.ts";
+import { json, parsePageSize, type RouteHandler } from "./context.ts";
 
 export function createEventsRoutes(deps: { hub: SseHub; bots: BotsService }): RouteHandler {
   const { hub, bots } = deps;
@@ -24,10 +26,15 @@ export function createEventsRoutes(deps: { hub: SseHub; bots: BotsService }): Ro
     if (path === "/api/events/snapshot") {
       // cursor BEFORE state: an event landing after this cursor is replayed
       // on subscribe; one landing before it is inside the snapshot
+      const limit = parsePageSize(url.searchParams.get("messages"));
+      if (limit === null) {
+        json(res, 400, { error: "messages must be a non-negative whole number" });
+        return true;
+      }
       const cursor = hub.cursor();
       json(res, 200, {
         ...cursor,
-        bots: bots.publicBots(),
+        bots: bots.publicBots(limit === undefined ? undefined : { messages: limit }),
       });
       return true;
     }
