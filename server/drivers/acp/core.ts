@@ -207,6 +207,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           stdio: ["pipe", "pipe", "pipe"],
           detached: true,
         });
+        // Decode stdout as UTF-8 across chunk boundaries. Without this, a
+        // multibyte character split across two `data` events becomes U+FFFD
+        // in each chunk (`buf += Buffer` calls toString per chunk) and the
+        // JSON-RPC frame is dropped or corrupted. Every ACP harness rides
+        // this runtime, including Hermes.
+        child.stdout.setEncoding("utf8");
 
         const state = { settled: false, promptSent: false, text: "" };
         const asks = new Map<string, (behavior: string) => void>();

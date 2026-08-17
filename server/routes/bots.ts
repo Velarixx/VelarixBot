@@ -220,7 +220,7 @@ export function createBotsRoutes(deps: {
           markdown: typeof body.markdown === "string" ? body.markdown : undefined,
           sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
         });
-        broadcast({ kind: "bot", bot: saved.bot });
+        broadcast({ kind: "bot", bot: bots.publicBot(saved.bot.id) ?? saved.bot });
         json(res, 200, saved);
         return true;
       }
@@ -239,9 +239,7 @@ export function createBotsRoutes(deps: {
 
     // ── bots ──
     if (method === "GET" && path === "/api/bots") {
-      json(res, 200, {
-        bots: bots.bots().map((b) => ({ ...b, messages: bots.messagesFor(b.threadId) })),
-      });
+      json(res, 200, { bots: bots.publicBots() });
       return true;
     }
     if (method === "POST" && path === "/api/bots") {
@@ -321,8 +319,9 @@ export function createBotsRoutes(deps: {
         json(res, 404, { error: "no such bot" });
         return true;
       }
-      broadcast({ kind: "bot", bot });
-      json(res, 200, { bot });
+      const pub = bots.publicBot(bot.id) ?? bot;
+      broadcast({ kind: "bot", bot: pub });
+      json(res, 200, { bot: pub });
       return true;
     }
     const generateMatch = path.match(/^\/api\/bots\/([\w-]+)\/avatar\/generate$/);
@@ -334,12 +333,13 @@ export function createBotsRoutes(deps: {
       const body = await readBody(req).catch(() => ({}));
       const requested = typeof body.provider === "string" ? body.provider : undefined;
       const result = await bots.generateAvatar(generateMatch[1], { cfg, requested, generate: generateAvatarImages });
-      broadcast({ kind: "bot", bot: result.bot });
+      const pub = bots.publicBot(result.bot.id) ?? result.bot;
+      broadcast({ kind: "bot", bot: pub });
       json(res, 200, {
         provider: result.provider,
         prompt: result.prompt,
         candidates: result.candidates,
-        bot: result.bot,
+        bot: pub,
       });
       return true;
     }

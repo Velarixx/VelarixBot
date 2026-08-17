@@ -35,12 +35,72 @@ import {
   type Usage,
 } from "../store.ts";
 
+/** Wire-safe bot: allowlist of BotRecord fields plus transcript. Never
+ * resumeCursors (session tokens) or any other non-public field. */
+export type PublicBot = Omit<BotRecord, "resumeCursors"> & { messages: Message[] };
+
+/** Field-by-field allowlist. A denylist would leak the next private field. */
+export function toPublicBot(bot: BotRecord, messages: Message[] = []): PublicBot {
+  const pub: PublicBot = {
+    id: bot.id,
+    threadId: bot.threadId,
+    name: bot.name,
+    title: bot.title,
+    description: bot.description,
+    notifications: bot.notifications,
+    color: bot.color,
+    unread: bot.unread,
+    modelSelection: bot.modelSelection,
+    computer: bot.computer,
+    busy: bot.busy,
+    state: bot.state,
+    usage: bot.usage,
+    createdAt: bot.createdAt,
+    messages,
+  };
+  if (bot.mascotExpression !== undefined) pub.mascotExpression = bot.mascotExpression;
+  if (bot.iconShape !== undefined) pub.iconShape = bot.iconShape;
+  if (bot.mascotPinned !== undefined) pub.mascotPinned = bot.mascotPinned;
+  if (bot.avatarNonce !== undefined) pub.avatarNonce = bot.avatarNonce;
+  if (bot.avatarImageHash !== undefined) pub.avatarImageHash = bot.avatarImageHash;
+  if (bot.avatarCandidates !== undefined) pub.avatarCandidates = bot.avatarCandidates;
+  if (bot.pinned !== undefined) pub.pinned = bot.pinned;
+  if (bot.hidden !== undefined) pub.hidden = bot.hidden;
+  if (bot.stateDetail !== undefined) pub.stateDetail = bot.stateDetail;
+  if (bot.currentTurnUsage !== undefined) pub.currentTurnUsage = bot.currentTurnUsage;
+  if (bot.requireApproval !== undefined) pub.requireApproval = bot.requireApproval;
+  if (bot.alwaysAllow !== undefined) pub.alwaysAllow = bot.alwaysAllow;
+  if (bot.enabledApps !== undefined) pub.enabledApps = bot.enabledApps;
+  if (bot.enabledSkills !== undefined) pub.enabledSkills = bot.enabledSkills;
+  if (bot.skillId !== undefined) pub.skillId = bot.skillId;
+  if (bot.notifyEvents !== undefined) pub.notifyEvents = bot.notifyEvents;
+  if (bot.threadParticipants !== undefined) pub.threadParticipants = bot.threadParticipants;
+  return pub;
+}
+
+/** Project a {kind:"bot"} SSE/API payload through the allowlist. */
+export function projectPublicBotFrame(
+  payload: unknown,
+  publicOf: (id: string) => PublicBot | null,
+): unknown {
+  if (!payload || typeof payload !== "object") return payload;
+  const frame = payload as { kind?: unknown; bot?: { id?: unknown } };
+  if (frame.kind !== "bot" || !frame.bot || typeof frame.bot !== "object") return payload;
+  const id = frame.bot.id;
+  if (typeof id === "string") {
+    const pub = publicOf(id);
+    if (pub) return { ...frame, bot: pub };
+  }
+  return { ...frame, bot: toPublicBot(frame.bot as BotRecord) };
+}
+
 export interface BotsService {
   bots(): BotRecord[];
   count(): number;
   bot(id: string): BotRecord | null;
   botByThread(threadId: string): BotRecord | null;
-  publicBot(id: string): (BotRecord & { messages: Message[] }) | null;
+  publicBot(id: string): PublicBot | null;
+  publicBots(): PublicBot[];
   createBot(): BotRecord;
   patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null;
   /** Repo-level cascade + workspace dir removal. Callers own the runtime
@@ -85,7 +145,10 @@ export function createBotsService(opts: {
     publicBot(id) {
       const bot = repos.bots.get(id);
       if (!bot) return null;
-      return { ...bot, messages: repos.messages.forThread(bot.threadId) };
+      return toPublicBot(bot, repos.messages.forThread(bot.threadId));
+    },
+    publicBots() {
+      return repos.bots.list().map((bot) => toPublicBot(bot, repos.messages.forThread(bot.threadId)));
     },
     createBot() {
       const id = newId();

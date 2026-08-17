@@ -34,6 +34,10 @@
 //                     -32603, NOT auth_required — an auth probe riding the
 //                     session gate must read this as inconclusive and fall
 //                     back to its disk heuristic, never as signed-out)
+//                   | split-utf8 (write a session/update whose JSON contains
+//                     a multibyte character split across two raw stdout
+//                     writes — the driver must reassemble the frame, not
+//                     drop it)
 //                   | ask-peer (spawn the injected "agents" MCP server from
 //                     session/new's mcpServers, call list_bots + ask_bot on a
 //                     peer, and reply with what the peer said — the comms e2e)
@@ -125,6 +129,21 @@ if (argv[0] === "auth" && argv[1] === "list") {
 if (dumpPath) writeDump({});
 
 const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
+/** Write a JSON-RPC line as raw bytes, splitting a UTF-8 character across
+ * two writes so a decoder that toString()s each Buffer independently
+ * corrupts the frame. */
+function outSplitUtf8(obj: unknown, marker: string) {
+  const line = JSON.stringify(obj) + "\n";
+  const bytes = Buffer.from(line, "utf8");
+  const needle = Buffer.from(marker, "utf8");
+  const idx = bytes.indexOf(needle);
+  if (idx === -1 || needle.length < 2) {
+    process.stdout.write(bytes);
+    return;
+  }
+  process.stdout.write(bytes.subarray(0, idx + 1));
+  process.stdout.write(bytes.subarray(idx + 1));
+}
 const result = (id: unknown, res: unknown) => out({ jsonrpc: "2.0", id, result: res });
 
 // pending server→client permission request id → resolver
@@ -190,8 +209,17 @@ function driveMcp(entry: McpEntry, calls: Array<{ name: string; args: (prev: str
   });
 }
 
+const SPLIT_UTF8_TEXT = "hello café 你好 €";
+
 function playTurn() {
-  out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "hello from fake acp" } } } });
+  const text = mode === "split-utf8" ? SPLIT_UTF8_TEXT : "hello from fake acp";
+  const chunk = {
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: { update: { sessionUpdate: "agent_message_chunk", content: { text } } },
+  };
+  if (mode === "split-utf8") outSplitUtf8(chunk, "€");
+  else out(chunk);
   out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "tc-1", title: "run" } } });
   out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", toolCallId: "tc-1", status: "completed" } } });
 }

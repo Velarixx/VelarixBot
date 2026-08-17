@@ -105,7 +105,7 @@ export function createIntegrationsRoutes(deps: {
             tool: { name: `asked @${target.name}: ${message.slice(0, 80)}` },
           });
           broadcast({ kind: "message", threadId: groupThreadId, message: note });
-          broadcast({ kind: "bot", bot: bots.bot(from.id) });
+          broadcast({ kind: "bot", bot: bots.publicBot(from.id) });
         }
         const prefixed = `[Message from @${fromName}, another bot in this VelarixBot workspace. Reply to them.]\n\n${message}`;
         const reply = await turns.askBotQueued(toBotId, prefixed, depth, { visited: guard.chain, groupThreadId });
@@ -210,7 +210,7 @@ export function createIntegrationsRoutes(deps: {
           json(res, 404, { error: "no such bot" });
           return true;
         }
-        broadcast({ kind: "bot", bot: updated });
+        broadcast({ kind: "bot", bot: bots.publicBot(updated.id) ?? updated });
         const from = bots.bot(String(body.fromBotId ?? ""));
         if (from) {
           const note = bots.appendMessage(from.threadId, {

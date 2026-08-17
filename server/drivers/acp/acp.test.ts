@@ -39,14 +39,14 @@ posixOnly("ACP turns (fake CLI)", () => {
   let recorder: EventRecorder;
   let scratch: string;
 
-  const create = async (driver = GrokAgentDriver, mode?: string) => {
+  const create = async (driver = GrokAgentDriver, mode?: string, fullAuto = false) => {
     if (mode) process.env.FAKE_ACP_MODE = mode;
     instance = await driver.create({
       instanceId: "acp-test",
       displayName: "ACP Test",
       environment: {},
       enabled: true,
-      config: { cli: FAKE_CLI, fullAuto: false },
+      config: { cli: FAKE_CLI, fullAuto },
     });
     recorder = recordEvents(instance.adapter);
   };
@@ -155,6 +155,33 @@ posixOnly("ACP turns (fake CLI)", () => {
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.sessionPrompt.prompt).toEqual([{ type: "text", text: expect.stringContaining(img) }]);
     expect(JSON.stringify(seen.sessionPrompt.prompt)).not.toContain("iVBORw0KGgo");
+  });
+
+  it("a UTF-8 character split across stdout chunks does not drop the frame", async () => {
+    await create(GrokAgentDriver, "split-utf8");
+    await instance.adapter.sendTurn({ threadId: "t-utf8", text: "go" });
+    await recorder.until((e) => e.type === "turn.completed");
+    const delta = recorder.events.find((e) => e.type === "content.delta");
+    expect(delta).toMatchObject({ streamKind: "assistant_text", delta: "hello café 你好 €" });
+    const text = recorder.events.find((e) => e.type === "item.completed" && (e as { itemType?: string }).itemType === "assistant_text");
+    expect(text).toMatchObject({ text: "hello café 你好 €" });
+    expect(JSON.stringify(recorder.events)).not.toContain("\uFFFD");
+  });
+
+  it("Grok requireApproval + fullAuto does not skip the permission card", async () => {
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    await create(GrokAgentDriver, "permission", true);
+    await instance.adapter.sendTurn({ threadId: "t-grok-require", text: "go", requireApproval: true });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "permission", tool: "shell" });
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const modeAt = seen.argv.indexOf("--permission-mode");
+    expect(modeAt).toBeGreaterThan(-1);
+    expect(seen.argv[modeAt + 1]).toBe("default");
+    expect(seen.argv).not.toContain("bypassPermissions");
+    await instance.adapter.respondToRequest("t-grok-require", (opened as { requestId: string }).requestId, { behavior: "allow" });
+    await recorder.until((e) => e.type === "turn.completed");
   });
 
   it("surfaces a permission ask as request.opened and completes once allowed", async () => {

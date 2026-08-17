@@ -183,6 +183,25 @@ describe("approval rules", () => {
     expect(resolveOpenedRequest(BOT, "Read", "src/index.ts")?.source).toBe("rule");
   });
 
+  it("does not treat an unescaped ? as making the preceding char optional", () => {
+    // stored matcher "git status?" must be literal `?`, not "optional s"
+    expect(globMatch("git status", "git status?")).toBe(false);
+    expect(globMatch("git statu", "git status?")).toBe(false);
+    expect(globMatch("git status?", "git status?")).toBe(true);
+    addRule(BOT, { tool: "shell", pattern: "git status?", action: "allow" });
+    expect(resolveOpenedRequest(BOT, "shell", "git status")).toBeNull();
+    expect(resolveOpenedRequest(BOT, "shell", "git status?")?.behavior).toBe("allow");
+  });
+
+  it("Always-allow on a summary longer than the matcher cap still matches later", () => {
+    const summary = `npm test ${"x".repeat(250)}`;
+    expect(summary.length).toBeGreaterThan(200);
+    const rule = persistAllowRule({ botId: BOT, tool: "shell", summary, behavior: "allow", always: true });
+    expect(rule?.pattern.length).toBe(200);
+    expect(resolveOpenedRequest(BOT, "shell", summary)?.behavior).toBe("allow");
+    expect(autoResolvePermission({ id: BOT }, "shell", summary)?.behavior).toBe("allow");
+  });
+
   it("does not treat a substring as a match", () => {
     addRule(BOT, { tool: "Bash", pattern: "git status", action: "allow" });
     expect(globMatch("prefix git status suffix", "git status")).toBe(false);
