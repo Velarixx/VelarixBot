@@ -11,11 +11,20 @@
 //                        driver must skip them, then complete normally)
 //                      | crash-mid-turn (init + a partial delta, then exit 9
 //                        without a result — the restart-mid-turn shape)
-//   FAKE_CLAUDE_DUMP   path to write {argv, env, prompt} as JSON, so the
-//                      test can assert on argv shape and env hygiene
+//   FAKE_CLAUDE_DUMP   path to write {argv, env, prompt, mcpConfig, mcpConfigMode}
+//                      as JSON, so the test can assert on argv shape and env
+//                      hygiene. mcpConfig is read back from the --mcp-config
+//                      file the way the real CLI reads it — the driver writes
+//                      it to a private temp file and deletes it when the turn
+//                      settles, so a test cannot open it after the fact.
+//   FAKE_CLAUDE_AUTH   in (default) | out | unsupported | malformed |
+//                      inherited-api-key — what `auth status --json` reports.
+//                      Anything other than exactly `auth status --json` is
+//                      rejected (strict fake — an accept-anything probe would
+//                      hide a driver that dropped --json).
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
-import { writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_CLAUDE_MODE ?? "happy";
 
@@ -28,6 +37,31 @@ const argAfter = (flag: string): string | null => {
 if (argv.includes("--version")) {
   process.stdout.write("fake-claude 1.0.0\n");
   process.exit(0);
+}
+
+// Snapshot probes: answer on argv alone and exit without reading stdin.
+// Strict: only `auth status --json`. Missing --json or a different subcommand
+// is a hard fail so a driver that probes credentials.json / bare `auth status`
+// cannot hide behind an accept-anything fake.
+if (argv[0] === "auth") {
+  if (argv[1] !== "status" || !argv.includes("--json")) {
+    process.stderr.write("error: expected `auth status --json`\n");
+    process.exit(1);
+  }
+  const auth = process.env.FAKE_CLAUDE_AUTH ?? "in";
+  if (auth === "unsupported") {
+    process.stderr.write("error: unknown command 'auth'\n");
+    process.exit(1);
+  }
+  if (auth === "malformed") {
+    process.stdout.write("not json\n");
+    process.exit(0);
+  }
+  const loggedIn = auth === "in" || (auth === "inherited-api-key" && Boolean(process.env.ANTHROPIC_API_KEY));
+  process.stdout.write(
+    JSON.stringify({ loggedIn, authMethod: loggedIn ? "claude.ai" : "none", apiProvider: "firstParty" }) + "\n",
+  );
+  process.exit(auth === "out" ? 1 : 0);
 }
 
 // generateText one-shot (`-p … --output-format text`). Regular turns use
@@ -50,7 +84,21 @@ process.stdin.on("end", () => {
   }
 
   if (process.env.FAKE_CLAUDE_DUMP) {
-    writeFileSync(process.env.FAKE_CLAUDE_DUMP, JSON.stringify({ argv, env: process.env, prompt }, null, 2));
+    const configPath = argAfter("--mcp-config");
+    let mcpConfig: unknown = null;
+    let mcpConfigMode: number | null = null;
+    if (configPath) {
+      try {
+        mcpConfig = JSON.parse(readFileSync(configPath, "utf8"));
+        mcpConfigMode = statSync(configPath).mode & 0o777;
+      } catch {
+        /* leave null — the test will see it */
+      }
+    }
+    writeFileSync(
+      process.env.FAKE_CLAUDE_DUMP,
+      JSON.stringify({ argv, env: process.env, prompt, mcpConfig, mcpConfigMode }, null, 2),
+    );
   }
 
   const sessionId = argAfter("--resume") ?? argAfter("--session-id") ?? "fake-session";

@@ -6,7 +6,7 @@
 // Spawn-based tests are POSIX-only until Windows CLI spawning lands: the
 // fake CLI is a shebang script, which Windows cannot exec directly (the
 // same reason claude.cmd needs special handling — see the Windows PRs).
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -187,11 +187,18 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
-    const mcpConfig = JSON.parse(seen.argv[seen.argv.indexOf("--mcp-config") + 1]);
-    expect(mcpConfig.mcpServers.agents).toMatchObject({
+    const mcpArg = seen.argv[seen.argv.indexOf("--mcp-config") + 1] as string;
+    expect(mcpArg).toMatch(/velarix-mcp-/);
+    expect(mcpArg).not.toContain("mcpServers");
+    expect(mcpArg).not.toContain("OMB_COMMS_TOKEN");
+    expect(seen.mcpConfig.mcpServers.agents).toMatchObject({
       args: ["/fake/agents-proxy.js"],
       env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "tok" },
     });
+    // the config goes in a private file, never on argv, where `ps` would
+    // show the comms token to every other user on the machine
+    expect(JSON.stringify(seen.argv)).not.toContain("tok");
+    if (process.platform !== "win32") expect(seen.mcpConfigMode).toBe(0o600);
     const allowed = seen.argv[seen.argv.indexOf("--allowedTools") + 1];
     expect(allowed).toContain("mcp__agents");
   });
@@ -215,8 +222,10 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
-    const mcpConfig = JSON.parse(seen.argv[seen.argv.indexOf("--mcp-config") + 1]);
-    expect(mcpConfig.mcpServers.memory).toMatchObject({
+    const mcpArg = seen.argv[seen.argv.indexOf("--mcp-config") + 1] as string;
+    expect(mcpArg).toMatch(/velarix-mcp-/);
+    expect(JSON.stringify(seen.argv)).not.toContain("tok");
+    expect(seen.mcpConfig.mcpServers.memory).toMatchObject({
       args: ["/fake/memory-proxy.js"],
       env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "tok" },
     });
@@ -243,13 +252,81 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed");
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
-    const mcpConfig = JSON.parse(seen.argv[seen.argv.indexOf("--mcp-config") + 1]);
-    expect(mcpConfig.mcpServers.workspace).toMatchObject({
+    const mcpArg = seen.argv[seen.argv.indexOf("--mcp-config") + 1] as string;
+    expect(mcpArg).toMatch(/velarix-mcp-/);
+    expect(JSON.stringify(seen.argv)).not.toContain("tok");
+    expect(seen.mcpConfig.mcpServers.workspace).toMatchObject({
       args: ["/fake/workspace-proxy.js"],
       env: { OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "tok" },
     });
     const allowed = seen.argv[seen.argv.indexOf("--allowedTools") + 1];
     expect(allowed).toContain("mcp__workspace");
+  });
+
+  it("mounts the computer MCP spawn contract in the file, never on argv", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-computer",
+      text: "hi",
+      integrations: {
+        computer: {
+          provider: "local",
+          mcp: {
+            command: process.execPath,
+            args: ["/fake/computer-proxy.js"],
+            env: { CUA_SOCKET: "/tmp/cua.sock", CUA_TOKEN: "cua-live-dont-ps" },
+          },
+        },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const mcpArg = seen.argv[seen.argv.indexOf("--mcp-config") + 1] as string;
+    expect(mcpArg).toMatch(/velarix-mcp-/);
+    expect(JSON.stringify(seen.argv)).not.toContain("cua-live-dont-ps");
+    expect(JSON.stringify(seen.argv)).not.toContain("computer-proxy");
+    expect(seen.mcpConfig.mcpServers.computer).toMatchObject({
+      args: ["/fake/computer-proxy.js"],
+      env: { CUA_TOKEN: "cua-live-dont-ps" },
+    });
+    expect(seen.argv[seen.argv.indexOf("--allowedTools") + 1]).toContain("mcp__computer");
+  });
+
+  // the config file holds live credentials, so it must not outlive the turn —
+  // including when the CLI dies mid-turn, which is the path that leaks if
+  // cleanup is hung off the happy-path result instead of settle()
+  it.each([
+    ["a completed turn", "happy"],
+    ["a crashed turn", "exit-early"],
+  ])("deletes the mcp config file after %s", async (_label, mode) => {
+    await create(mode);
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-cleanup",
+      text: "hi",
+      integrations: {
+        workspace: {
+          command: process.execPath,
+          args: ["/fake/workspace-proxy.js"],
+          env: { OMB_HARNESS_URL: "http://127.0.0.1:1", OMB_BOT_ID: "b1", OMB_COMMS_TOKEN: "tok" },
+        },
+      },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const configPath = (() => {
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      return seen.argv[seen.argv.indexOf("--mcp-config") + 1] as string;
+    })();
+    expect(configPath).toMatch(/velarix-mcp-/);
+    expect(existsSync(configPath)).toBe(false);
+    expect(existsSync(dirname(configPath))).toBe(false);
   });
 
   it("resumes with --resume when a cursor exists and reports that session id", async () => {
@@ -450,5 +527,66 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     ).rejects.toThrow(/pending request/);
     await instance.adapter.interruptTurn("t-perm-2");
     await recorder.until((e) => e.type === "turn.completed");
+  });
+});
+
+// Auth state must come from the CLI, not from probing its credential store:
+// on macOS the OAuth tokens live in the login Keychain, so the old
+// ~/.claude/.credentials.json check reported signed-in users as signed out.
+posixOnly("ClaudeDriver snapshot auth (fake CLI)", () => {
+  let instance: ProviderInstance;
+
+  const create = async () => {
+    instance = await ClaudeDriver.create({
+      instanceId: "claude-auth-test",
+      displayName: "Claude Auth Test",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, permissionMode: "acceptEdits" },
+    });
+  };
+
+  beforeEach(() => {
+    ensureDirs();
+    chmodSync(FAKE_CLI, 0o755);
+  });
+
+  afterEach(async () => {
+    delete process.env.FAKE_CLAUDE_AUTH;
+    delete process.env.ANTHROPIC_API_KEY;
+    await instance?.dispose();
+  });
+
+  it("reports authenticated when `auth status --json` says loggedIn, with no credentials.json", async () => {
+    process.env.FAKE_CLAUDE_AUTH = "in";
+    await create();
+    expect(existsSync(join(process.env.HOME!, ".claude", ".credentials.json"))).toBe(false);
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: true, version: "fake-claude 1.0.0" });
+  });
+
+  it("reports signed out when `auth status` says loggedIn:false even if credentials.json exists", async () => {
+    const creds = join(process.env.HOME!, ".claude", ".credentials.json");
+    mkdirSync(join(process.env.HOME!, ".claude"), { recursive: true });
+    writeFileSync(creds, JSON.stringify({ stale: true }));
+    process.env.FAKE_CLAUDE_AUTH = "out";
+    await create();
+    expect(existsSync(creds)).toBe(true);
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });
+  });
+
+  it("fails closed instead of trusting stale credential storage", async () => {
+    await create();
+
+    process.env.FAKE_CLAUDE_AUTH = "unsupported";
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });
+
+    process.env.FAKE_CLAUDE_AUTH = "malformed";
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });
+
+    // The real turn removes inherited API keys, so the auth probe must do the
+    // same or setup can report a login the turn cannot use.
+    process.env.FAKE_CLAUDE_AUTH = "inherited-api-key";
+    process.env.ANTHROPIC_API_KEY = "sk-should-not-leak";
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: false });
   });
 });
