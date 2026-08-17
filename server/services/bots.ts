@@ -243,7 +243,7 @@ export function createBotsService(opts: {
       if (patch.color !== undefined) {
         const color = normalizeBotColor(patch.color);
         if (!color) invalid("color");
-        patch = { ...patch, color };
+        else patch = { ...patch, color };
       }
       if (patch.modelSelection !== undefined && !validModelSelection(patch.modelSelection)) invalid("modelSelection");
       for (const field of ["alwaysAllow", "requireApproval", "mascotPinned"] as const) {

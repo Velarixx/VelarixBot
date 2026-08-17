@@ -51,7 +51,7 @@ describe("2026-08-18 inspection live harness (no CLIs, bearer auth)", () => {
     expect(typeof send.body.messageId).toBe("string");
 
     const blocked = await h.sse.until(
-      (f) => f.kind === "bot" && f.bot?.id === bot.id && f.bot.state === "BLOCKED",
+      (f) => f.kind === "bot" && f.bot?.id === bot.id && f.bot?.state === "BLOCKED",
       15_000,
     );
     expect(blocked.bot?.stateDetail).toBeTruthy();
