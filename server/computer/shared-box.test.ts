@@ -149,6 +149,36 @@ describe("cleanup of stranded per-bot boxes (migration, 3.8)", () => {
   });
 });
 
+describe("shared trust domain lands in the audit log", () => {
+  it("exec / read / join on the shared machine carry machine:'shared'; per-bot mode stays silent", async () => {
+    const { readAudit } = await import("../approvals.ts");
+    const shared = await boxProvider({ shared: true });
+    try {
+      await shared.provider.provision({ id: "audit-bot-1", name: "Ada" });
+      await collect(shared.provider.execute("audit-bot-1", "ls"));
+      await shared.provider.readFile("audit-bot-1", "/tmp/x.txt");
+      await shared.provider.connectScreen("audit-bot-1");
+      const mine = readAudit().filter((e) => e.bot === "audit-bot-1");
+      expect(mine.map((e) => ({ tool: e.tool, decision: e.decision, machine: e.machine }))).toEqual([
+        { tool: "computer_exec", decision: "computer.exec", machine: "shared" },
+        { tool: "computer_read_file", decision: "computer.read", machine: "shared" },
+        { tool: "computer_join", decision: "computer.join", machine: "shared" },
+      ]);
+    } finally {
+      await shared.close();
+    }
+
+    const perBot = await boxProvider();
+    try {
+      await perBot.provider.provision({ id: "audit-bot-2", name: "Bea" });
+      await collect(perBot.provider.execute("audit-bot-2", "ls"));
+      expect(readAudit().filter((e) => e.bot === "audit-bot-2")).toEqual([]);
+    } finally {
+      await perBot.close();
+    }
+  });
+});
+
 describe("strict decode never crashes boot (registry shadow rule)", () => {
   it("an invalid box.shared downgrades the provider to an unavailable shadow", async () => {
     const cfg: AppConfig = { box: { token: "t", shared: "yes" as unknown as boolean } };

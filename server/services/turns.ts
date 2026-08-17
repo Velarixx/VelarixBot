@@ -798,6 +798,15 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   // Frames stream to clients as SSE {kind:'screen'} (the "Bot's screen"
   // panel); the final frame is folded into the transcript on turn end.
   // Only providers that declare the screenshot capability get a poller.
+  //
+  // 2026-08-17 [VERIFY] observation loop: there is no computer-observation
+  // module in this repo — this per-bot poller IS the observation path,
+  // keyed by botId and calling provider.screenshot(botId). In shared mode
+  // the lease serializes turns, so at most one bot's poller runs against
+  // the shared machine at a time and every panel simply shows the one
+  // desktop; re-keying per machine and fanning frames to every bound bot
+  // would be a new frame-routing layer, i.e. not cheap — deliberately
+  // skipped (spec: "own commit / skip if not cheap").
   type Frame = { png: string; mime: string };
   const screenPollers = new Map<
     string,

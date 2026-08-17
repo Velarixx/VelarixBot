@@ -4,6 +4,7 @@
 // default remote provider (the bundled Box binding when configured). The
 // bot→machine binding is recorded through the composition root (routes
 // never touch persistence).
+import type { LeaseBroker } from "../computer/leases.ts";
 import type { ComputerProvider } from "../computer/provider.ts";
 import type { ComputerRegistry } from "../computer/registry.ts";
 import type { BotsService } from "../services/bots.ts";
@@ -15,6 +16,18 @@ export function createComputersRoutes(deps: {
   recordBinding(botId: string, machineId: string): void;
   /** Existing screenshot stream: count a teach frame while recording (timestamps only). */
   onScreenshot?(botId: string): void;
+  /** The SAME broker turn dispatch acquires on — the suspend guard and the
+   * panel's "in use by" read it. Vendor-blind: keys are kind:machineId. */
+  leases?: Pick<LeaseBroker, "busyFor">;
+  /** True when this provider's machines are shared by every bot (the
+   * composition root knows; routes stay vendor-blind). */
+  isShared?(provider: ComputerProvider): boolean;
+  /** Migration cleanup (3.8): list/destroy this install's stranded per-bot
+   * machines. Injected by the composition root; absent = 409. */
+  cleanup?: {
+    list(): Promise<Array<{ id: string; name: string; state: string | null }>>;
+    destroy(ids: string[]): Promise<{ destroyed: Array<{ id: string; name: string }>; failed: Array<{ id: string; error: string }> }>;
+  };
 }): RouteHandler {
   const { bots, computers, recordBinding } = deps;
 
@@ -34,14 +47,40 @@ export function createComputersRoutes(deps: {
         return true;
       }
       const status = await provider.status(m[1]);
+      const shared = deps.isShared?.(provider) === true;
+      const inUseBy = status.machine
+        ? deps.leases?.busyFor(`${provider.kind}:${status.machine.id}`, m[1]) ?? null
+        : null;
       json(res, 200, {
         configured: status.configured,
         provider: provider.id,
         ...(status.reason ? { reason: status.reason } : {}),
+        ...(shared ? { shared: true } : {}),
+        ...(inUseBy ? { inUseBy: inUseBy.name } : {}),
         box: status.machine
           ? { boxId: status.machine.id, state: status.machine.state, desktopAvailable: status.machine.desktopAvailable ?? null }
           : null,
       });
+      return true;
+    }
+
+    // ── migration cleanup: stranded per-bot machines (prefix-scoped) ──
+    if (path === "/api/computer/cleanup" && (method === "GET" || method === "POST")) {
+      if (!deps.cleanup) {
+        json(res, 409, { error: "no cloud computer provider with cleanup is configured" });
+        return true;
+      }
+      if (method === "GET") {
+        json(res, 200, { boxes: await deps.cleanup.list() });
+        return true;
+      }
+      const body = await readBody(req);
+      const ids = (Array.isArray(body.boxIds) ? body.boxIds : []).map(String).filter(Boolean);
+      if (!ids.length) {
+        json(res, 400, { error: "boxIds required" });
+        return true;
+      }
+      json(res, 200, await deps.cleanup.destroy(ids));
       return true;
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/(provision|join|sleep|exec|screenshot)$/);
@@ -80,14 +119,25 @@ export function createComputersRoutes(deps: {
           json(res, 200, conn.kind === "url" ? { joinUrl: conn.url, state: conn.state ?? null } : { joinUrl: null });
           return true;
         }
-        case "sleep":
+        case "sleep": {
           if (!provider.capabilities.suspend) {
             unsupported("sleep");
+            return true;
+          }
+          // shared box: refuse to park the machine under another bot's
+          // running (or queued) turn — suspend mid-turn would strand it.
+          // Vendor-blind: any machine another bot is leasing is protected.
+          const status = await provider.status(botId).catch(() => null);
+          const machineId = status?.machine?.id;
+          const holder = machineId ? deps.leases?.busyFor(`${provider.kind}:${machineId}`, botId) : null;
+          if (holder) {
+            json(res, 409, { error: `in use by ${holder.name}` });
             return true;
           }
           await provider.suspend(botId);
           json(res, 200, { ok: true });
           return true;
+        }
         case "exec": {
           if (!provider.capabilities.exec) {
             unsupported("exec");
