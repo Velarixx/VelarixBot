@@ -11,6 +11,21 @@ const URL = (process.env.OMB_COMPOSIO_URL || "").trim() || CONNECT_URL;
 const KEY = process.env.OMB_COMPOSIO_KEY ?? "";
 const ALLOWED = parseAllowedToolkits(process.env.OMB_ALLOWED_TOOLKITS ?? "");
 
+function sessionHeaders(): Record<string, string> {
+  const raw = (process.env.OMB_COMPOSIO_MCP_HEADERS || "").trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === "string" && v) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 type Json = Record<string, unknown>;
 const send = (msg: Json) => process.stdout.write(JSON.stringify(msg) + "\n");
 const ok = (id: unknown, result: unknown) => send({ jsonrpc: "2.0", id, result });
@@ -27,13 +42,15 @@ function parseMcpResponse(text: string) {
 }
 
 async function remote(method: string, params: unknown): Promise<unknown> {
-  if (!KEY) throw new Error("no Composio key configured");
+  const extra = sessionHeaders();
+  if (!KEY && !Object.keys(extra).length) throw new Error("no Composio session configured");
   const res = await fetch(URL, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
-      "x-consumer-api-key": KEY,
+      ...(KEY ? { "x-consumer-api-key": KEY } : {}),
+      ...extra,
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     signal: AbortSignal.timeout(30_000),

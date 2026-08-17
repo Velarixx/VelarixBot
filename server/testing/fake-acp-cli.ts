@@ -61,6 +61,10 @@
 //                   REPLACING initialize's _meta.modelState — the gemini-cli
 //                   shape, where the model truth arrives on the session
 //                   result, not the handshake
+//   FAKE_ACP_INIT_MODELS  comma-separated modelIds to advertise on
+//                   initialize `_meta.modelState.availableModels` (Grok/
+//                   Hermes shape). Ignored when FAKE_ACP_SESSION_MODELS is
+//                   set. A lone currentModelId is the default — not a list.
 //   FAKE_ACP_SESSION_AUTH_MESSAGE  the -32000 error text for
 //                   session-auth-error mode (default "Authentication
 //                   required.")
@@ -89,6 +93,10 @@ const sessionModels = () =>
         },
       }
     : {};
+const initModelIds = (process.env.FAKE_ACP_INIT_MODELS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const argv = process.argv.slice(2);
 const dumpPath = process.env.FAKE_ACP_DUMP;
 function writeDump(patch: Record<string, unknown>) {
@@ -288,8 +296,20 @@ function handle(msg: any) {
         authMethods,
         agentCapabilities: { promptCapabilities: { image: mode !== "no-image" } },
         // gemini-cli's initialize carries no modelState — the model truth
-        // arrives on the session result instead
-        ...(sessionModelIds.length ? {} : { _meta: { modelState: { currentModelId: "fake-acp-model" } } }),
+        // arrives on the session result instead. Grok/Hermes default is
+        // currentModelId only (not a catalog). FAKE_ACP_INIT_MODELS adds a list.
+        ...(sessionModelIds.length
+          ? {}
+          : {
+              _meta: {
+                modelState: {
+                  currentModelId: initModelIds[0] ?? "fake-acp-model",
+                  ...(initModelIds.length
+                    ? { availableModels: initModelIds.map((id) => ({ modelId: id, name: id })) }
+                    : {}),
+                },
+              },
+            }),
       });
       break;
     }

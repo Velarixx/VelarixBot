@@ -33,6 +33,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
+import { FALLBACK_CLAUDE_MODELS, loadClaudeModelCatalog } from "./claude-models.ts";
 import { cliExec, cliVersion, killProcessTree, spawnCliHidden } from "./cli.ts";
 
 const DRIVER_KIND = "claudeAgent";
@@ -78,16 +79,22 @@ export interface ClaudeConfig {
   permissionMode: "acceptEdits" | "auto" | "bypassPermissions";
 }
 
-// model catalog ported from upstream packages/contracts/src/model.ts
-const MODELS = {
-  default: "claude-sonnet-5",
+// Dated 4-id fallback when `claude models` is missing or unparseable.
+const MODELS = FALLBACK_CLAUDE_MODELS;
+
+// [VERIFY] 2026-08-17: Claude Code CLI `--effort` accepts
+// low|medium|high|xhigh|max|ultracode. ultracode is a workflow mode — skip it.
+export const CLAUDE_EFFORT = {
+  default: "medium",
   options: [
-    { id: "claude-fable-5", label: "Claude Fable 5" },
-    { id: "claude-opus-5", label: "Claude Opus 5" },
-    { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
-    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+    { id: "low", label: "Low" },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+    { id: "xhigh", label: "Extra high" },
+    { id: "max", label: "Max" },
   ],
 };
+const CLAUDE_EFFORT_IDS = new Set(CLAUDE_EFFORT.options.map((o) => o.id));
 
 // proxy entry files live next to this one as .ts in dev (node type
 // stripping) and .js in the compiled dist-server the packaged app ships
@@ -262,6 +269,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
 
   async create(input: DriverCreateInput<ClaudeConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
+    const catalogEnv = claudeEnvironment({ ...process.env, ...input.environment });
+    let models = await loadClaudeModelCatalog(config.cli, catalogEnv);
+    let catalogAt = Date.now();
     const listeners = new Set<RuntimeEventListener>();
     // one active turn per thread; a second send while busy is a caller bug
     const active = new Map<string, { stop: () => void; turnId: string; broker?: ReturnType<typeof createPermissionBroker> }>();
@@ -301,6 +311,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (sessionId) args.push("--resume", sessionId);
       else args.push("--session-id", newSessionId!);
       if (turn.model) args.push("--model", turn.model);
+      if (turn.effort && CLAUDE_EFFORT_IDS.has(turn.effort)) args.push("--effort", turn.effort);
       if (turn.system) args.push("--append-system-prompt", turn.system);
 
       // integrations → MCP servers; pre-allow their tools (a headless
@@ -537,10 +548,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     };
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
-      const env = claudeEnvironment();
+      const env = claudeEnvironment({ ...process.env, ...input.environment });
       const version = await cliVersion(config.cli, 8000, env);
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
       const authenticated = await claudeSignedIn(config.cli, env);
+      if (Date.now() - catalogAt > 60_000) {
+        models = await loadClaudeModelCatalog(config.cli, env);
+        catalogAt = Date.now();
+      }
       return { state: "available", version, authenticated };
     };
 
@@ -549,7 +564,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       driverKind: DRIVER_KIND,
       displayName: input.displayName,
       enabled: input.enabled,
-      models: MODELS,
+      get models() {
+        return models;
+      },
+      effort: CLAUDE_EFFORT,
+      cli: config.cli,
       snapshot,
       adapter: {
         provider: DRIVER_KIND,

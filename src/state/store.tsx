@@ -75,6 +75,7 @@ export interface Group {
 export interface ModelSelection {
   instanceId: string;
   model: string;
+  effort?: string;
 }
 
 export interface Bot {
@@ -131,7 +132,7 @@ export interface Bot {
 /** GET /api/config — configured flags only; secrets are never echoed. */
 export interface ConfigStatus {
   xai?: { configured: boolean };
-  composio: { configured: boolean; apiKeyConfigured?: boolean };
+  composio: { configured: boolean; apiKeyConfigured?: boolean; connectKeyConfigured?: boolean };
   box: { configured: boolean; shared?: boolean; namePrefix?: string };
   github?: { configured: boolean };
   openai?: { configured: boolean };
@@ -206,6 +207,8 @@ export interface InstanceInfo {
     version?: string | null;
   };
   models: { default: string; options: Array<{ id: string; label: string }> };
+  effort?: { default: string; options: Array<{ id: string; label: string }> };
+  cli?: string;
 }
 
 interface AppState {

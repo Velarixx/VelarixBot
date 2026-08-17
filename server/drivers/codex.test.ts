@@ -17,6 +17,7 @@ import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { FALLBACK_CODEX_MODELS } from "./codex-models.ts";
 import {
   CodexDriver,
+  CODEX_EFFORT,
   CODEX_ELICITATION_METHOD,
   CODEX_MCP_ELICITATION_FEATURE,
   codexElicitationCard,
@@ -36,6 +37,10 @@ describe("CodexDriver.decodeConfig", () => {
     expect(CodexDriver.decodeConfig({ fullAuto: true }).fullAuto).toBe(true);
     // anything non-true is off — a truthy string must not enable full auto
     expect(CodexDriver.decodeConfig({ fullAuto: "yes" }).fullAuto).toBe(false);
+  });
+
+  it("advertises per-instance effort options for turn/start", () => {
+    expect(CODEX_EFFORT.options.map((o) => o.id)).toEqual(["low", "medium", "high", "xhigh"]);
   });
 });
 
@@ -238,12 +243,29 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
     const turnStart = seen.calls.at(-1);
     expect(turnStart.params.input[0].text).toBe("list files");
     expect(turnStart.params.input[0].text).not.toContain("You are Testy.");
+    expect(turnStart.params.effort).toBeUndefined();
     // no integrations → no mcp overlay on thread/start
     expect(seen.threadStartConfig).toBeNull();
     expect(seen.threadResumeConfig).toBeNull();
     expect(seen.cwd).toBe(join(DATA_DIR, "workspaces", "codex"));
-    expect(seen.cwd).not.toBe(homedir());
-    expect(threadStart.params.cwd).toBe(seen.cwd);
+  });
+
+  it("passes the bot's effort on turn/start and skips unknown values", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+    await instance.adapter.sendTurn({ threadId: "t-effort", text: "go", effort: "xhigh" });
+    await recorder.until((e) => e.type === "turn.completed");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    const turnStart = seen.calls.find((c: { method: string }) => c.method === "turn/start");
+    expect(turnStart.params.effort).toBe("xhigh");
+
+    recorder.events.length = 0;
+    await instance.adapter.sendTurn({ threadId: "t-effort-skip", text: "go", effort: "ultracode" });
+    await recorder.until((e) => e.type === "turn.completed");
+    const skipped = JSON.parse(readFileSync(dump, "utf8"));
+    const skippedStart = skipped.calls.find((c: { method: string }) => c.method === "turn/start");
+    expect(skippedStart.params.effort).toBeUndefined();
   });
 
   it("runs the CLI in the per-bot workspace, not the home directory", async () => {

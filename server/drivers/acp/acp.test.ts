@@ -79,6 +79,35 @@ describe("ACP decodeConfig", () => {
   });
 });
 
+describe("Grok catalog probe", () => {
+  it("stays static when initialize has only currentModelId", async () => {
+    const inst = await GrokAgentDriver.create({
+      instanceId: "grok-static-catalog",
+      displayName: "Grok",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    await inst.snapshot();
+    expect(inst.models.options.map((o) => o.id)).toEqual(["grok-4.5"]);
+    await inst.dispose();
+  });
+
+  it("uses initialize _meta.modelState.availableModels when a live list exists", async () => {
+    const inst = await GrokAgentDriver.create({
+      instanceId: "grok-live-catalog",
+      displayName: "Grok",
+      environment: { FAKE_ACP_INIT_MODELS: "grok-4.5,grok-4" },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    expect(inst.models.options.map((o) => o.id)).toEqual(["grok-4.5"]);
+    await inst.snapshot();
+    expect(inst.models.options.map((o) => o.id)).toEqual(["grok-4.5", "grok-4"]);
+    await inst.dispose();
+  });
+});
+
 describe("ACP credentialEnv deny-by-default", () => {
   it("the core allowlist is the router keys the fleet already injects", () => {
     expect(DEFAULT_ACP_CREDENTIAL_ENV).toEqual(["OPENROUTER_API_KEY", "OMNIROUTER_API_KEY"]);

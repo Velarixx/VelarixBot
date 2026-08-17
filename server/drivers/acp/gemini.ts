@@ -39,7 +39,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import type { ModelCatalog } from "../../contracts.ts";
 import { cliExec, killProcessTree, spawnCliHidden } from "../cli.ts";
+import { catalogFromAvailableModels } from "./catalog.ts";
 import { createAcpDriver, type AcpConfig, type AcpSupport } from "./core.ts";
 
 // Where gemini-cli keeps its user-scope state. settings.json's
@@ -75,8 +77,18 @@ const AUTH_PROBE_TIMEOUT = 8_000;
  * non-auth error, a spawn failure, or a timeout — the signed-out-OAuth
  * shape hangs session/new on an interactive login flow — resolve undefined
  * so the disk/env heuristic below stays the fallback. */
-function probeSessionAuth(config: AcpConfig, env: Record<string, string | undefined>): Promise<boolean | undefined> {
-  return new Promise((resolve) => {
+type SessionProbe = { authenticated: boolean | undefined; models: ModelCatalog | null };
+
+/** One initialize + session/new: auth gate AND models.availableModels.
+ * Shared by probeAuthenticated and resolveModels so a cache refresh is
+ * one spawn, not two. In-flight calls with the same cli+mode coalesce. */
+const sessionProbes = new Map<string, Promise<SessionProbe>>();
+
+function probeSession(config: AcpConfig, env: Record<string, string | undefined>): Promise<SessionProbe> {
+  const key = `${config.cli}\0${env.FAKE_ACP_MODE ?? ""}\0${env.FAKE_ACP_SESSION_MODELS ?? ""}\0${env.FAKE_GEMINI_AUTH ?? ""}`;
+  const hit = sessionProbes.get(key);
+  if (hit) return hit;
+  const pending = new Promise<SessionProbe>((resolve) => {
     let child: ReturnType<typeof spawnCliHidden>;
     try {
       child = spawnCliHidden(config.cli, ACP_ARGS, {
@@ -85,17 +97,17 @@ function probeSessionAuth(config: AcpConfig, env: Record<string, string | undefi
         detached: true,
       });
     } catch {
-      return resolve(undefined);
+      return resolve({ authenticated: undefined, models: null });
     }
     let done = false;
-    const finish = (v: boolean | undefined) => {
+    const finish = (v: SessionProbe) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       killProcessTree(child.pid);
       resolve(v);
     };
-    const timer = setTimeout(() => finish(undefined), AUTH_PROBE_TIMEOUT);
+    const timer = setTimeout(() => finish({ authenticated: undefined, models: null }), AUTH_PROBE_TIMEOUT);
     timer.unref?.();
     const send = (obj: unknown) => {
       try {
@@ -121,23 +133,32 @@ function probeSessionAuth(config: AcpConfig, env: Record<string, string | undefi
         if (msg.id === 1) {
           send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: homedir(), mcpServers: [] } });
         } else if (msg.id === 2) {
-          if (msg.result !== undefined) return finish(true);
-          return finish(msg.error?.code === ACP_AUTH_REQUIRED_CODE ? false : undefined);
+          if (msg.result !== undefined) {
+            return finish({ authenticated: true, models: catalogFromAvailableModels(msg.result) });
+          }
+          return finish({
+            authenticated: msg.error?.code === ACP_AUTH_REQUIRED_CODE ? false : undefined,
+            models: null,
+          });
         }
       }
     });
-    child.on("error", () => finish(undefined));
+    child.on("error", () => finish({ authenticated: undefined, models: null }));
     child.stdin.on("error", () => {
       /* close/timeout resolves */
     });
-    child.on("close", () => finish(undefined));
+    child.on("close", () => finish({ authenticated: undefined, models: null }));
     send({
       jsonrpc: "2.0",
       id: 1,
       method: "initialize",
       params: { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } } },
     });
+  }).finally(() => {
+    setTimeout(() => sessionProbes.delete(key), 1_000).unref?.();
   });
+  sessionProbes.set(key, pending);
+  return pending;
 }
 
 /** The auth method the user themselves configured (nested current schema,
@@ -162,10 +183,11 @@ const support: AcpSupport = {
   // What a live gemini-cli 0.55.1 advertised in session/new's
   // models.availableModels (probed 2026-08-16) — the ids are the CLI's own
   // modelIds verbatim, "auto" is ITS default (currentModelId with no -m).
-  // This is a dated fallback for the picker, not the runtime truth: the
-  // session.started event reports whatever currentModelId the CLI actually
-  // advertises for the session (core.ts), so a CLI-side catalog change is
-  // visible per turn even before this list is re-probed.
+  // This is a dated fallback for the picker, not the runtime truth.
+  // [VERIFY] 2026-08-17: live gemini-cli advertises models.availableModels
+  // on session/new (FAKE_ACP_SESSION_MODELS in fakes). resolveModels
+  // refreshes instance.models on the identity-cache cadence so describe()
+  // is not stuck on these create-time constants.
   models: {
     default: "auto",
     options: [
@@ -216,7 +238,10 @@ const support: AcpSupport = {
   // a file). Runs on identity-cache refresh only; the cache key still
   // carries the isAuthenticated hint, so a login that touches the disk/env
   // signature re-probes immediately instead of waiting out the 60s TTL.
-  probeAuthenticated: (config, env) => probeSessionAuth(config, env),
+  probeAuthenticated: async (config, env) => (await probeSession(config, env)).authenticated,
+  // [VERIFY] 2026-08-17: catalog is session/new models.availableModels.
+  // Same spawn as the auth probe (coalesced). No keys on argv.
+  resolveModels: async (config, env) => (await probeSession(config, env)).models,
 
   // FALLBACK heuristic only — used when the CLI probe is inconclusive
   // (non-auth session error, or the signed-out-OAuth interactive hang).

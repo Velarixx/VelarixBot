@@ -6,6 +6,7 @@
 //     project API key; when it isn't, the caller falls back to the curated
 //     catalog below (logos then resolve via favicon fallback client-side).
 import type { AppConfig } from "./config.ts";
+import { composioBackendUrl, composioSessionKey, sessionUserId } from "./composio-sessions.ts";
 
 const CONNECT_URL = "https://connect.composio.dev/mcp";
 const BACKEND_URL = "https://backend.composio.dev/api/v3";
@@ -45,8 +46,17 @@ export async function composioTool(cfg: AppConfig, name: string, args: unknown) 
   return parseMcpResponse(await res.text());
 }
 
-/** Connection status per service slug: { slack: { connected, status } }. */
-export async function connectionStatus(cfg: AppConfig, slugs: string[]) {
+/** Connection status per service slug: { slack: { connected, status } }.
+ * Sessions path (apiKey + user_id) first; Connect ck_ is the fallback. */
+export async function connectionStatus(cfg: AppConfig, slugs: string[], botId?: string) {
+  if (composioSessionKey(cfg) && botId) {
+    return connectionStatusForUser(cfg, slugs, sessionUserId(botId));
+  }
+  if (!cfg.composio?.key) {
+    const status: Record<string, { connected: boolean; status: string }> = {};
+    for (const slug of slugs) status[slug] = { connected: false, status: "unknown" };
+    return status;
+  }
   const out = await composioTool(cfg, "COMPOSIO_MANAGE_CONNECTIONS", {
     toolkits: slugs.map((name) => ({ name, action: "list" })),
   });
@@ -61,8 +71,72 @@ export async function connectionStatus(cfg: AppConfig, slugs: string[]) {
   return status;
 }
 
+async function backendGet(cfg: AppConfig, path: string): Promise<{ ok: boolean; status: number; body: any }> {
+  const key = composioSessionKey(cfg);
+  if (!key) throw new Error("no Composio API key");
+  const res = await fetch(`${composioBackendUrl(cfg)}${path}`, {
+    headers: { "x-api-key": key },
+    signal: AbortSignal.timeout(15_000),
+  });
+  return { ok: res.ok, status: res.status, body: await res.json().catch(() => null) };
+}
+
+async function backendPost(cfg: AppConfig, path: string, body: unknown): Promise<{ ok: boolean; status: number; body: any }> {
+  const key = composioSessionKey(cfg);
+  if (!key) throw new Error("no Composio API key");
+  const res = await fetch(`${composioBackendUrl(cfg)}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": key },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
+  });
+  return { ok: res.ok, status: res.status, body: await res.json().catch(() => null) };
+}
+
+async function backendDelete(cfg: AppConfig, path: string): Promise<{ ok: boolean; status: number; body: any }> {
+  const key = composioSessionKey(cfg);
+  if (!key) throw new Error("no Composio API key");
+  const res = await fetch(`${composioBackendUrl(cfg)}${path}`, {
+    method: "DELETE",
+    headers: { "x-api-key": key },
+    signal: AbortSignal.timeout(15_000),
+  });
+  return { ok: res.ok, status: res.status, body: await res.json().catch(() => null) };
+}
+
+function accountsOf(body: any): any[] {
+  const items = body?.items ?? body?.data ?? body?.connected_accounts ?? [];
+  return Array.isArray(items) ? items : [];
+}
+
+async function connectionStatusForUser(cfg: AppConfig, slugs: string[], userId: string) {
+  const q = new URLSearchParams({ user_ids: userId });
+  if (slugs.length) q.set("toolkit_slugs", slugs.join(","));
+  const { body } = await backendGet(cfg, `/connected_accounts?${q}`);
+  const accounts = accountsOf(body);
+  const status: Record<string, { connected: boolean; status: string }> = {};
+  for (const slug of slugs) {
+    const mine = accounts.filter((a: any) => String(a.toolkit?.slug ?? a.toolkit_slug ?? a.appName ?? "").toLowerCase() === slug);
+    const active = mine.some((a: any) => /active/i.test(String(a.status ?? a.connection_status ?? "")));
+    status[slug] = { connected: active, status: active ? "ACTIVE" : "unknown" };
+  }
+  return status;
+}
+
 /** Disconnect a service: remove every connected account for the slug. */
-export async function removeService(cfg: AppConfig, slug: string) {
+export async function removeService(cfg: AppConfig, slug: string, botId?: string) {
+  if (composioSessionKey(cfg) && botId) {
+    const userId = sessionUserId(botId);
+    const q = new URLSearchParams({ user_ids: userId, toolkit_slugs: slug });
+    const { body } = await backendGet(cfg, `/connected_accounts?${q}`);
+    const ids = accountsOf(body)
+      .map((a: any) => a.id ?? a.account_id ?? a.nanoid)
+      .filter(Boolean);
+    for (const id of ids) {
+      await backendDelete(cfg, `/connected_accounts/${encodeURIComponent(String(id))}`);
+    }
+    return { removed: ids.length };
+  }
   const out = await composioTool(cfg, "COMPOSIO_MANAGE_CONNECTIONS", {
     toolkits: [{ name: slug, action: "list" }],
   });
@@ -77,7 +151,19 @@ export async function removeService(cfg: AppConfig, slug: string) {
 }
 
 /** Mint a browser auth link for one service. Returns { url } or throws. */
-export async function authorizeService(cfg: AppConfig, slug: string) {
+export async function authorizeService(cfg: AppConfig, slug: string, botId?: string) {
+  if (composioSessionKey(cfg) && botId) {
+    const { ok, status, body } = await backendPost(cfg, "/connected_accounts", {
+      user_id: sessionUserId(botId),
+      toolkit: slug,
+    });
+    if (!ok) throw new Error(`Composio authorize failed (${status})`);
+    const raw = JSON.stringify(body);
+    const urls = raw.match(/https:\/\/[^"\\\s]+/g) ?? [];
+    const url = urls.find((u) => /composio|connect|auth/i.test(u)) ?? urls[0];
+    if (!url) throw new Error(`Composio returned no auth link for ${slug}`);
+    return { url };
+  }
   const out = await composioTool(cfg, "COMPOSIO_MANAGE_CONNECTIONS", {
     toolkits: [{ name: slug, action: "add" }],
   });
@@ -142,7 +228,8 @@ export async function listToolkits(cfg: AppConfig): Promise<{ cards: ToolkitCard
   const backendKey = cfg.composio?.apiKey ?? cfg.composio?.key;
   if (backendKey) {
     try {
-      const res = await fetch(`${BACKEND_URL}/toolkits?limit=500&sort_by=usage`, {
+      const base = cfg.composio?.backendUrl?.trim() ? composioBackendUrl(cfg) : BACKEND_URL;
+      const res = await fetch(`${base}/toolkits?limit=500&sort_by=usage`, {
         headers: { "x-api-key": backendKey },
         signal: AbortSignal.timeout(15_000),
       });

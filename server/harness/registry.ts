@@ -111,6 +111,8 @@ export class ProviderRegistry {
           displayName: inst.displayName ?? inst.driverKind,
           snapshot,
           models: inst.models,
+          ...(inst.effort ? { effort: inst.effort } : {}),
+          ...(inst.cli ? { cli: inst.cli } : {}),
         };
       }),
     );

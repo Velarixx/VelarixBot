@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 
 import type {
   DriverCreateInput,
+  ModelCatalog,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,
@@ -107,6 +108,13 @@ export interface AcpSupport {
     env: Record<string, string | undefined>,
     prompt: string,
   ): Promise<string>;
+  /** Live model catalog. Called on identity-cache refresh only (60s),
+   * never per describe(). Return null to keep the create-time fallback. */
+  resolveModels?(
+    config: AcpConfig,
+    env: Record<string, string | undefined>,
+    init?: unknown,
+  ): Promise<ModelCatalog | null>;
 }
 
 const INIT_TIMEOUT = 20_000;
@@ -201,6 +209,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
     async create(input: DriverCreateInput<AcpConfig>): Promise<ProviderInstance> {
       const { instanceId, config } = input;
+      let models = support.models;
       const listeners = new Set<RuntimeEventListener>();
       interface Turn {
         stop: () => void;
@@ -659,6 +668,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               ? await support.probeAuthenticated(config, env).catch(() => undefined)
               : undefined;
           identityCache = { key, at: Date.now(), ...probe, probedAuth };
+          if (probe.ok && support.resolveModels) {
+            const live = await support.resolveModels(config, env, probe.init).catch(() => null);
+            if (live?.options.length) models = live;
+          }
         }
         // Signed-in truth, in order: the probe's initialize result when the
         // harness derives auth from the handshake (undefined — unknown,
@@ -699,7 +712,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         driverKind: DRIVER_KIND,
         displayName: input.displayName,
         enabled: input.enabled,
-        models: support.models,
+        // [VERIFY] 2026-08-17: ACP (Gemini/Grok/Hermes) has no effort channel
+        // on session/prompt or spawn argv. Skip — do not invent flags.
+        get models() {
+          return models;
+        },
+        cli: config.cli,
         snapshot,
         ...(support.generateText
           ? { generateText: (prompt: string) => support.generateText!(config, childEnv(), prompt) }

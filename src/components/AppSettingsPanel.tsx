@@ -3,7 +3,7 @@
 // live in SettingsPanel; contextual Box-token entry stays in ComputerPanel.
 import { X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, useStore, type ConfigStatus } from "@/state/store";
+import { api, useStore, type ConfigStatus, type InstanceInfo } from "@/state/store";
 import { ApiKeyRow } from "./ApiKeys";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
@@ -75,6 +75,80 @@ function SharedBoxRows() {
   );
 }
 
+
+/** Per-engine CLI path. Instance-level only — spawnCliHidden / displayCliPath
+ * bind `config.cli`. Empty save clears the override (bare PATH name). */
+function EngineCliRows() {
+  const { state, dispatch } = useStore();
+  const engines = state.instances.filter((i) => typeof i.cli === "string");
+  if (!engines.length) return null;
+  return (
+    <div className="mt-4 rounded-xl bg-card p-4">
+      <div className="text-[15px] font-medium text-ink">Engine CLIs</div>
+      <div className="mt-0.5 text-[13px] text-ink-secondary">
+        Override the binary each engine spawns. Instance-level — not per bot. Empty restores the default PATH name.
+      </div>
+      <div className="mt-4 flex flex-col gap-3">
+        {engines.map((instance) => (
+          <EngineCliRow key={instance.instanceId} instance={instance} onSaved={(instances) => dispatch({ type: "instances", instances })} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EngineCliRow({
+  instance,
+  onSaved,
+}: {
+  instance: InstanceInfo;
+  onSaved: (instances: InstanceInfo[]) => void;
+}) {
+  const saved = instance.cli ?? "";
+  const [path, setPath] = useState(saved);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setPath(saved), [saved]);
+
+  const save = () => {
+    setSaving(true);
+    setError(null);
+    api(`/api/instances/${encodeURIComponent(instance.instanceId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ cli: path.trim() }),
+    })
+      .then((body: { instances?: InstanceInfo[] }) => {
+        if (Array.isArray(body.instances)) onSaved(body.instances);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <div>
+      <div className="mb-1.5 text-[13px] text-ink-secondary">{instance.displayName}</div>
+      <div className="flex gap-2">
+        <input
+          value={path}
+          onChange={(e) => setPath(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && save()}
+          placeholder={instance.instanceId}
+          autoComplete="off"
+          className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+        />
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving || path.trim() === saved}
+          className="w-[72px] shrink-0 rounded-lg bg-raised py-2 text-[13px] text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {error && <div className="mt-1 text-[12px] text-danger">{error}</div>}
+    </div>
+  );
+}
 
 /** Launch-at-login — desktop shell only; default off. */
 function LaunchAtLoginRow() {
@@ -296,12 +370,12 @@ export function AppSettingsPanel() {
             shown again.
           </div>
           <div className="mt-4 flex flex-col gap-4">
-            <ApiKeyRow section="composio" label="Composio Connect key" placeholder="ck_…" />
             <ApiKeyRow
               section="composioApi"
-              label="Composio API key (optional)"
-              placeholder="ak_…  unlocks the full app catalog"
+              label="Composio API key"
+              placeholder="ak_…  Sessions per bot + full catalog"
             />
+            <ApiKeyRow section="composio" label="Composio Connect key (optional)" placeholder="ck_…  optional fallback" />
             <button
               type="button"
               onClick={() => {
@@ -325,6 +399,8 @@ export function AppSettingsPanel() {
             <ApiKeyRow section="omnirouter" label="OmniRouter key" placeholder="Paste key — never shown again" />
           </div>
         </div>
+
+        <EngineCliRows />
 
         <LaunchAtLoginRow />
 

@@ -20,6 +20,21 @@ describe("Settings Apps card stays on the same hub model", () => {
     expect(settings).not.toMatch(/mcpServers/);
   });
 
+  it("does not change P0.1 Always allow copy or behavior", () => {
+    expect(settings).toContain('aria-label="Always allow"');
+    expect(settings).toMatch(/Let this bot do routine reads, writes, tool calls, and connected-app actions without/);
+    expect(settings).toContain("Only this bot — never workspace-wide");
+    expect(settings).toContain("patch({ alwaysAllow: !bot.alwaysAllow })");
+  });
+
+  it("App Settings exposes per-engine CLI path via PATCH /api/instances/:id", () => {
+    expect(appSettings).toContain("Engine CLIs");
+    expect(appSettings).toContain("/api/instances/");
+    expect(appSettings).toContain('method: "PATCH"');
+    expect(appSettings).toContain("encodeURIComponent(instance.instanceId)");
+    expect(appSettings).not.toContain("bot.cli");
+  });
+
   it("App Settings only links to the hub and keeps keys write-only", () => {
     expect(appSettings).toContain("togglePlugins");
     expect(appSettings).toContain("Manage apps");

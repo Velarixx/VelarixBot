@@ -73,6 +73,33 @@ describe("Hermes decodeConfig", () => {
     expect(HermesAgentDriver.models.options.map((o) => o.id)).toEqual(["gpt-5.6-sol", "gpt-5.5"]);
   });
 
+  it("keeps the static catalog when initialize has only currentModelId", async () => {
+    const inst = await HermesAgentDriver.create({
+      instanceId: "hermes-static-catalog",
+      displayName: "Hermes",
+      environment: { FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    await inst.snapshot();
+    expect(inst.models.options.map((o) => o.id)).toEqual(["gpt-5.6-sol", "gpt-5.5"]);
+    await inst.dispose();
+  });
+
+  it("uses initialize _meta.modelState.availableModels when a live list exists", async () => {
+    const inst = await HermesAgentDriver.create({
+      instanceId: "hermes-live-catalog",
+      displayName: "Hermes",
+      environment: { FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS, FAKE_ACP_INIT_MODELS: "gpt-5.6-sol,gpt-5.4" },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    expect(inst.models.options.map((o) => o.id)).toEqual(["gpt-5.6-sol", "gpt-5.5"]);
+    await inst.snapshot();
+    expect(inst.models.options.map((o) => o.id)).toEqual(["gpt-5.6-sol", "gpt-5.4"]);
+    await inst.dispose();
+  });
+
   it("is user-portable: bare PATH name by default, config.cli override, no baked-in install path", () => {
     // the default is a bare binary name resolved on PATH — never a directory
     const cli = HermesAgentDriver.decodeConfig({}).cli;

@@ -47,6 +47,19 @@ import { codexImageInput } from "../attachments.ts";
 import { HANDOFF_CONTINUE, classifyOpenedRequest, isCredentialAsk } from "../handoff.ts";
 import { cliVersion, displayCliPath, killProcessTree, probeProtocol, spawnCliHidden } from "./cli.ts";
 import { FALLBACK_CODEX_MODELS, loadCodexModelCatalog } from "./codex-models.ts";
+
+// [VERIFY] 2026-08-17: Codex app-server `turn/start` accepts `effort`.
+// Typical values low|medium|high|xhigh. No ultracode channel.
+export const CODEX_EFFORT = {
+  default: "medium",
+  options: [
+    { id: "low", label: "Low" },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+    { id: "xhigh", label: "Extra high" },
+  ],
+};
+const CODEX_EFFORT_IDS = new Set(CODEX_EFFORT.options.map((o) => o.id));
 import { appendNative } from "./native.ts";
 
 const DRIVER_KIND = "codex";
@@ -614,10 +627,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             startedModel = started?.model ?? null;
           }
           emit({ ...base(threadId, turnId), type: "session.started", sessionId: codexThreadId, model: startedModel ?? turn.model ?? null });
-          await request("turn/start", {
+          const turnStart: Record<string, unknown> = {
             threadId: codexThreadId,
             input: [{ type: "text", text: turn.text }, ...codexImageInput(turn.attachments ?? [])],
-          });
+          };
+          if (turn.effort && CODEX_EFFORT_IDS.has(turn.effort)) turnStart.effort = turn.effort;
+          await request("turn/start", turnStart);
         } catch (e) {
           if (!state.settled) {
             emit({ ...base(threadId, turnId), type: "runtime.error", message: (e as Error).message });
@@ -667,6 +682,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       get models() {
         return models;
       },
+      effort: CODEX_EFFORT,
+      cli: config.cli,
       snapshot,
       adapter: {
         provider: DRIVER_KIND,

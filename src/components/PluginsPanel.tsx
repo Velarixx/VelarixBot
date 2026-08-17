@@ -1,11 +1,19 @@
-// Apps hub — one place to see the Composio catalog, connection status,
-// Connect/Disconnect, and per-bot enable for the selected bot. Connections
-// stay workspace-wide; enabledApps is the per-bot mount gate (empty = none).
-// Built-in harness MCP is not inventory. No user-authored custom MCP form.
+// Apps hub — Sessions (create/list/revoke, user_id=velarix_<botId>) are the
+// mount path. Connect/ck_ is optional fallback. enabledApps is the per-bot
+// mount gate (empty = none). Built-in harness MCP is not inventory.
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, RefreshCw, X } from "lucide-react";
 import { api, useStore } from "@/state/store";
-import { CONNECTOR_PATHS, enabledAppSlugs, filterCatalogCards, hubUnconfiguredCopy, toggleEnabledApp, type CatalogCard } from "@/lib/apps";
+import {
+  CONNECTOR_PATHS,
+  enabledAppSlugs,
+  filterCatalogCards,
+  hubUnconfiguredCopy,
+  sessionUserId,
+  toggleEnabledApp,
+  type CatalogCard,
+  type ComposioSession,
+} from "@/lib/apps";
 import { cn } from "@/lib/cn";
 
 function ServiceIcon({ card }: { card: CatalogCard }) {
@@ -37,21 +45,33 @@ export function PluginsPanel() {
   const [cards, setCards] = useState<CatalogCard[] | null>(null);
   const [source, setSource] = useState<"api" | "curated">("curated");
   const [configured, setConfigured] = useState(true);
+  const [sessionsConfigured, setSessionsConfigured] = useState(false);
+  const [sessions, setSessions] = useState<ComposioSession[]>([]);
   const [status, setStatus] = useState<Record<string, { connected: boolean }>>({});
   const [busySlug, setBusySlug] = useState<string | null>(null);
+  const [sessionBusy, setSessionBusy] = useState<"create" | string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const unconfigured = hubUnconfiguredCopy();
 
+  const refreshSessions = useCallback(() => {
+    return api(CONNECTOR_PATHS.sessions)
+      .then((r) => {
+        setSessionsConfigured(Boolean(r.configured));
+        setSessions(Array.isArray(r.sessions) ? r.sessions : []);
+      })
+      .catch(() => {});
+  }, []);
+
   const refreshStatus = useCallback((slugs: string[]) => {
     if (!slugs.length) return Promise.resolve();
     setRefreshing(true);
-    return api(CONNECTOR_PATHS.status(slugs))
+    return api(CONNECTOR_PATHS.status(slugs, bot?.id))
       .then((r) => setStatus(r.services ?? {}))
       .catch(() => {})
       .finally(() => setRefreshing(false));
-  }, []);
+  }, [bot?.id]);
 
   useEffect(() => {
     let alive = true;
@@ -62,17 +82,18 @@ export function PluginsPanel() {
         setSource(r.source ?? "curated");
         setConfigured(Boolean(r.configured));
         if (r.configured) void refreshStatus((r.cards ?? []).map((c: CatalogCard) => c.slug).slice(0, 40));
+        void refreshSessions();
       })
       .catch((e) => alive && setError(e.message));
     return () => {
       alive = false;
     };
-  }, [refreshStatus]);
+  }, [refreshStatus, refreshSessions]);
 
   const connect = (slug: string) => {
     setBusySlug(slug);
     setError(null);
-    api(CONNECTOR_PATHS.authorize(slug), { method: "POST" })
+    api(CONNECTOR_PATHS.authorize(slug, bot?.id), { method: "POST", body: JSON.stringify(bot?.id ? { botId: bot.id } : {}) })
       .then(({ url }) => {
         window.open(url);
         // the user finishes OAuth in the browser; poll a few times to catch it
@@ -88,10 +109,32 @@ export function PluginsPanel() {
 
   const disconnect = (slug: string) => {
     setBusySlug(slug);
-    api(CONNECTOR_PATHS.disconnect(slug), { method: "DELETE" })
+    api(CONNECTOR_PATHS.disconnect(slug, bot?.id), { method: "DELETE" })
       .then(() => refreshStatus([slug]))
       .catch((e) => setError(e.message))
       .finally(() => setBusySlug(null));
+  };
+
+  const createSession = () => {
+    if (!bot) return;
+    setSessionBusy("create");
+    setError(null);
+    api(CONNECTOR_PATHS.sessions, { method: "POST", body: JSON.stringify({ botId: bot.id }) })
+      .then((r) => {
+        if (r.error) throw new Error(r.error);
+        return refreshSessions();
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setSessionBusy(null));
+  };
+
+  const revokeSession = (sessionId: string) => {
+    setSessionBusy(sessionId);
+    setError(null);
+    api(CONNECTOR_PATHS.revoke(sessionId), { method: "DELETE" })
+      .then(() => refreshSessions())
+      .catch((e) => setError(e.message))
+      .finally(() => setSessionBusy(null));
   };
 
   const toggleEnable = (slug: string) => {
@@ -134,15 +177,16 @@ export function PluginsPanel() {
           </div>
         </div>
         <div className="mt-1 text-[13px] text-ink-secondary">
-          Connect apps through Composio Connect. Connections are workspace-wide.
+          Sessions are the mount path — one per bot, identity{" "}
+          <code className="text-ink">{bot ? sessionUserId(bot.id) : "velarix_<botId>"}</code>.
+          Connect key is optional. Enable is per bot
           {bot ? (
             <>
               {" "}
-              Enable is per bot — currently <span className="text-ink">{bot.name}</span>.
+              — currently <span className="text-ink">{bot.name}</span>
             </>
-          ) : (
-            " Enable is per bot."
-          )}
+          ) : null}
+          . Empty enable is none, not all.
         </div>
 
         {!configured && (
@@ -176,6 +220,51 @@ export function PluginsPanel() {
           </div>
         )}
         {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
+
+        {bot && (
+          <section className="mt-3 rounded-xl border border-hairline/40 bg-card p-3" aria-label="Composio sessions">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[13px] font-medium text-ink">Sessions</div>
+                <div className="text-[12px] text-ink-secondary">
+                  user_id <code className="text-ink">{sessionUserId(bot.id)}</code>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={!sessionsConfigured || sessionBusy === "create"}
+                onClick={createSession}
+                className="rounded-lg bg-raised px-3 py-1.5 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
+              >
+                {sessionBusy === "create" ? "Creating…" : "Create session"}
+              </button>
+            </div>
+            {sessions.length === 0 ? (
+              <p className="mt-2 text-[12px] text-ink-secondary">
+                No sessions. Create one for this bot, or leave empty — no key/session is honest empty.
+              </p>
+            ) : (
+              <ul className="mt-2 flex flex-col gap-1">
+                {sessions.map((s) => (
+                  <li key={s.sessionId} className="flex items-center justify-between gap-2 text-[12px]">
+                    <span className="min-w-0 truncate text-ink">
+                      {s.userId}
+                      <span className="ml-2 text-ink-secondary">{s.sessionId}</span>
+                    </span>
+                    <button
+                      type="button"
+                      disabled={sessionBusy === s.sessionId}
+                      onClick={() => revokeSession(s.sessionId)}
+                      className="shrink-0 text-ink-secondary hover:text-danger"
+                    >
+                      {sessionBusy === s.sessionId ? "Revoking…" : "Revoke"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
 
         <input
           value={search}

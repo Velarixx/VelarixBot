@@ -42,15 +42,30 @@ export function filterCatalogCards<T extends { label: string; slug: string; blur
 /** Honest empty copy when Composio is optional / unconfigured. */
 export function hubUnconfiguredCopy(): { title: string; action: string } {
   return {
-    title: "No Composio Connect key yet —",
+    title: "No Composio API key yet —",
     action: "add one in App Settings",
   };
 }
 
+export interface ComposioSession {
+  botId: string;
+  userId: string;
+  sessionId: string;
+}
+
 export const CONNECTOR_PATHS = {
   catalog: "/api/connectors/catalog",
-  status: (slugs: string[]) => `/api/connectors?services=${slugs.join(",")}`,
-  authorize: (slug: string) => `/api/connectors/${slug}/authorize`,
-  disconnect: (slug: string) => `/api/connectors/${slug}`,
+  sessions: "/api/connectors/sessions",
+  revoke: (sessionId: string) => `/api/connectors/sessions/${encodeURIComponent(sessionId)}`,
+  status: (slugs: string[], botId?: string) =>
+    `/api/connectors?services=${slugs.join(",")}${botId ? `&botId=${encodeURIComponent(botId)}` : ""}`,
+  authorize: (slug: string, botId?: string) =>
+    `/api/connectors/${slug}/authorize${botId ? `?botId=${encodeURIComponent(botId)}` : ""}`,
+  disconnect: (slug: string, botId?: string) =>
+    `/api/connectors/${slug}${botId ? `?botId=${encodeURIComponent(botId)}` : ""}`,
   bot: (botId: string) => `/api/bots/${botId}`,
 } as const;
+
+export function sessionUserId(botId: string): string {
+  return `velarix_${botId}`;
+}

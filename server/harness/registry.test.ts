@@ -17,6 +17,28 @@ describe("ProviderRegistry", () => {
     expect(live!.driverKind).toBe("fake");
     expect(live!.displayName).toBe("Bot A");
     expect(registry.instances()).toHaveLength(1);
+    const [described] = await registry.describe();
+    expect(described.effort).toBeUndefined();
+    expect(described.cli).toBeUndefined();
+  });
+
+  it("describe() includes per-instance effort when the driver advertises it", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({
+      a: {
+        driver: "fake",
+        config: { effort: { default: "medium", options: [{ id: "low", label: "Low" }, { id: "medium", label: "Medium" }] } },
+      },
+    });
+    const [described] = await registry.describe();
+    expect(described.effort).toEqual({
+      default: "medium",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+      ],
+    });
   });
 
   it("uses defaultConfig when the entry has no config", async () => {

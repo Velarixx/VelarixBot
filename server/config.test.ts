@@ -6,11 +6,14 @@ import { describe, expect, it } from "vitest";
 import {
   botWorkspaceDir,
   DATA_DIR,
+  defaultInstanceMap,
   ensureBotWorkspace,
   ensureDirs,
   instanceConfigs,
   loadConfig,
   migrateConfigSecrets,
+  persistableFleet,
+  persistableInstanceMap,
   saveConfig,
 } from "./config.ts";
 
@@ -181,5 +184,35 @@ describe("per-bot workspace", () => {
     expect(b).not.toBe(homedir());
     expect(existsSync(a)).toBe(true);
     expect(existsSync(b)).toBe(true);
+  });
+});
+
+describe("instance CLI persistence", () => {
+  it("saveConfig writes a full instances map and strips subprocess environment", async () => {
+    ensureDirs();
+    await saveConfig({
+      instances: {
+        claude: {
+          driver: "claudeAgent",
+          environment: { ANTHROPIC_API_KEY: canary("cli-env") },
+          config: { cli: "/opt/custom/claude" },
+        },
+      },
+    });
+    const disk = JSON.parse(readFileSync(join(DATA_DIR, "config.json"), "utf8"));
+    expect(disk.instances.claude).toEqual({
+      driver: "claudeAgent",
+      config: { cli: "/opt/custom/claude" },
+    });
+    expect(disk.instances.claude.environment).toBeUndefined();
+    expect(JSON.stringify(disk)).not.toContain("ANTHROPIC_API_KEY");
+  });
+
+  it("persistableFleet materializes defaults when the user has not authored a map", () => {
+    const fleet = persistableFleet({});
+    expect(Object.keys(fleet)).toEqual(Object.keys(defaultInstanceMap()));
+    expect(persistableInstanceMap({ mine: { driver: "codex", environment: { K: "v" } } }).mine).toEqual({
+      driver: "codex",
+    });
   });
 });

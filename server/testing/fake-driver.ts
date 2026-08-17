@@ -56,6 +56,12 @@ export function makeFakeDriver(opts: FakeDriverOptions = {}): FakeDriverHandle {
           displayName: input.displayName,
           enabled: input.enabled,
           models: handle.driver.models,
+          ...(typeof (input.config as { cli?: unknown })?.cli === "string"
+            ? { cli: (input.config as { cli: string }).cli }
+            : {}),
+          ...(input.config && typeof input.config === "object" && (input.config as { effort?: unknown }).effort
+            ? { effort: (input.config as { effort: { default: string; options: Array<{ id: string; label: string }> } }).effort }
+            : {}),
           snapshot: async (): Promise<ProviderSnapshot> => {
             if (opts.failSnapshot) throw new Error(opts.failSnapshot);
             return { state: "available", version: "0.0.0-fake" };

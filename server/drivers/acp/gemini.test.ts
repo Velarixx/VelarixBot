@@ -65,6 +65,24 @@ describe("Gemini decodeConfig & model catalog", () => {
     expect(GeminiAgentDriver.decodeConfig({ fullAuto: true }).fullAuto).toBe(true);
   });
 
+  it("describe()/snapshot() replaces create-time constants with session/new availableModels", async () => {
+    const inst = await GeminiAgentDriver.create({
+      instanceId: "gemini-catalog",
+      displayName: "Gemini",
+      environment: {
+        FAKE_ACP_AUTH_IDS: "oauth-personal,gemini-api-key,vertex-ai,gateway",
+        FAKE_ACP_SESSION_MODELS: "gemini-9-preview,auto",
+      },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    expect(inst.models.options.map((o) => o.id)).toEqual(ADVERTISED_MODELS);
+    await inst.snapshot();
+    expect(inst.models.options.map((o) => o.id)).toEqual(["gemini-9-preview", "auto"]);
+    expect(inst.models.default).toBe("gemini-9-preview");
+    await inst.dispose();
+  });
+
   it("catalogs the ids a live gemini-cli 0.55.1 advertised (2026-08-16), defaulting to the CLI's own `auto`", () => {
     // the catalog is the CLI's session/new advertisement, dated — not an
     // invented list. `auto` is what currentModelId reports with no -m.

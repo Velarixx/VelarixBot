@@ -238,7 +238,13 @@ export async function provisionBox(cfg: AppConfig, botId: string, botName: strin
   const vmName = boxNameForBot(cfg, botId);
   let box = await findBox(cfg, botId);
   let created = false;
-  if (!box) {
+  // [VERIFY] 2026-08-17: create could succeed, PATCH-name was ignored, and
+  // waitReady/bootstrap/mintDesktopUrl throw left the box. Compensating
+  // DELETE is vendor DELETE /boxes/{id} only — never panel/SPI destroy,
+  // never the shared named box, never another prefix.
+  let createdId: string | null = null;
+  try {
+    if (!box) {
     const createRes = await boxJson(cfg, "/boxes", {
       method: "POST",
       // substrate-side backstop: archives itself (billing pauses, disk
@@ -248,7 +254,9 @@ export async function provisionBox(cfg: AppConfig, botId: string, botName: strin
     if (!createRes.ok || !createRes.body?.box?.id) throw new Error(`box create failed (${createRes.status})`);
     box = createRes.body.box;
     created = true;
-    await boxJson(cfg, `/boxes/${box.id}`, { method: "PATCH", body: JSON.stringify({ name: vmName }) });
+    createdId = box.id;
+    const named = await boxJson(cfg, `/boxes/${box.id}`, { method: "PATCH", body: JSON.stringify({ name: vmName }) });
+    if (!named.ok) throw new Error(`box rename failed (${named.status})`);
   }
   const ready = await waitReady(cfg, box.id);
   if (!ready) throw new Error("box did not become ready within 90s — retry in a minute");
@@ -290,7 +298,14 @@ export async function provisionBox(cfg: AppConfig, botId: string, botName: strin
   }
 
   const joinUrl = await mintDesktopUrl(cfg, box.id);
+  if (!joinUrl) throw new Error("box desktop URL was not minted");
   return { boxId: box.id, machineName: vmName, reused: !created, state: ready.state, joinUrl };
+  } catch (e) {
+    if (createdId && vmName !== sharedBoxName(cfg)) {
+      await boxJson(cfg, `/boxes/${createdId}`, { method: "DELETE" }).catch(() => {});
+    }
+    throw e;
+  }
 }
 
 /** Wake the bot's box and return a FRESH desktop URL. */

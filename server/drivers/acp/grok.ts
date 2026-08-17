@@ -7,13 +7,16 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { catalogFromModelState } from "./catalog.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 const support: AcpSupport = {
   driverKind: "grokAgent",
   displayName: "Grok",
-  // The CLI catalog is account-driven (`grok models` reports one today);
-  // eventually read from the initialize result's _meta.modelState.
+  // [VERIFY] 2026-08-17: initialize `_meta.modelState` is currentModelId
+  // only (fake + live comments). No list → keep this static fallback.
+  // resolveModels reads a list WHEN one appears (FAKE_ACP_INIT_MODELS).
+  // Do not spawn `grok models` — an ACP-only binary would hang on stdin.
   models: { default: "grok-4.5", options: [{ id: "grok-4.5", label: "Grok 4.5" }] },
   defaultCli: "grok",
   nativeSource: "grok.acp",
@@ -49,6 +52,8 @@ const support: AcpSupport = {
   // reach the agent-stdio system prompt (verified against 1.0.0), so the
   // persona is prepended codex-style.
   buildPromptText: (turn) => (turn.system ? `${turn.system}\n\n${turn.text}` : turn.text),
+
+  resolveModels: async (_config, _env, init) => catalogFromModelState(init),
 };
 
 export const GrokAgentDriver = createAcpDriver(support);

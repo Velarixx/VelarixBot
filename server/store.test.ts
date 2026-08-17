@@ -38,6 +38,24 @@ describe("bot record normalization", () => {
     expect(normalizeBot({ ...baseBot, id: "" })).toBeNull();
   });
 
+  it("round-trips per-bot effort on modelSelection and drops a non-string", () => {
+    const withEffort = normalizeBot({
+      ...baseBot,
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5", effort: "high" },
+    });
+    expect(withEffort?.modelSelection).toEqual({ instanceId: "claude", model: "claude-sonnet-5", effort: "high" });
+    const blank = normalizeBot({
+      ...baseBot,
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5", effort: "  " },
+    });
+    expect(blank?.modelSelection).toEqual({ instanceId: "claude", model: "claude-sonnet-5" });
+    const bad = normalizeBot({
+      ...baseBot,
+      modelSelection: { instanceId: "claude", model: "claude-sonnet-5", effort: 3 },
+    } as unknown as Partial<BotRecord>);
+    expect(bad?.modelSelection).toEqual({ instanceId: "claude", model: "claude-sonnet-5" });
+  });
+
   it("salvages a damaged record instead of vanishing it (rc.14 field regression)", () => {
     // one bad field must never make the bot disappear from every read —
     // the field trace was list_bots "No other bots" + update_bot "no such
