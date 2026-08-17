@@ -9,6 +9,7 @@ import {
   DEFAULT_LEASE_WAIT_MS,
   findBox,
   listStaleBotBoxes,
+  provisionBox,
   readBoxPath,
   sharedBoxName,
   wrapCommandInCwd,
@@ -141,6 +142,105 @@ describe("shared-box naming (3.2.4 + D4)", () => {
     // an UNPREFIXED install only ever sees its own unprefixed per-bot boxes
     const bare: AppConfig = { box: { ...fake.cfg.box, shared: true } };
     expect((await listStaleBotBoxes(bare)).map((b) => b.id)).toEqual(["x"]);
+  });
+});
+
+describe("provisionBox rollback (L5)", () => {
+  let server: Server;
+  afterEach(async () => {
+    if (!server) return;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  function startProvisionFake(opts: {
+    existing?: Array<{ id: string; name: string; state?: string }>;
+    createId?: string;
+    getState?: string;
+    patchOk?: boolean;
+  }): Promise<{ server: Server; cfg: AppConfig; deleted: string[]; created: number; patched: number }> {
+    const existing = [...(opts.existing ?? [])];
+    const deleted: string[] = [];
+    let created = 0;
+    let patched = 0;
+    const createId = opts.createId ?? "box-new";
+    const getState = opts.getState ?? "error";
+    const patchOk = opts.patchOk !== false;
+    const server = createServer((req, res) => {
+      const json = (code: number, body: unknown) => {
+        res.writeHead(code, { "content-type": "application/json" });
+        res.end(JSON.stringify(body));
+      };
+      const url = (req.url ?? "").split("?")[0] ?? "";
+      if (url === "/boxes" && req.method === "GET") return json(200, { ok: true, boxes: existing });
+      if (url === "/boxes" && req.method === "POST") {
+        created += 1;
+        const box = { id: createId, name: "", state: "creating" };
+        existing.push(box);
+        return json(200, { ok: true, box });
+      }
+      const idMatch = url.match(/^\/boxes\/([^/]+)$/);
+      if (idMatch && req.method === "PATCH") {
+        patched += 1;
+        if (!patchOk) return json(400, { ok: false, error: "rename refused" });
+        const box = existing.find((b) => b.id === idMatch[1]);
+        if (box) box.name = "named";
+        return json(200, { ok: true, box });
+      }
+      if (idMatch && req.method === "GET") {
+        return json(200, { ok: true, box: { id: idMatch[1], state: getState } });
+      }
+      if (idMatch && req.method === "DELETE") {
+        deleted.push(idMatch[1]);
+        return json(200, { ok: true });
+      }
+      json(404, { error: "nope" });
+    });
+    return new Promise((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server.address();
+        const port = typeof addr === "object" && addr ? addr.port : 0;
+        resolve({
+          server,
+          cfg: { box: { token: "tok_test", url: `http://127.0.0.1:${port}` } },
+          deleted,
+          created,
+          patched,
+        });
+      });
+    });
+  }
+
+  it("create-ok then ready-fail DELETEs the new per-bot box", async () => {
+    const fake = await startProvisionFake({ getState: "error" });
+    server = fake.server;
+    await expect(provisionBox(fake.cfg, "bot-a", "Ada")).rejects.toThrow(/did not become ready/);
+    expect(fake.deleted).toEqual(["box-new"]);
+  });
+
+  it("shared-mode create then ready-fail does not DELETE the shared named box", async () => {
+    const fake = await startProvisionFake({ getState: "error" });
+    server = fake.server;
+    const cfg: AppConfig = { box: { ...fake.cfg.box, shared: true } };
+    await expect(provisionBox(cfg, "bot-a", "Ada")).rejects.toThrow(/did not become ready/);
+    expect(fake.deleted).toEqual([]);
+  });
+
+  it("PATCH-name failure after create DELETEs the per-bot box", async () => {
+    const fake = await startProvisionFake({ patchOk: false });
+    server = fake.server;
+    await expect(provisionBox(fake.cfg, "bot-a", "Ada")).rejects.toThrow(/box rename failed/);
+    expect(fake.deleted).toEqual(["box-new"]);
+  });
+
+  it("reuse of an existing box then ready-fail does not DELETE", async () => {
+    const name = boxNameForBot({ box: { token: "t" } }, "bot-a");
+    const fake = await startProvisionFake({
+      existing: [{ id: "box-old", name, state: "idle" }],
+      getState: "error",
+    });
+    server = fake.server;
+    await expect(provisionBox(fake.cfg, "bot-a", "Ada")).rejects.toThrow(/did not become ready/);
+    expect(fake.deleted).toEqual([]);
   });
 });
 
