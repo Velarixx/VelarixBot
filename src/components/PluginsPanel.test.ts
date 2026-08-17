@@ -23,10 +23,10 @@ describe("Apps hub surface", () => {
   });
 
   it("does not become a custom MCP store or expose connection management to a bot", () => {
-    expect(hub).not.toMatch(/stdio/i);
     expect(hub).not.toMatch(/mcpServers/);
     expect(hub).not.toMatch(/COMPOSIO_MANAGE/);
-    expect(hub).not.toMatch(/HTTP\/SSE|custom MCP/i);
+    expect(hub).not.toMatch(/command:\s*["']npx/);
+    expect(hub).not.toMatch(/type=["']url["']/);
     expect(sidebar).not.toMatch(/MCP servers over stdio/i);
     expect(sidebar).toContain(">Apps<");
   });

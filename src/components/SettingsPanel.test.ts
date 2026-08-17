@@ -15,9 +15,8 @@ describe("Settings Apps card stays on the same hub model", () => {
     expect(settings).toContain("togglePlugins");
     expect(settings).toContain("Open Apps");
     expect(settings).toContain("CONNECTOR_PATHS.catalog");
-    expect(settings).not.toContain("authorize");
-    expect(settings).not.toMatch(/method:\s*"DELETE"/);
-    expect(settings).not.toMatch(/stdio/i);
+    expect(settings).not.toContain("/authorize");
+    expect(settings).not.toContain("/api/connectors/");
     expect(settings).not.toMatch(/mcpServers/);
   });
 

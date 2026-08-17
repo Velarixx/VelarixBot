@@ -1,7 +1,7 @@
 // Apps hub — one place to see the Composio catalog, connection status,
 // Connect/Disconnect, and per-bot enable for the selected bot. Connections
 // stay workspace-wide; enabledApps is the per-bot mount gate (empty = none).
-// Built-in harness MCP is not inventory. No user-authored stdio/HTTP MCP.
+// Built-in harness MCP is not inventory. No user-authored custom MCP form.
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, RefreshCw, X } from "lucide-react";
 import { api, useStore } from "@/state/store";

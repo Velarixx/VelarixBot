@@ -66,8 +66,10 @@ describe("apps hub connectors (no Composio key)", () => {
     const patched = await h.api("PATCH", `/api/bots/${a.id}`, { enabledApps: ["googledrive"] });
     expect(patched.status).toBe(200);
     expect(patched.body.bot.enabledApps).toEqual(["googledrive"]);
-    const other = await h.api("GET", `/api/bots/${b.id}`);
-    expect(other.body.bot.enabledApps ?? []).toEqual([]);
+    const roster = await h.api("GET", "/api/bots");
+    const other = roster.body.bots.find((bot: { id: string }) => bot.id === b.id);
+    expect(other?.enabledApps ?? []).toEqual([]);
+    expect(roster.body.bots.find((bot: { id: string }) => bot.id === a.id)?.enabledApps).toEqual(["googledrive"]);
   });
 });
 
