@@ -14,7 +14,14 @@ import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { createRepositories, type Repositories } from "../repositories/index.ts";
 import { createBotsService, type BotsService } from "./bots.ts";
 import type { ListenerPoller } from "../listeners/index.ts";
-import { CATCH_UP_CAP, createRoutinesService, ROUTINE_LEASE_MS, type RoutinesService } from "./routines.ts";
+import {
+  CATCH_UP_CAP,
+  createRoutinesService,
+  ROUTINE_LEASE_MS,
+  UNTRUSTED_DATA_CLAUSE,
+  UNTRUSTED_WEBHOOK_BEGIN,
+  type RoutinesService,
+} from "./routines.ts";
 
 const selection = () => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
@@ -354,7 +361,7 @@ describe("routines service (fake clock)", () => {
   let bots: BotsService;
   let routines: RoutinesService;
   let now: number;
-  let started: Array<{ botId: string; text: string; extraSkillIds?: string[] }>;
+  let started: Array<{ botId: string; text: string; extraSkillIds?: string[]; unattended?: boolean; systemNote?: string }>;
   let frames: unknown[];
   let busy: boolean;
 
@@ -374,6 +381,8 @@ describe("routines service (fake clock)", () => {
           botId,
           text,
           ...(opts?.extraSkillIds?.length ? { extraSkillIds: opts.extraSkillIds } : {}),
+          ...(opts?.unattended ? { unattended: true } : {}),
+          ...(opts?.systemNote ? { systemNote: opts.systemNote } : {}),
         });
       },
       getSkill: () => null,
@@ -668,7 +677,10 @@ describe("routines service (fake clock)", () => {
     now = routines.routine(routine.id)!.nextRunAt + 1;
     routines.tick(now);
     await flush();
-    expect(started).toEqual([{ botId: bot.id, text: "Brief me" }]);
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ botId: bot.id, text: "Brief me", unattended: true });
+    expect(started[0].systemNote).toContain(UNTRUSTED_WEBHOOK_BEGIN);
+    expect(started[0].systemNote).toContain(UNTRUSTED_DATA_CLAUSE);
     expect(routines.routine(routine.id)?.listenerCursor).toBe("20");
     routines.settleTurn(bot.threadId, true);
 

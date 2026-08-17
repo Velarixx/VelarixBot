@@ -20,6 +20,7 @@ import { atomicWriteFileSync, ensurePrivateDir, PRIVATE_FILE_MODE } from "./atom
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
 import { isCredentialAsk } from "./handoff.ts";
+import { isUnattended } from "./unattended.ts";
 
 export type RuleAction = "allow" | "deny";
 
@@ -266,12 +267,18 @@ export function resolveOpenedRequest(
  * The bot's Always-allow settings toggle (`bot.alwaysAllow`) resolves to
  * allow AFTER explicit rules — a stored deny rule still wins — and is
  * scoped to this one bot: it writes no rule, no workspace grant, and no
- * `*` matcher anywhere. Every auto-decision lands in the audit log. */
+ * `*` matcher anywhere. Every auto-decision lands in the audit log.
+ *
+ * Unattended (listener / inherited peer hop) is consulted BEFORE any
+ * allow-list or alwaysAllow flag. Persist and P0.1 matcher semantics
+ * are unchanged — interactive turns still use the rules below. */
 export function autoResolvePermission(
   bot: { id: string; requireApproval?: boolean; alwaysAllow?: boolean },
   tool: string,
   summary: string,
+  context?: { unattended?: boolean },
 ): { behavior: RuleAction; source: "rule" } | null {
+  if (context?.unattended === true || isUnattended(bot.id)) return null;
   if (bot.requireApproval === true) return null;
   if (isCredentialAsk("permission", tool, summary)) return null;
   const rule = matchRule(bot.id, tool, summary);

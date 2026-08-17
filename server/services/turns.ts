@@ -13,6 +13,7 @@ import {
   autoResolvePermission,
   persistAllowRule,
 } from "../approvals.ts";
+import { clearUnattended, hopUnattended, isUnattended, markUnattended, configureUnattended } from "../unattended.ts";
 import * as composio from "../composio.ts";
 import type { ComputerProvider } from "../computer/provider.ts";
 import type { ComputerRegistry } from "../computer/registry.ts";
@@ -66,6 +67,10 @@ export interface StartTurnOpts {
   groupThreadId?: string;
   /** Extra skill ids for this turn only (routine attach, `/` mention). */
   extraSkillIds?: string[];
+  /** Listener (or inherited peer hop): suppress rule/flag auto-resolve. */
+  unattended?: boolean;
+  /** Appended to the system prompt (untrusted-event fence lives here). */
+  systemNote?: string;
 }
 
 export interface TurnsServiceDeps {
@@ -81,12 +86,18 @@ export interface TurnsServiceDeps {
   broadcast: Broadcast;
   port: number;
   commsToken: string;
+  now?: () => number;
 }
 
 export interface TurnsService {
   startTurn(botId: string, text: string, opts?: StartTurnOpts): Promise<void>;
   /** ask_bot with the per-target peer queue in front (internal comms). */
-  askBotQueued(toBotId: string, message: string, depth: number, opts?: { visited?: string[]; groupThreadId?: string }): Promise<string>;
+  askBotQueued(
+    toBotId: string,
+    message: string,
+    depth: number,
+    opts?: { visited?: string[]; groupThreadId?: string; fromBotId?: string; unattended?: boolean },
+  ): Promise<string>;
   handleWorkspaceTool(fromBotId: string, tool: string, args: Record<string, unknown>, depth: number): Promise<{ text?: string; error?: string }>;
   askUserAndWait(botId: string, input: { question: string; choices?: string[]; secret?: boolean; connectUrl?: string }): Promise<string>;
   createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: string }): Promise<
@@ -107,6 +118,11 @@ export interface TurnsService {
 export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   const { cfg, registry, computers, bus, repos, bots, teach, proactive, broadcast, port, commsToken } = deps;
   const store = bots; // message + bot accessors (repository-backed)
+  const now = deps.now ?? (() => Date.now());
+  configureUnattended({
+    now,
+    isBusy: (id) => store.bot(id)?.busy === true,
+  });
 
   /** Every {kind:"bot"} SSE frame goes through the publicBot allowlist. */
   const broadcastBot = (id: string) => {
@@ -189,7 +205,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     targetBotId: string,
     message: string,
     depth: number,
-    opts?: { visited?: string[]; groupThreadId?: string },
+    opts?: { visited?: string[]; groupThreadId?: string; fromBotId?: string; unattended?: boolean },
   ): Promise<string> {
     const target = store.bot(targetBotId);
     if (!target) return Promise.resolve("(no such bot)");
@@ -234,6 +250,8 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           commsDepth: depth + 1,
           visited: uniqueIds([...(opts?.visited ?? []), targetBotId]),
           groupThreadId,
+          // snapshot at hop time (ask_bot / group thread / queue drain)
+          unattended: hopUnattended(opts),
         })
         .catch((err) => finish(`(couldn't start that bot: ${err instanceof Error ? err.message : String(err)})`));
     });
@@ -625,7 +643,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           });
         }
         if (event.requestType === "permission" && event.requestId && !isCredentialAsk(event.requestType, event.tool, event.summary)) {
-          const auto = autoResolvePermission(bot, event.tool, event.summary);
+          const auto = autoResolvePermission(bot, event.tool, event.summary, { unattended: isUnattended(bot.id) });
           if (auto) {
             const instance = registry.get(bot.modelSelection.instanceId);
             if (instance) {
@@ -806,6 +824,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const commsDepth = opts?.commsDepth ?? 0;
     const visited = uniqueIds([...(opts?.visited ?? []), bot.id]);
     const groupThreadId = opts?.groupThreadId ?? (commsDepth === 0 ? bot.threadId : undefined);
+    // listener / inherited hop: mark this bot. A person typing into this
+    // bot (no commsDepth, no unattended flag) ends the window immediately
+    // so P0.1 interactive Always-allow still auto-resolves.
+    if (opts?.unattended) markUnattended(bot.id, now());
+    else if (commsDepth === 0) clearUnattended(bot.id);
 
     const instance = registry.get(bot.modelSelection.instanceId);
     if (!instance) {
@@ -954,9 +977,10 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
               ? ` The user tagged ${tagged
                   .map((t) => `@${t.name} (ask_bot bot_id ${t.id})`)
                   .join(" and ")} in their message — bring them into this group thread with ask_bot. Their replies belong in this transcript; do not route handoffs through the user.`
-              : ""),
+              : "") +
+            (opts?.systemNote ? ` ${opts.systemNote}` : ""),
           integrations,
-          requireApproval: bot.requireApproval === true,
+          requireApproval: bot.requireApproval === true || isUnattended(bot.id),
         });
         if (integrations.computer) startScreenPoller(bot.id);
       } catch (e) {
@@ -1059,7 +1083,10 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   const service: TurnsService = {
     startTurn,
     askBotQueued(toBotId, message, depth, opts) {
-      return peerQueue.enqueue(toBotId, () => askBotAndWait(toBotId, message, depth, opts));
+      // snapshot BEFORE the queue waits: a TTL expiry while the peer is
+      // busy must not drop the gate on a 3am listener hop.
+      const unattended = hopUnattended(opts);
+      return peerQueue.enqueue(toBotId, () => askBotAndWait(toBotId, message, depth, { ...opts, unattended }));
     },
     handleWorkspaceTool,
     askUserAndWait,
