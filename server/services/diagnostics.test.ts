@@ -5,7 +5,7 @@
 //      keys — which the bundle must not read at all);
 //   3. the bundle carries versions, capabilities, redacted logs, and an
 //      integrity result;
-//   4. backupNow produces the verified snapshot under ~/.velarixbot/backup.
+//   4. backupNow produces the verified archive under ~/.velarixbot/backup.
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -163,13 +163,18 @@ describe("diagnostics export (P1.7)", () => {
     expect(scrubbed.d).toBe(true);
   });
 
-  it("backupNow writes the verified snapshot under the profile's backup dir — and it restores", () => {
-    const { path, manifest } = diagnostics.backupNow();
+  it("backupNow writes the verified archive under the profile's backup dir — and it restores", () => {
+    const { path, manifest, complete } = diagnostics.backupNow();
     expect(path.startsWith(join(DATA_DIR, "backup"))).toBe(true);
     expect(existsSync(path)).toBe(true);
+    expect(existsSync(join(path, "velarixbot.db"))).toBe(true);
     expect(manifest.integrity).toBe("ok");
+    expect(complete).toBe(true);
+    expect(manifest.complete).toBe(true);
     expect(manifest.tables.messages).toBe(1);
     expect(JSON.parse(readFileSync(manifestPathFor(path), "utf8")).sha256).toBe(manifest.sha256);
+    const serialized = JSON.stringify({ path, manifest, complete });
+    expect(serialized).not.toContain(CONFIG_SECRET);
 
     // same-millisecond fake clock: a second click still gets a unique name
     const second = diagnostics.backupNow();
@@ -178,5 +183,6 @@ describe("diagnostics export (P1.7)", () => {
     // the one-click archive restores into an empty profile
     const outcome = restoreBackupIntoEmptyProfile(path, join(DATA_DIR, "restored-profile", "velarixbot.db"));
     expect(outcome.tables).toEqual(manifest.tables);
+    expect(outcome.complete).toBe(true);
   });
 });

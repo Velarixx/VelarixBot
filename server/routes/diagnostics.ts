@@ -2,8 +2,9 @@
 // /api route (only /api/health is exempt):
 //   GET  /api/diagnostics/export — the redacted support bundle (versions,
 //        capabilities, redacted logs, integrity result; never transcripts)
-//   POST /api/diagnostics/backup — one-click verified snapshot of the
-//        SQLite profile into ~/.velarixbot/backup/
+//   POST /api/diagnostics/backup — one-click verified archive of the
+//        profile (db + approvals/skills/memory + config/secrets) into
+//        ~/.velarixbot/backup/
 import type { DiagnosticsService } from "../services/diagnostics.ts";
 import { json, type RouteHandler } from "./context.ts";
 

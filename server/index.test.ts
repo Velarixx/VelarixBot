@@ -222,9 +222,17 @@ describe("harness HTTP API", () => {
     const { status, body } = await api("POST", "/api/diagnostics/backup");
     expect(status).toBe(200);
     expect(typeof body.path).toBe("string");
+    expect(body.complete).toBe(true);
     expect(body.manifest.integrity).toBe("ok");
+    expect(body.manifest.complete).toBe(true);
     expect(body.manifest.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(body.manifest.tables.bots).toBeGreaterThanOrEqual(1);
+    expect(body.manifest.coverage.database.included).toBe(true);
+    expect(body.manifest.coverage.approvals.included).toBe(true);
+    expect(body.manifest.coverage.skills.included).toBe(true);
+    expect(body.manifest.coverage.memory.included).toBe(true);
+    expect(body.manifest.coverage.config.included).toBe(true);
+    expect(body.manifest.coverage.secrets.included).toBe(true);
   });
 
   it("creates, patches, and deletes a bot", async () => {

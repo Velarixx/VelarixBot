@@ -1,4 +1,4 @@
-# Diagnostics export + verified backup / restore (P1.7)
+# Diagnostics export + verified backup / restore
 
 Two support surfaces, both local-only and behind the per-launch API token
 (like every `/api` route except `/api/health`):
@@ -7,24 +7,35 @@ Two support surfaces, both local-only and behind the per-launch API token
   logs, and a database integrity result. **Transcripts are never included**:
   the export has no option to include message content, event payloads, or
   screenshots, and API keys are never read at all.
-- **Verified backup** — a snapshot of the SQLite profile that is *proven*
-  good before it is reported, plus a restore path into an empty profile that
-  is gated in CI (`server/db/backup.test.ts`), not hoped for.
+- **Verified backup** — a directory archive of the SQLite profile **and**
+  the file-authoritative domains (approval rules, skills, memory markdown)
+  plus `config.json` / `secrets.json`. Proven good before it is reported.
+  Restore into an empty profile is gated in CI (`server/db/backup.test.ts`),
+  not hoped for. A db-only snapshot is not a complete backup: boot
+  `refreshSnapshots()` rewrites the SQLite snapshot tables from disk, so
+  restoring only `velarixbot.db` onto a fresh machine silently drops rules,
+  skills, and memory.
 
 ## One-click (Settings)
 
 App Settings → **Diagnostics & backup**:
 
 - **Export diagnostics** downloads `velarixbot-diagnostics-<date>.json`.
-- **Back up now** writes a verified snapshot into the local data directory
-  (`~/.velarixbot/backup/velarixbot-<timestamp>.db` plus its
-  `.manifest.json`) and shows the path.
+- **Back up now** writes a verified archive into the local data directory
+  (`~/.velarixbot/backup/velarixbot-<timestamp>/` with `manifest.json`,
+  `velarixbot.db`, and the covered files) and shows the path. The UI says
+  **Verified** only when every covered domain is included.
+
+Covered: SQLite database (bots, transcripts, routines, event log), approval
+rules, skills, memory notes, `config.json`, and `secrets.json`. Manifest
+metadata records paths, sizes, and SHA-256 only — never file contents or
+secret values. Secret-bearing archive files are `0600`.
 
 ## HTTP surface
 
 ```
 GET  /api/diagnostics/export   → the diagnostics bundle (JSON)
-POST /api/diagnostics/backup   → { path, manifest } of a fresh verified snapshot
+POST /api/diagnostics/backup   → { path, manifest, complete } of a fresh verified archive
 ```
 
 Both require `Authorization: Bearer <token>`. In dev, set
@@ -61,31 +72,43 @@ pinned by `server/services/diagnostics.test.ts` and the end-to-end cases in
    live database — WAL content included, no checkpoint or downtime needed.
 2. The snapshot is reopened and must pass `PRAGMA integrity_check`.
 3. Every domain table's row count in the snapshot must equal the source.
-4. A sidecar `<backup>.manifest.json` records the SHA-256 of the exact bytes,
-   the size, the schema version, and the per-table counts.
+4. Approval rules, skills, memory markdown, `config.json`, and `secrets.json`
+   that exist on disk are copied into the archive directory (0600 for
+   secret-bearing files). Empty domains are still recorded as included.
+5. `manifest.json` records the SHA-256 of the database bytes, the size, the
+   schema version, the per-table counts, and per-file checksums (paths +
+   hashes only). `complete` is true only when every covered domain is
+   included.
 
-Any verification failure removes the snapshot and throws — an unverified
-archive is never left behind.
+Any verification failure removes the archive and throws — an unverified
+archive is never left behind. A green check / `complete: true` is not
+returned if a covered domain is missing.
 
 ## Restore into an empty profile
 
-Restore targets a profile with **no existing database** (a fresh machine or
-a data dir whose `velarixbot.db` was moved aside). It re-verifies the
-archive (manifest SHA-256 + `integrity_check`) *before* copying, and
+Restore targets a profile with **no existing database** and no existing
+covered files (a fresh machine or a data dir whose `velarixbot.db` and
+those files were moved aside). It re-verifies the archive (manifest
+SHA-256 + `integrity_check` + per-file checksums) *before* copying, and
 re-counts every table after opening the restored copy; any failure removes
-the partial target.
+the partial target. Restored files are what `refreshSnapshots()` reads on
+the next boot.
 
 With the app quit, from a source checkout:
 
 ```
-node scripts/restore-profile.mjs ~/.velarixbot/backup/velarixbot-<timestamp>.db
+node scripts/restore-profile.mjs ~/.velarixbot/backup/velarixbot-<timestamp>
 ```
 
-An explicit target path can be passed as the second argument. The restored
-database opens under the current build's migrations, so a backup restores
-cleanly into the same or a newer app version.
+A v1 `<backup.db>` + sidecar manifest still restores the database only and
+is reported as incomplete. An explicit target path can be passed as the
+second argument. The restored database opens under the current build's
+migrations, so a backup restores cleanly into the same or a newer app
+version.
 
 CI proof: `server/db/backup.test.ts` (runs in the `pnpm test` step of
-`ci.yml`) populates a profile, backs it up, restores into a second empty
-profile directory, and compares every table — plus tamper/checksum,
-missing-manifest, occupied-target, and WAL-content cases.
+`ci.yml`) populates a profile (db + approvals + skill + memory), backs it
+up, wipes the profile except the archive, restores, and checks the three
+file-authoritative domains survive `refreshSnapshots()` — plus tamper/
+checksum, missing-manifest, occupied-target, WAL-content, and
+incomplete-archive (no green check) cases.

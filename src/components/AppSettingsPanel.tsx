@@ -76,8 +76,9 @@ function TrayRow() {
 }
 /** P1.7 one-click diagnostics + verified profile backup. The export is the
  * redacted support bundle (versions, capabilities, redacted logs, integrity
- * result) — no transcripts, no API keys. Backup writes a verified SQLite
- * snapshot into the local data directory. */
+ * result) — no transcripts, no API keys. Backup writes a verified archive
+ * of the SQLite database plus the file-authoritative domains (approvals,
+ * skills, memory markdown) and config.json / secrets.json. */
 function DiagnosticsRow() {
   const [busy, setBusy] = useState<"export" | "backup" | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -106,8 +107,12 @@ function DiagnosticsRow() {
     setBusy("backup");
     setNote(null);
     try {
-      const { path } = await api("/api/diagnostics/backup", { method: "POST" });
-      setNote(`Verified backup saved to ${path}`);
+      const { path, complete } = await api("/api/diagnostics/backup", { method: "POST" });
+      setNote(
+        complete
+          ? `Verified backup saved to ${path}`
+          : `Backup saved to ${path} — a covered domain is missing, so this is not a verified archive`,
+      );
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
     } finally {
@@ -120,7 +125,10 @@ function DiagnosticsRow() {
       <div className="text-[15px] font-medium text-ink">Diagnostics & backup</div>
       <div className="mt-0.5 text-[13px] text-ink-secondary">
         Export versions, capabilities, redacted logs, and a database integrity result for support — transcripts and
-        keys are never included. Backup writes a verified snapshot of your local data.
+        keys are never included. Backup writes a verified archive of the SQLite database (bots, transcripts, routines,
+        event log), approval rules, skills, memory notes, config.json, and secrets.json. A verified backup means every
+        covered file was present and checksum-checked. Restore onto a new machine puts those files back so rules,
+        skills, and memory survive the next boot.
       </div>
       <div className="mt-3 flex gap-2">
         <button
