@@ -27,4 +27,16 @@ describe("Settings Apps card stays on the same hub model", () => {
     expect(keys).toContain("configured");
     expect(keys).not.toMatch(/apiKeyConfigured.*value/);
   });
+
+  it("backup copy states every covered domain and withholds Verified unless complete", () => {
+    expect(appSettings).toContain("approval rules");
+    expect(appSettings).toContain("skills");
+    expect(appSettings).toContain("memory notes");
+    expect(appSettings).toContain("config.json");
+    expect(appSettings).toContain("secrets.json");
+    expect(appSettings).toContain("Verified backup saved to");
+    expect(appSettings).toContain("complete");
+    expect(appSettings).toContain("not a verified archive");
+    expect(appSettings).toContain("Back up now");
+  });
 });

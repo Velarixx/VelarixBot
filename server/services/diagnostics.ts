@@ -6,15 +6,17 @@
 // keys have none either — the bundle never reads config.json — and every
 // string that does go out passes through redactSecrets as defense in depth.
 //
-// backupNow() is the one-click verified archive: a VACUUM INTO snapshot of
-// the SQLite profile under ~/.velarixbot/backup/, verified (integrity_check
-// + row counts + sha256 manifest) by db/backup.ts before it is reported.
+// backupNow() is the one-click verified archive: a directory under
+// ~/.velarixbot/backup/ with the SQLite snapshot PLUS approvals, skills,
+// memory markdown, and config.json / secrets.json. Verified (integrity_check
+// + row counts + per-file sha256) by db/backup.ts before it is reported.
+// Manifest metadata never includes file contents or secret values.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { readAudit, redactSecrets } from "../approvals.ts";
 import { DATA_DIR } from "../config.ts";
-import { createVerifiedBackup, tableCounts, type BackupManifest } from "../db/backup.ts";
+import { createVerifiedBackup, isBackupComplete, tableCounts, type BackupManifest } from "../db/backup.ts";
 import type { Repositories } from "../repositories/index.ts";
 
 export const DIAGNOSTICS_FORMAT = "velarixbot-diagnostics";
@@ -82,9 +84,10 @@ export interface DiagnosticsBundle {
 
 export interface DiagnosticsService {
   exportBundle(): Promise<DiagnosticsBundle>;
-  /** One-click verified archive: snapshot the profile database into
-   * ~/.velarixbot/backup/ and return the proven manifest. */
-  backupNow(): { path: string; manifest: BackupManifest };
+  /** One-click verified archive: snapshot the profile (db + file-
+   * authoritative domains + config/secrets) into ~/.velarixbot/backup/
+   * and return the proven manifest. `complete` is the green-check gate. */
+  backupNow(): { path: string; manifest: BackupManifest; complete: boolean };
 }
 
 function detectAppVersion(): string {
@@ -174,10 +177,10 @@ export function createDiagnosticsService(deps: {
     backupNow() {
       const timestamp = new Date(now()).toISOString().replace(/[:.]/g, "-");
       // two backups in the same millisecond get distinct names, never a throw
-      let path = join(DATA_DIR, "backup", `velarixbot-${timestamp}.db`);
-      for (let n = 2; existsSync(path); n++) path = join(DATA_DIR, "backup", `velarixbot-${timestamp}-${n}.db`);
+      let path = join(DATA_DIR, "backup", `velarixbot-${timestamp}`);
+      for (let n = 2; existsSync(path); n++) path = join(DATA_DIR, "backup", `velarixbot-${timestamp}-${n}`);
       const manifest = createVerifiedBackup(repos.db, path);
-      return { path, manifest };
+      return { path, manifest, complete: isBackupComplete(manifest) };
     },
   };
 }
