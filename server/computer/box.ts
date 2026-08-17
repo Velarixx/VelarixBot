@@ -78,7 +78,7 @@ export const BoxComputerProviderFactory: ComputerProviderFactory<BoxProviderConf
     // leaseWaitMs): an invalid type rejects create, and the registry
     // downgrades this provider to an unavailable shadow — a bad config value
     // must never crash boot.
-    box.decodeBoxSharing(appConfig);
+    const sharing = box.decodeBoxSharing(appConfig);
 
     // Effective vendor config for the box client: the write-only token and
     // the shared-box knobs always come from the LIVE app config (the
@@ -115,8 +115,17 @@ export const BoxComputerProviderFactory: ComputerProviderFactory<BoxProviderConf
         destroy: false,
         mcp: true,
       },
-      turnPrompt:
-        "You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps.",
+      // 2026-08-17 [VERIFY] turnPrompt IS static: a readonly string on the
+      // provider, and the computer registry is built once at boot
+      // (createApplication) — reloadProviders only rebuilds the DRIVER
+      // fleet. So the wording is chosen at create time and stays generic
+      // (no per-bot paths): shell commands are cwd-wrapped by the harness,
+      // the prompt only has to set expectations. A live Settings toggle
+      // changes naming/cwd/lease immediately; the prompt follows on the
+      // next boot.
+      turnPrompt: sharing.shared
+        ? "You have a cloud computer that is SHARED with the user's other bots — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps. Your shell commands start in your own folder under ~/workspaces/; files outside it, and the desktop's Chrome with its logins, may belong to other bots — leave their work alone unless asked."
+        : "You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps.",
 
       async status(botId): Promise<ComputerStatus> {
         if (!token()) {

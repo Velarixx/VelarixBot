@@ -149,6 +149,23 @@ describe("cleanup of stranded per-bot boxes (migration, 3.8)", () => {
   });
 });
 
+describe("turn prompt consent copy", () => {
+  it("shared installs get the shared-trust wording; per-bot installs keep today's line", async () => {
+    const shared = await boxProvider({ shared: true });
+    const perBot = await boxProvider();
+    try {
+      expect(shared.provider.turnPrompt).toContain("SHARED with the user's other bots");
+      expect(shared.provider.turnPrompt).toContain("~/workspaces/");
+      expect(perBot.provider.turnPrompt).toBe(
+        "You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps.",
+      );
+    } finally {
+      await shared.close();
+      await perBot.close();
+    }
+  });
+});
+
 describe("shared trust domain lands in the audit log", () => {
   it("exec / read / join on the shared machine carry machine:'shared'; per-bot mode stays silent", async () => {
     const { readAudit } = await import("../approvals.ts");
