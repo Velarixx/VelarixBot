@@ -51,6 +51,11 @@ export interface AcpSupport {
   loginNote: string;
   /** CLI argv AFTER the binary name to enter ACP stdio mode. */
   spawnArgs(config: AcpConfig, turn: SendTurnInput): string[];
+  /** Extra provider credentials this child may inherit. Deny-by-default:
+   *  known provider keys and secret-shaped names are stripped unless listed
+   *  here or on DEFAULT_ACP_CREDENTIAL_ENV. A forgotten transformEnv must
+   *  not inherit the rest of the key ring. */
+  credentialEnv?: readonly string[];
   /** Mutate the child env in place (e.g. strip a key). Optional. */
   transformEnv?(env: Record<string, string | undefined>): void;
   /** Pick the ACP authenticate methodId from initialize's advertised
@@ -107,6 +112,61 @@ export interface AcpSupport {
 const INIT_TIMEOUT = 20_000;
 const NEW_SESSION_TIMEOUT = 30_000;
 const LOAD_SESSION_TIMEOUT = 120_000; // history replay on a long thread is slow
+
+/** Credentials every ACP child may inherit even when the driver omits
+ *  `credentialEnv`. Router keys are first-class for this fleet
+ *  (`instanceConfigs` injects them); a forgotten transformEnv still must
+ *  not inherit Anthropic / OpenAI / xAI / Gemini / … from process.env. */
+export const DEFAULT_ACP_CREDENTIAL_ENV = ["OPENROUTER_API_KEY", "OMNIROUTER_API_KEY"] as const;
+
+/** Known provider credential names stripped unless the driver (or the
+ *  default allowlist) opts in. Pattern-matching below also catches
+ *  secret-shaped names that are not on this list (SECRET_KEY, …). */
+const PROVIDER_CREDENTIAL_ENV = [
+  "ANTHROPIC_API_KEY",
+  "BOX_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CODEX_AUTH_JSON",
+  "FACTORY_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "HERMES_API_KEY",
+  "HERMES_AUTH_JSON",
+  "KIMI_API_KEY",
+  "MOONSHOT_API_KEY",
+  "OMNIROUTER_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENCODE_API_KEY",
+  "OPENROUTER_API_KEY",
+  "XAI_API_KEY",
+] as const;
+
+const PROVIDER_CREDENTIAL_NAMES = new Set<string>(PROVIDER_CREDENTIAL_ENV);
+
+/** Same shape as redact.ts: substring parts plus a standalone/suffix `key`.
+ *  Kept here so a forgotten ACP driver cannot inherit an unknown SECRET_KEY
+ *  just because it is not on the dated provider list. `auth` alone is too
+ *  broad (FAKE_ACP_AUTH_IDS must keep reaching the fake CLI). */
+function isCredentialName(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (["token", "secret", "password", "passwd", "apikey", "api_key", "authorization", "auth_token"].some((part) => lower.includes(part))) {
+    return true;
+  }
+  return /(^|[_.-])keys?$/.test(lower);
+}
+
+/** Strip provider credentials that are not on the deny-by-default allowlist.
+ *  Mutates `env` in place (same contract as transformEnv). */
+export function applyAcpCredentialAllowlist(
+  env: Record<string, string | undefined>,
+  credentialEnv?: readonly string[],
+): void {
+  const allowed = new Set<string>([...DEFAULT_ACP_CREDENTIAL_ENV, ...(credentialEnv ?? [])]);
+  for (const key of Object.keys(env)) {
+    if (allowed.has(key)) continue;
+    if (PROVIDER_CREDENTIAL_NAMES.has(key) || isCredentialName(key)) delete env[key];
+  }
+}
 
 // ACP's designated auth_required JSON-RPC error code. An expired/revoked
 // login can surface here on session/prompt — authenticate having succeeded
@@ -167,6 +227,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           ...input.environment,
           PATH: augmentedPath(),
         };
+        applyAcpCredentialAllowlist(env, support.credentialEnv);
         support.transformEnv?.(env);
         return env;
       };

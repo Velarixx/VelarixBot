@@ -54,6 +54,10 @@ const GEMINI_DIR = join(homedir(), ".gemini");
 // in gemini.test.ts) so a rename shows up as a test failure, not a guess.
 export const GEMINI_AUTH_METHOD_IDS = ["oauth-personal", "gemini-api-key", "vertex-ai", "gateway"] as const;
 
+/** First-class Gemini auth paths — the API key is not a billing bypass
+ *  here (unlike grok/hermes). Vertex express uses GOOGLE_API_KEY. */
+export const GEMINI_CREDENTIAL_ENV = ["GEMINI_API_KEY", "GOOGLE_API_KEY"] as const;
+
 // ACP-mode argv verified live against 0.55.1: `--acp` is the current flag
 // (`--experimental-acp` still works but is documented deprecated), and
 // `--approval-mode default` + `-m <model>` compose with it (`-m` confirmed
@@ -192,7 +196,9 @@ const support: AcpSupport = {
   // a headless bot turn. With it the CLI prints the auth URL and waits,
   // which core's session timeout settles. GEMINI_API_KEY is deliberately
   // NOT stripped — the API key is a first-class auth path here, not a
-  // billing bypass like grok/hermes.
+  // billing bypass like grok/hermes. Opt in via credentialEnv so the core
+  // deny-by-default allowlist keeps them; transformEnv only adds NO_BROWSER.
+  credentialEnv: GEMINI_CREDENTIAL_ENV,
   transformEnv: (env) => {
     env.NO_BROWSER = "true";
   },

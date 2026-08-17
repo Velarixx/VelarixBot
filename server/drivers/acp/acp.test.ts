@@ -14,12 +14,57 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ensureDirs, DATA_DIR } from "../../config.ts";
 import type { ProviderInstance } from "../../contracts.ts";
+import { cliExec } from "../cli.ts";
 import { recordEvents, type EventRecorder } from "../../testing/events.ts";
+import { applyAcpCredentialAllowlist, createAcpDriver, DEFAULT_ACP_CREDENTIAL_ENV, type AcpSupport } from "./core.ts";
+import { GEMINI_CREDENTIAL_ENV, GeminiAgentDriver } from "./gemini.ts";
 import { GrokAgentDriver } from "./grok.ts";
-import { GeminiAgentDriver } from "./gemini.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
 const posixOnly = describe.skipIf(process.platform === "win32");
+
+/** A harness that exists only in tests: no transformEnv, no credentialEnv.
+ *  Proves the core deny-by-default allowlist — a forgotten hook must not
+ *  inherit the provider key ring. generateText rides the same childEnv. */
+const BARE_SUPPORT: AcpSupport = {
+  driverKind: "bareAgent",
+  displayName: "Bare ACP",
+  models: { default: "bare", options: [{ id: "bare", label: "Bare" }] },
+  defaultCli: "bare-acp",
+  nativeSource: "bare.acp",
+  loginNote: "never reached",
+  spawnArgs: () => ["acp"],
+  pickAuthMethod: () => null,
+  authFailure: "continue",
+  isAuthenticated: () => true,
+  generateText: async (config, env, prompt) => {
+    const result = await cliExec(config.cli, ["exec", "-p", prompt], {
+      timeout: 8_000,
+      env: env as NodeJS.ProcessEnv,
+    });
+    if (!result.ok) throw new Error(result.stderr.trim() || "exec failed");
+    return result.stdout.trim();
+  },
+};
+const BareAcpDriver = createAcpDriver(BARE_SUPPORT);
+
+const PLANTED = {
+  SECRET_KEY: "planted-secret-canary",
+  ANTHROPIC_API_KEY: "planted-anthropic-canary",
+  OPENAI_API_KEY: "planted-openai-canary",
+  XAI_API_KEY: "planted-xai-canary",
+  GEMINI_API_KEY: "planted-gemini-canary",
+  OPENROUTER_API_KEY: "planted-openrouter-canary",
+  OMNIROUTER_API_KEY: "planted-omnirouter-canary",
+} as const;
+
+function plantProviderKeys() {
+  for (const [key, value] of Object.entries(PLANTED)) process.env[key] = value;
+}
+
+function unplantProviderKeys() {
+  for (const key of Object.keys(PLANTED)) delete process.env[key];
+}
 
 describe("ACP decodeConfig", () => {
   it("grok defaults to the grok binary", () => {
@@ -31,6 +76,142 @@ describe("ACP decodeConfig", () => {
   it("fullAuto only when explicitly true", () => {
     expect(GrokAgentDriver.decodeConfig({ fullAuto: "yes" }).fullAuto).toBe(false);
     expect(GrokAgentDriver.decodeConfig({ fullAuto: true }).fullAuto).toBe(true);
+  });
+});
+
+describe("ACP credentialEnv deny-by-default", () => {
+  it("the core allowlist is the router keys the fleet already injects", () => {
+    expect(DEFAULT_ACP_CREDENTIAL_ENV).toEqual(["OPENROUTER_API_KEY", "OMNIROUTER_API_KEY"]);
+  });
+
+  it("gemini opts into the keys it authenticates with; grok/hermes do not", () => {
+    expect(GEMINI_CREDENTIAL_ENV).toEqual(["GEMINI_API_KEY", "GOOGLE_API_KEY"]);
+    const grok = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "grok.ts"), "utf8");
+    const hermes = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "hermes.ts"), "utf8");
+    expect(grok).not.toMatch(/credentialEnv/);
+    expect(hermes).not.toMatch(/credentialEnv/);
+    expect(grok).toContain("delete env.XAI_API_KEY");
+    expect(hermes).toContain("delete env.OPENAI_API_KEY");
+    expect(hermes).toContain("delete env.HERMES_API_KEY");
+  });
+
+  it("strips planted secrets and foreign provider keys; router keys still pass", () => {
+    const env: Record<string, string | undefined> = {
+      PATH: "/bin",
+      HOME: "/tmp/isolated-home",
+      FAKE_ACP_AUTH_IDS: "cached_token",
+      ...PLANTED,
+    };
+    applyAcpCredentialAllowlist(env);
+    expect(env.SECRET_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.XAI_API_KEY).toBeUndefined();
+    expect(env.GEMINI_API_KEY).toBeUndefined();
+    expect(env.OPENROUTER_API_KEY).toBe(PLANTED.OPENROUTER_API_KEY);
+    expect(env.OMNIROUTER_API_KEY).toBe(PLANTED.OMNIROUTER_API_KEY);
+    expect(env.PATH).toBe("/bin");
+    expect(env.HOME).toBe("/tmp/isolated-home");
+    expect(env.FAKE_ACP_AUTH_IDS).toBe("cached_token");
+  });
+
+  it("a driver credentialEnv extends the default allowlist, it does not replace it", () => {
+    const env: Record<string, string | undefined> = { ...PLANTED };
+    applyAcpCredentialAllowlist(env, GEMINI_CREDENTIAL_ENV);
+    expect(env.GEMINI_API_KEY).toBe(PLANTED.GEMINI_API_KEY);
+    expect(env.OPENROUTER_API_KEY).toBe(PLANTED.OPENROUTER_API_KEY);
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.SECRET_KEY).toBeUndefined();
+  });
+});
+
+describe("ACP child env (fake driver, no transformEnv)", () => {
+  let instance: ProviderInstance;
+  let recorder: EventRecorder;
+  let scratch: string;
+
+  beforeEach(() => {
+    ensureDirs();
+    scratch = mkdtempSync(join(tmpdir(), "omb-acp-cred-"));
+    plantProviderKeys();
+  });
+
+  afterEach(async () => {
+    unplantProviderKeys();
+    delete process.env.FAKE_ACP_DUMP;
+    delete process.env.GOOGLE_API_KEY;
+    recorder?.stop();
+    await instance?.dispose();
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("a forgotten transformEnv does not inherit planted secrets; router keys still pass", async () => {
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    instance = await BareAcpDriver.create({
+      instanceId: "bare-cred",
+      displayName: "Bare",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    recorder = recordEvents(instance.adapter);
+    await instance.adapter.sendTurn({ threadId: "t-bare-deny", text: "go" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.env.SECRET_KEY).toBeUndefined();
+    expect(seen.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(seen.env.OPENAI_API_KEY).toBeUndefined();
+    expect(seen.env.XAI_API_KEY).toBeUndefined();
+    expect(seen.env.GEMINI_API_KEY).toBeUndefined();
+    expect(seen.env.OPENROUTER_API_KEY).toBe(PLANTED.OPENROUTER_API_KEY);
+    expect(seen.env.OMNIROUTER_API_KEY).toBe(PLANTED.OMNIROUTER_API_KEY);
+    expect(JSON.stringify(seen.argv)).not.toMatch(/planted-|canary/);
+    expect(JSON.stringify(recorder.events)).not.toMatch(/planted-|canary/);
+  });
+
+  it("generateText rides the same allowlist as a turn spawn", async () => {
+    const dump = join(scratch, "gen.json");
+    instance = await BareAcpDriver.create({
+      instanceId: "bare-gen",
+      displayName: "Bare",
+      environment: { FAKE_ACP_DUMP: dump },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    expect(instance.generateText).toBeTypeOf("function");
+    const text = await instance.generateText!("distill this");
+    expect(text).toBe("User prefers concise replies. Last turn noted.");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.execArgv).toEqual(["exec", "-p", "distill this"]);
+    expect(seen.env.SECRET_KEY).toBeUndefined();
+    expect(seen.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(seen.env.OPENROUTER_API_KEY).toBe(PLANTED.OPENROUTER_API_KEY);
+    expect(JSON.stringify(seen.execArgv)).not.toMatch(/planted-|canary/);
+  });
+
+  it("gemini still receives GEMINI_API_KEY / GOOGLE_API_KEY so it can auth", async () => {
+    const dump = join(scratch, "gemini.json");
+    process.env.GOOGLE_API_KEY = "planted-google-canary";
+    process.env.FAKE_ACP_DUMP = dump;
+    instance = await GeminiAgentDriver.create({
+      instanceId: "gemini-cred",
+      displayName: "Gemini",
+      environment: { FAKE_ACP_AUTH_IDS: "oauth-personal,gemini-api-key,vertex-ai,gateway" },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    recorder = recordEvents(instance.adapter);
+    await instance.adapter.sendTurn({ threadId: "t-gemini-keep", text: "go" });
+    await recorder.until((e) => e.type === "turn.completed");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.env.GEMINI_API_KEY).toBe(PLANTED.GEMINI_API_KEY);
+    expect(seen.env.GOOGLE_API_KEY).toBe("planted-google-canary");
+    expect(seen.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(seen.env.SECRET_KEY).toBeUndefined();
+    expect(seen.env.NO_BROWSER).toBe("true");
+    delete process.env.GOOGLE_API_KEY;
   });
 });
 
