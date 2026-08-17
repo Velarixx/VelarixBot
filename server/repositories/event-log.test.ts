@@ -123,7 +123,7 @@ describe("migration 2: event-log-stream-sequences backfill", () => {
       insert.run("e2", "thread-b", "turn.started", "t2", JSON.stringify({ eventId: "e2" }));
       insert.run("e3", "thread-a", "turn.completed", "t3", JSON.stringify({ eventId: "e3" }));
 
-      expect(migrate(db)).toEqual(["routine-run-durability", "event-log-stream-sequences", "memory-rows"]);
+      expect(migrate(db)).toEqual(["routine-run-durability", "event-log-stream-sequences", "memory-rows", "groups-dm"]);
       const rows = db
         .prepare<{ event_id: string; stream_id: string; sequence: number; schema_version: number }>(
           "SELECT event_id, stream_id, sequence, schema_version FROM event_log ORDER BY seq",

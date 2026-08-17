@@ -366,7 +366,7 @@ describe("harness HTTP/SSE scenarios (fake CLIs)", () => {
     );
     expect(groupReply?.text).toContain("hello from fake acp");
     expect(askerBot.threadParticipants).toEqual(expect.arrayContaining([asker.id, helper.id]));
-    const note = askerBot.messages.find((m: { kind: string; tool?: { name?: string } }) => m.kind === "activity" && m.tool?.name?.startsWith("asked @Helper"));
+    const note = askerBot.messages.find((m: { kind: string; tool?: { name?: string } }) => m.kind === "activity" && m.tool?.name === "Messaged @Helper");
     expect(note).toBeTruthy();
   }, 40_000);
 

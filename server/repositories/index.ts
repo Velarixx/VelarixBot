@@ -6,6 +6,7 @@ import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { createBotsRepository, type BotsRepository } from "./bots.ts";
 import { createComputerBindingsRepository, type ComputerBindingsRepository } from "./computer-bindings.ts";
 import { createEventLogRepository, type EventLogRepository } from "./event-log.ts";
+import { createGroupsRepository, type GroupsRepository } from "./groups.ts";
 import { createMessagesRepository, type MessagesRepository } from "./messages.ts";
 import { createMemoryRowsRepository } from "./memory-rows.ts";
 import { createRoutinesRepository, type RoutinesRepository } from "./routines.ts";
@@ -16,6 +17,7 @@ export interface Repositories {
   db: SqliteDatabase;
   bots: BotsRepository;
   messages: MessagesRepository;
+  groups: GroupsRepository;
   routines: RoutinesRepository;
   eventLog: EventLogRepository;
   computerBindings: ComputerBindingsRepository;
@@ -32,6 +34,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
   const messages = createMessagesRepository(db, {
     extraReferencedBlobs: () => collectAvatarHashes(bots.list()),
   });
+  const groups = createGroupsRepository(db);
   const routines = createRoutinesRepository(db);
   const eventLog = createEventLogRepository(db);
   const computerBindings = createComputerBindingsRepository(db);
@@ -54,6 +57,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     db,
     bots,
     messages,
+    groups,
     routines,
     eventLog,
     computerBindings,

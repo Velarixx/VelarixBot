@@ -17,10 +17,12 @@ let stub: Server;
 let stubPort = 0;
 let lastAuth: string | undefined;
 let lastAskBody: any = null;
+let lastDelegateBody: any = null;
 let lastCreateBody: any = null;
 let lastDeleteBody: any = null;
 let lastUpdateBody: any = null;
 let askResponse: unknown = { botName: "Helper", text: "hi from helper" };
+let delegateResponse: unknown = { message: "Delegation queued." };
 let createResponse: unknown = {
   bot: { id: "bot-new", name: "Ops", title: "Ops specialist", description: "Runs ops", model: "fake-model" },
 };
@@ -57,6 +59,16 @@ beforeAll(async () => {
           bots: [{ id: "bot-helper", name: "Helper", model: "fake-model", busy: false }],
         }),
       );
+    }
+    if (req.method === "POST" && req.url === "/api/internal/delegate-bot") {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => {
+        lastDelegateBody = JSON.parse(data);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(delegateResponse));
+      });
+      return;
     }
     if (req.method === "POST" && req.url === "/api/internal/ask-bot") {
       let data = "";
@@ -143,6 +155,7 @@ describe("agents-proxy MCP surface", () => {
     expect(list.result.tools.map((t: { name: string }) => t.name)).toEqual([
       "list_bots",
       "ask_bot",
+      "delegate_bot",
       "create_bot",
       "delete_bot",
       "update_bot",
@@ -200,6 +213,27 @@ describe("agents-proxy MCP surface", () => {
   it("requires bot_id and message", async () => {
     const res = await callTool("ask_bot", { bot_id: "", message: "" });
     expect(res.result.isError).toBe(true);
+  });
+
+  it("delegate_bot returns immediately with Delegation queued.", async () => {
+    delegateResponse = { message: "Delegation queued." };
+    const res = await callTool("delegate_bot", { bot_id: "bot-helper", message: "take this", reason: "handoff" });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toBe("Delegation queued.");
+    expect(lastDelegateBody).toMatchObject({
+      fromBotId: "bot-asker",
+      toBotId: "bot-helper",
+      message: "take this",
+      reason: "handoff",
+      depth: 0,
+    });
+  });
+
+  it("delegate_bot surfaces a harness refusal as a tool error", async () => {
+    delegateResponse = { error: "too many queued delegations" };
+    const res = await callTool("delegate_bot", { bot_id: "bot-helper", message: "ping" });
+    expect(res.result.isError).toBe(true);
+    expect(res.result.content[0].text).toContain("too many");
   });
 
   it("create_bot forwards name/title/description/model and returns the sidebar id", async () => {

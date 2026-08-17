@@ -126,7 +126,7 @@ export interface SendTurnInput {
       mcp: { command: string; args: string[]; env: Record<string, string> } | null;
       handle?: { machineId: string };
     };
-    /** Peer-agent comms: an MCP proxy (list_bots / ask_bot / create_bot / update_bot / delete_bot) that
+    /** Peer-agent comms: an MCP proxy (list_bots / ask_bot / delegate_bot / create_bot / update_bot / delete_bot) that
      * routes back through the harness so this bot can message other bots and
      * create, update, or remove real sidebar bots. The harness owns turns, permissions, and
      * recursion limits; the proxy only forwards. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { nextFlushBotIds } from "@/lib/prompt-queue";
-import { initialState, reducer, type Bot } from "./store";
+import { initialState, reducer, type Bot, type Group } from "./store";
 
 function bot(over: Partial<Bot> & Pick<Bot, "id">): Bot {
   return {
@@ -111,5 +111,65 @@ describe("per-bot enabledApps (hub enable)", () => {
     });
     expect(state.bots.find((b) => b.id === "bot-a")?.enabledApps).toEqual(["slack"]);
     expect(state.bots.find((b) => b.id === "bot-b")?.enabledApps).toEqual(["gmail"]);
+  });
+});
+
+describe("A ⇄ B DM groups", () => {
+  const dm = (over: Partial<Group> = {}): Group => ({
+    id: "g-1",
+    threadId: "thread-dm",
+    name: "Chief ⇄ Helper",
+    memberIds: ["bot-1", "bot-2"],
+    unread: true,
+    createdAt: 1,
+    dm: true,
+    messages: [],
+    ...over,
+  });
+
+  it("hydrates groups and opens one via selectGroup", () => {
+    let state = reducer(initialState, {
+      type: "hydrate",
+      bots: [bot({ id: "bot-1" })],
+      groups: [dm()],
+    });
+    expect(state.groups).toHaveLength(1);
+    state = reducer(state, { type: "selectGroup", id: "g-1" });
+    expect(state.selectedGroupId).toBe("g-1");
+    expect(state.groups[0]?.unread).toBe(false);
+  });
+
+  it("groupUpsert without messages keeps the existing transcript", () => {
+    let state = reducer(initialState, { type: "hydrate", bots: [bot({ id: "bot-1" })], groups: [dm()] });
+    state = reducer(state, {
+      type: "messageAdded",
+      threadId: "thread-dm",
+      message: { id: "m-1", role: "bot", kind: "text", text: "keep me", at: 2 },
+    });
+    state = reducer(state, {
+      type: "groupUpsert",
+      group: { id: "g-1", threadId: "thread-dm", name: "Chief ⇄ Helper", memberIds: ["bot-1", "bot-2"], unread: true, createdAt: 1, dm: true },
+    });
+    expect(state.groups[0]?.messages).toHaveLength(1);
+    expect(state.groups[0]?.messages[0]?.text).toBe("keep me");
+    expect(state.groups[0]?.unread).toBe(true);
+  });
+
+  it("folds a message onto the DM thread", () => {
+    let state = reducer(initialState, { type: "hydrate", bots: [bot({ id: "bot-1" })], groups: [dm()] });
+    state = reducer(state, {
+      type: "messageAdded",
+      threadId: "thread-dm",
+      message: {
+        id: "m-1",
+        role: "bot",
+        kind: "text",
+        text: "do this",
+        at: 2,
+        from: { botId: "bot-1", name: "Chief" },
+      },
+    });
+    expect(state.groups[0]?.messages).toHaveLength(1);
+    expect(state.groups[0]?.messages[0]?.text).toBe("do this");
   });
 });
