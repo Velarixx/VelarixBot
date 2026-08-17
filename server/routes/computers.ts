@@ -13,6 +13,8 @@ export function createComputersRoutes(deps: {
   bots: BotsService;
   computers: ComputerRegistry;
   recordBinding(botId: string, machineId: string): void;
+  /** Existing screenshot stream: count a teach frame while recording (timestamps only). */
+  onScreenshot?(botId: string): void;
 }): RouteHandler {
   const { bots, computers, recordBinding } = deps;
 
@@ -108,7 +110,9 @@ export function createComputersRoutes(deps: {
             unsupported("screenshot");
             return true;
           }
-          json(res, 200, await provider.screenshot(botId));
+          const shot = await provider.screenshot(botId);
+          deps.onScreenshot?.(botId);
+          json(res, 200, shot);
           return true;
       }
     }

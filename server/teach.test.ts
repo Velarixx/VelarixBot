@@ -2,16 +2,22 @@ import { mkdirSync, rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "./config.ts";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import {
   appendTeachEvent,
   appendTeachFrame,
   completeTeachSession,
+  confirmTeachSession,
   deleteSkill,
   deleteSkillsForBot,
+  discardTeachDraft,
   distillSkill,
   distillSkillMarkdown,
   getRecordingSession,
   getSkill,
+  getTeachDraftSession,
   listTeachSessions,
   loadSkills,
   loadTeachSessions,
@@ -141,5 +147,68 @@ describe("teach-a-task distill", () => {
     expect(listed[0].status).toBe("completed");
     expect(listed[0].name).toBe("File a report");
     expect(loadTeachSessions()[0].status).toBe("completed");
+  });
+
+  it("completes a session as a draft without writing a skill until confirm", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    startPersistedTeachSession("bot-1");
+    appendTeachEvent("bot-1", { type: "item.started", itemType: "tool", title: "Open Chrome" });
+    const completed = completeTeachSession("bot-1", {
+      name: "Draft skill",
+      draftMarkdown: "# Draft skill\n\n1. Open Chrome\n",
+    });
+    expect(completed?.status).toBe("completed");
+    expect(completed?.skillId).toBeUndefined();
+    expect(completed?.draftMarkdown).toContain("1. Open Chrome");
+    expect(loadSkills()).toHaveLength(0);
+    expect(getTeachDraftSession("bot-1")?.id).toBe(completed?.id);
+
+    const discarded = discardTeachDraft(completed!.id);
+    expect(discarded?.skillId).toBeUndefined();
+    expect(discarded?.draftMarkdown).toBeUndefined();
+    expect(loadSkills()).toHaveLength(0);
+  });
+
+  it("confirm-save attaches skillId and drops the draft markdown", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    startPersistedTeachSession("bot-1");
+    const completed = completeTeachSession("bot-1", { name: "Keep", draftMarkdown: "1. Step\n" });
+    const skill = saveSkill({ name: "Keep", botId: "bot-1", markdown: "1. Step\n" });
+    const confirmed = confirmTeachSession(completed!.id, { skillId: skill.id, name: skill.name });
+    expect(confirmed?.skillId).toBe(skill.id);
+    expect(confirmed?.draftMarkdown).toBeUndefined();
+    expect(getTeachDraftSession("bot-1")).toBeNull();
+  });
+
+  it("stores only { at } on frames even when extra keys are passed", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    startPersistedTeachSession("bot-1");
+    appendTeachFrame("bot-1", { at: 99, png: "iVBORw0KGgo", pixels: "nope" } as { at: number });
+    const live = getRecordingSession("bot-1");
+    expect(live?.frames).toEqual([{ at: 99 }]);
+    expect(JSON.stringify(live?.frames)).not.toMatch(/png|pixel|iVBORw/i);
+
+    writeFileSync(
+      join(DATA_DIR, "teach-sessions.json"),
+      JSON.stringify([
+        {
+          id: "s1",
+          botId: "bot-2",
+          status: "recording",
+          events: [],
+          frames: [{ at: 7, png: "abc" }],
+          startedAt: 1,
+        },
+      ]),
+    );
+    const reloaded = loadTeachSessions();
+    expect(reloaded[0].frames).toEqual([{ at: 7 }]);
+    expect(JSON.stringify(reloaded)).not.toMatch(/png|abc/);
+  });
+
+  it("keeps the empty-events fallback string", () => {
+    expect(distillSkillMarkdown({ name: "Empty", events: [] })).toContain(
+      "Review the recorded session and describe the task in order.",
+    );
   });
 });

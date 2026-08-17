@@ -42,7 +42,10 @@ export interface TeachSessionRecord {
   startedAt: number;
   stoppedAt?: number;
   name?: string;
+  /** Set only after the user confirms save. Drafts leave this unset. */
   skillId?: string;
+  /** Distilled markdown held on the session until confirm or discard. */
+  draftMarkdown?: string;
 }
 
 const SKILLS_FILE = join(DATA_DIR, "skills.json");
@@ -73,7 +76,13 @@ function isTeachEvent(v: unknown): v is TeachEvent {
 
 function isTeachFrame(v: unknown): v is TeachFrame {
   if (!v || typeof v !== "object") return false;
-  return Number.isFinite((v as Partial<TeachFrame>).at);
+  const frame = v as Record<string, unknown>;
+  return Number.isFinite(frame.at);
+}
+
+/** Timestamps only — never persist pixels or extra keys. */
+export function teachFrameAt(frame: TeachFrame = { at: Date.now() }): TeachFrame {
+  return { at: Number.isFinite(frame.at) ? frame.at : Date.now() };
 }
 
 function isTeachSession(v: unknown): v is TeachSessionRecord {
@@ -83,6 +92,7 @@ function isTeachSession(v: unknown): v is TeachSessionRecord {
   if (s.status !== "recording" && s.status !== "completed") return false;
   if (!Number.isFinite(s.startedAt)) return false;
   if (!Array.isArray(s.events) || !Array.isArray(s.frames)) return false;
+  if (s.draftMarkdown !== undefined && typeof s.draftMarkdown !== "string") return false;
   return s.events.every(isTeachEvent) && s.frames.every(isTeachFrame);
 }
 
@@ -140,7 +150,10 @@ export function loadTeachSessions(): TeachSessionRecord[] {
   try {
     const raw: unknown = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
     if (!Array.isArray(raw)) return [];
-    return raw.filter(isTeachSession);
+    return raw.filter(isTeachSession).map((s) => ({
+      ...s,
+      frames: s.frames.map((frame) => teachFrameAt(frame)),
+    }));
   } catch {
     return [];
   }
@@ -193,20 +206,63 @@ export function appendTeachEvent(botId: string, event: TeachEvent): TeachSession
 }
 
 export function appendTeachFrame(botId: string, frame: TeachFrame = { at: Date.now() }): TeachSessionRecord | null {
-  return patchSession(botId, (session) => ({ ...session, frames: [...session.frames, frame] }));
+  return patchSession(botId, (session) => ({ ...session, frames: [...session.frames, teachFrameAt(frame)] }));
 }
 
 export function completeTeachSession(
   botId: string,
-  opts: { name?: string; skillId: string },
+  opts: { name?: string; skillId?: string; draftMarkdown?: string } = {},
 ): TeachSessionRecord | null {
-  return patchSession(botId, (session) => ({
-    ...session,
-    status: "completed",
-    stoppedAt: Date.now(),
-    name: opts.name?.trim() || session.name,
-    skillId: opts.skillId,
-  }));
+  return patchSession(botId, (session) => {
+    const next: TeachSessionRecord = {
+      ...session,
+      status: "completed",
+      stoppedAt: Date.now(),
+      name: opts.name?.trim() || session.name,
+    };
+    if (opts.skillId) next.skillId = opts.skillId;
+    else delete next.skillId;
+    if (opts.draftMarkdown !== undefined) next.draftMarkdown = opts.draftMarkdown;
+    return next;
+  });
+}
+
+function patchSessionById(id: string, fn: (session: TeachSessionRecord) => TeachSessionRecord): TeachSessionRecord | null {
+  const sessions = loadTeachSessions();
+  const index = sessions.findIndex((s) => s.id === id);
+  if (index < 0) return null;
+  const next = fn(sessions[index]);
+  sessions[index] = next;
+  saveTeachSessions(sessions);
+  return next;
+}
+
+/** Latest completed session for this bot that has not been confirmed into the library. */
+export function getTeachDraftSession(botId: string): TeachSessionRecord | null {
+  return listTeachSessions(botId).find((s) => s.status === "completed" && !s.skillId) ?? null;
+}
+
+export function confirmTeachSession(
+  sessionId: string,
+  opts: { skillId: string; name?: string },
+): TeachSessionRecord | null {
+  return patchSessionById(sessionId, (session) => {
+    const next: TeachSessionRecord = {
+      ...session,
+      skillId: opts.skillId,
+      name: opts.name?.trim() || session.name,
+    };
+    delete next.draftMarkdown;
+    return next;
+  });
+}
+
+export function discardTeachDraft(sessionId: string): TeachSessionRecord | null {
+  return patchSessionById(sessionId, (session) => {
+    const next: TeachSessionRecord = { ...session };
+    delete next.draftMarkdown;
+    return next;
+  });
 }
 
 /** Deterministic step list from a recorded session. Frames are counted,

@@ -128,7 +128,12 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     computerBindings: () => computers.list().map((p) => p.id),
   });
 
-  const teach = createTeachService({ bus, registry, bot: (id) => bots.bot(id) });
+  const teach = createTeachService({
+    bus,
+    registry,
+    bot: (id) => bots.bot(id),
+    patchBot: (id, patch) => bots.patchBot(id, patch),
+  });
 
   let turnsRef: TurnsService | null = null;
   const proactive = createProactive({
@@ -212,7 +217,12 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
     createDiagnosticsRoutes({ diagnostics }),
     integrations.api,
-    createComputersRoutes({ bots, computers, recordBinding: (botId, machineId) => repos.computerBindings.record(botId, machineId) }),
+    createComputersRoutes({
+      bots,
+      computers,
+      recordBinding: (botId, machineId) => repos.computerBindings.record(botId, machineId),
+      onScreenshot: (botId) => turns.noteScreenshot(botId),
+    }),
   ];
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {

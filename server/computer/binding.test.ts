@@ -84,6 +84,22 @@ describe("box removed via config (computer.providers without box)", () => {
     expect(shot.body.format).toBe("png");
     expect(shot.body.png.length).toBeGreaterThan(0);
 
+    const teachStart = await h.api("POST", `/api/bots/${bot.id}/teach/start`);
+    expect(teachStart.status).toBe(200);
+    const idleShot = await h.api("POST", `/api/bots/${bot.id}/computer/screenshot`);
+    expect(idleShot.status).toBe(200);
+    const recording = await h.api("GET", `/api/bots/${bot.id}/teach`);
+    expect(recording.body.session.status).toBe("recording");
+    expect(recording.body.session.frames).toHaveLength(1);
+    expect(recording.body.session.frames[0]).toEqual({ at: expect.any(Number) });
+    expect(JSON.stringify(recording.body.session.frames)).not.toMatch(/png|pixel/i);
+    const teachStop = await h.api("POST", `/api/bots/${bot.id}/teach/stop`, { name: "Idle frames" });
+    expect(teachStop.body.skill).toBeUndefined();
+    expect(teachStop.body.session.frames).toHaveLength(1);
+    expect(teachStop.body.session.frames[0]).toEqual({ at: expect.any(Number) });
+    expect(typeof teachStop.body.markdown).toBe("string");
+    expect(teachStop.body.markdown.length).toBeGreaterThan(0);
+
     const joined = await h.api("POST", `/api/bots/${bot.id}/computer/join`);
     expect(joined.status).toBe(200);
     expect(joined.body.joinUrl).toBe(`fake://desktop/fake-${bot.id}`);
