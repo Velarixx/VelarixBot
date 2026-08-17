@@ -165,3 +165,43 @@ app doesn't embed it).
    `EmbeddedCuaDriverHost` for production.
 5. Later: axstream-style macro teach/replay, extension bridge, playwright-mcp
    tier.
+
+## Shared cloud box (2026-08-17)
+
+Grok Bot parity: with `cfg.box.shared` on, every bot in a VelarixBot install
+uses ONE cloud box — the exact name `<namePrefix>velarixbot-workspace` —
+instead of one box per bot (`<namePrefix>velarixbot-workspace-<botId>`).
+Off by default; with the knobs absent, nothing about today's per-bot boxes
+changes. Locked decisions:
+
+- **D1 — one shared Chrome.** No per-bot browser profiles in v1. Whoever's
+  turn it is drives the one desktop.
+- **D2 — cross-bot files allowed, audited.** The shared box is ONE trust
+  domain: any bot can read any path on it, and Chrome logins are common
+  property. Convention (not a boundary): each bot's shell commands start in
+  its own `~/workspaces/<botId>` (mirrors the local
+  `~/.velarixbot/workspaces/<botId>`); the harness re-establishes the cwd on
+  every exec because tmux does not persist across the Box REST commands
+  endpoint. Exec / file reads / desktop joins on the shared machine land in
+  the append-only audit log with `machine:"shared"`.
+- **D3 — the machine lease.** One X11 + one Chrome means turns SERIALIZE:
+  dispatch acquires an in-memory FIFO lease per machine before the turn
+  starts (normal, routine, listener, and boxAgent turns alike) and releases
+  it when the turn settles. A queued turn waits `cfg.box.leaseWaitMs`
+  (default 10 min) and then fails loud — `computer busy — in use by <bot>` —
+  never a silent proceed without tools. Suspend is refused while another
+  bot holds or queues the lease. Panel exec/join do not take the lease.
+  Known hazard, documented not solved: bot A holds the lease and ask_bots B,
+  who also needs the box — B queues behind A until the timeout.
+- **D4 — one Box account for the team.** One API key per person (revoke on
+  leave), and a `cfg.box.namePrefix` per install ("Computer name prefix" in
+  Settings, e.g. `dyon-`, sanitized like bot ids). Without a prefix, two
+  installs in shared mode silently land on the SAME box — the lease is
+  per-install and does NOT serialize two co-workers; prefixes are what keep
+  installs apart. Separate accounts only if billing/isolation demands it.
+
+Migration: toggling shared strands the old per-bot boxes (their TTL pauses
+billing). The Computer panel's "Clean up old per-bot boxes" lists ONLY
+`<prefix>velarixbot-workspace-*` under this install's prefix — never the
+shared box, never another install's prefix — behind an explicit destroy
+confirm. Files do NOT move over automatically.

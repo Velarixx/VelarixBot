@@ -16,6 +16,7 @@ import {
 import { clearUnattended, hopUnattended, isUnattended, markUnattended, configureUnattended } from "../unattended.ts";
 import * as composio from "../composio.ts";
 import type { ComputerProvider } from "../computer/provider.ts";
+import { createLeaseBroker, LEASE_WAIT_DEFAULT_MS, type LeaseBroker } from "../computer/leases.ts";
 import type { ComputerRegistry } from "../computer/registry.ts";
 import {
   ASK_BUDGET_MS,
@@ -87,6 +88,10 @@ export interface TurnsServiceDeps {
   port: number;
   commsToken: string;
   now?: () => number;
+  /** Machine lease broker (shared-box serialization). The composition root
+   * passes the same broker to the computer routes so the suspend guard sees
+   * the turns this service is running. */
+  leases?: LeaseBroker;
 }
 
 export interface TurnsService {
@@ -135,6 +140,30 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   function boundProvider(computer: string | undefined): ComputerProvider | null {
     const binding = computers.resolveBinding(computer);
     return binding && binding !== "off" ? computers.get(binding) : null;
+  }
+
+  // ── machine leases (shared-box serialization, 3.4/D3) ─────────────────
+  // One turn per machine: acquired at the dispatch site below for EVERY
+  // machine-backed remote computer turn, keyed vendor-blind as
+  // `<providerKind>:<machineId>`. In per-bot mode every bot has its own
+  // machine, so keys never contend and behavior is unchanged; in shared
+  // mode every bot resolves to the one shared machine and turns serialize
+  // FIFO. Panel-driven exec/join never take the lease.
+  const leases = deps.leases ?? createLeaseBroker();
+  const leaseKeyByBot = new Map<string, string>();
+
+  /** cfg.box.leaseWaitMs (D3, strict-decoded at provider create; read
+   * tolerantly here so a bad value degrades to the default, never a hang). */
+  function leaseWaitMs(): number {
+    const raw = cfg.box?.leaseWaitMs;
+    return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : LEASE_WAIT_DEFAULT_MS;
+  }
+
+  function releaseComputerLease(botId: string): void {
+    const key = leaseKeyByBot.get(botId);
+    if (!key) return;
+    leaseKeyByBot.delete(botId);
+    leases.release(key, botId);
   }
 
   const agentsProxyPath = proxyPath("drivers", "agents-proxy.ts");
@@ -702,6 +731,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       }
       case "runtime.error":
         if (event.turnId) responseOptionsByTurn.delete(event.turnId);
+        releaseComputerLease(bot.id);
         pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
         bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
         proactive.noteState(bot.id, "BLOCKED");
@@ -709,6 +739,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         broadcastBot(bot.id);
         break;
       case "turn.completed": {
+        releaseComputerLease(bot.id);
         // the last live frame becomes a settled inline screen message —
         // the screenshot-in-chat moment
         const frame = stopScreenPoller(bot.id);
@@ -767,6 +798,15 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   // Frames stream to clients as SSE {kind:'screen'} (the "Bot's screen"
   // panel); the final frame is folded into the transcript on turn end.
   // Only providers that declare the screenshot capability get a poller.
+  //
+  // 2026-08-17 [VERIFY] observation loop: there is no computer-observation
+  // module in this repo — this per-bot poller IS the observation path,
+  // keyed by botId and calling provider.screenshot(botId). In shared mode
+  // the lease serializes turns, so at most one bot's poller runs against
+  // the shared machine at a time and every panel simply shows the one
+  // desktop; re-keying per machine and fanning frames to every bound bot
+  // would be a new frame-routing layer, i.e. not cheap — deliberately
+  // skipped (spec: "own commit / skip if not cheap").
   type Frame = { png: string; mime: string };
   const screenPollers = new Map<
     string,
@@ -909,6 +949,23 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
                 handle: { machineId: machine.id },
               };
               repos.computerBindings.record(bot.id, machine.id);
+              // 2026-08-17 [VERIFY] dispatch site: this block is the ONE
+              // place a turn gets its machine — the computer MCP mount for
+              // CLI drivers AND the handle boxAgent runs on — so the lease
+              // acquired here covers normal, routine, listener/unattended,
+              // and boxAgent turns alike (every path enters via startTurn;
+              // adapter.sendTurn has no other production caller). A second
+              // acquire inside boxAgent.sendTurn would deadlock this FIFO,
+              // so boxAgent's serialization IS this acquire. Box-native
+              // /prompt concurrency could not be probed live (no token in
+              // this environment) — until proven safe, serialize here.
+              // Timeout fails LOUD below; the lease is released when the
+              // turn settles (turn.completed / runtime.error / dispatch
+              // catch / interrupt) — never a silent proceed-without-tools.
+              // key registered BEFORE the await so an interrupt during the
+              // queue wait aborts the wait instead of leaking a zombie turn
+              leaseKeyByBot.set(bot.id, `${computerProvider.kind}:${machine.id}`);
+              await leases.acquire(`${computerProvider.kind}:${machine.id}`, { id: bot.id, name: bot.name }, { waitMs: leaseWaitMs() });
             }
           }
         }
@@ -984,6 +1041,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         });
         if (integrations.computer) startScreenPoller(bot.id);
       } catch (e) {
+        // covers the lease-wait timeout ("computer busy — in use by <bot>")
+        // and an aborted queue wait as well as sendTurn failures: the error
+        // lands in the transcript and the bot goes BLOCKED — never a silent
+        // proceed without the computer
+        releaseComputerLease(bot.id);
         const message = e instanceof Error ? e.message : String(e);
         const failure = store.appendMessage(bot.threadId, {
           role: "bot",
@@ -1072,6 +1134,9 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const bot = store.bot(botId);
     if (!bot) return { error: "no such bot", status: 404 };
     const instance = registry.get(bot.modelSelection.instanceId);
+    // abort releases the machine lease (or the queued wait) immediately —
+    // the driver's own turn.completed release is then an idempotent no-op
+    releaseComputerLease(botId);
     await instance?.adapter.interruptTurn(bot.threadId);
     bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
     proactive.noteState(bot.id, "BLOCKED");

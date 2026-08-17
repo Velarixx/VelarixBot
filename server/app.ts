@@ -7,6 +7,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join } from "node:path";
 
 import { requireApiAuth } from "./auth.ts";
+import { boxMaintenance } from "./computer/box.ts";
+import { createLeaseBroker } from "./computer/leases.ts";
 import { createComputerRegistry, type ComputerRegistry } from "./computer/registry.ts";
 import { defaultAvatarImageGenerator, type GenerateAvatarImages } from "./avatar-image.ts";
 import type { AppConfig } from "./config.ts";
@@ -158,6 +160,10 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     },
   });
 
+  // ONE machine-lease broker for the whole install: turn dispatch acquires
+  // on it, the computer routes' suspend guard and "in use by" read it
+  const computerLeases = createLeaseBroker();
+
   let routinesRef: RoutinesService | null = null;
   const turns = createTurnsService({
     cfg,
@@ -173,6 +179,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     port,
     commsToken,
     now: () => clock.now(),
+    leases: computerLeases,
   });
   turnsRef = turns;
 
@@ -235,6 +242,12 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       computers,
       recordBinding: (botId, machineId) => repos.computerBindings.record(botId, machineId),
       onScreenshot: (botId) => turns.noteScreenshot(botId),
+      leases: computerLeases,
+      // the composition root knows the vendor knob; routes stay vendor-blind
+      isShared: (provider) => provider.kind === "box" && cfg.box?.shared === true,
+      ...(boxMaintenance(computers.defaultRemote())
+        ? { cleanup: boxMaintenance(computers.defaultRemote())! }
+        : {}),
     }),
   ];
 

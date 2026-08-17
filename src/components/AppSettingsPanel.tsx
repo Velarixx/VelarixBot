@@ -3,10 +3,77 @@
 // live in SettingsPanel; contextual Box-token entry stays in ComputerPanel.
 import { X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, useStore } from "@/state/store";
+import { api, useStore, type ConfigStatus } from "@/state/store";
 import { ApiKeyRow } from "./ApiKeys";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
+
+/** Shared-box knobs, next to the Box token. Settings, not secrets — the
+ * server echoes them back, unlike keys. */
+function SharedBoxRows() {
+  const { state, dispatch } = useStore();
+  const shared = state.config?.box.shared === true;
+  const savedPrefix = state.config?.box.namePrefix ?? "";
+  const [prefix, setPrefix] = useState(savedPrefix);
+  const [saving, setSaving] = useState<"shared" | "prefix" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setPrefix(savedPrefix), [savedPrefix]);
+
+  const save = (body: { shared?: boolean; namePrefix?: string }, what: "shared" | "prefix") => {
+    setSaving(what);
+    setError(null);
+    api("/api/config", { method: "PUT", body: JSON.stringify({ box: body }) })
+      .then((status: ConfigStatus) => dispatch({ type: "configStatus", config: status }))
+      .catch((e) => setError(e.message))
+      .finally(() => setSaving(null));
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <div className="text-[13px] text-ink">Shared computer</div>
+          <div className="mt-0.5 text-[12px] text-ink-secondary">
+            All bots use one cloud box (Grok Bot-style). One desktop, one Chrome — every bot can see the
+            others' files and logins on it.
+          </div>
+        </div>
+        <button
+          role="switch"
+          aria-checked={shared}
+          disabled={saving !== null}
+          onClick={() => save({ shared: !shared }, "shared")}
+          className={cn("relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors", shared ? "bg-accent" : "bg-raised")}
+        >
+          <span className={cn("absolute top-[3px] size-5 rounded-full bg-white transition-all", shared ? "left-[21px]" : "left-[3px]")} />
+        </button>
+      </div>
+      <div>
+        <div className="mb-1.5 text-[13px] text-ink-secondary">
+          Computer name prefix — set per person when sharing one Box account, e.g. dyon-
+        </div>
+        <div className="flex gap-2">
+          <input
+            value={prefix}
+            onChange={(e) => setPrefix(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && save({ namePrefix: prefix.trim() }, "prefix")}
+            placeholder="dyon-"
+            autoComplete="off"
+            className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+          />
+          <button
+            onClick={() => save({ namePrefix: prefix.trim() }, "prefix")}
+            disabled={saving !== null || prefix.trim() === savedPrefix}
+            className="w-[72px] shrink-0 rounded-lg bg-raised py-2 text-[13px] text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {saving === "prefix" ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+      {error && <div className="text-[12px] text-danger">{error}</div>}
+    </div>
+  );
+}
 
 
 /** Launch-at-login — desktop shell only; default off. */
@@ -246,6 +313,7 @@ export function AppSettingsPanel() {
               Manage apps
             </button>
             <ApiKeyRow section="box" label="Box token" placeholder="Token from box.ascii.dev" />
+            <SharedBoxRows />
             <ApiKeyRow
               section="github"
               label="GitHub token (private releases)"

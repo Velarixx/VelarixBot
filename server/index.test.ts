@@ -448,6 +448,24 @@ describe("harness HTTP API", () => {
     expect(nothing.status).toBe(400);
   });
 
+  it("round-trips the shared-box knobs (settings, not secrets) and rejects bad types", async () => {
+    const on = await api("PUT", "/api/config", { box: { shared: true, namePrefix: "dyon-" } });
+    expect(on.status).toBe(200);
+    expect(on.body.box).toMatchObject({ configured: true, shared: true, namePrefix: "dyon-" });
+
+    const badShared = await api("PUT", "/api/config", { box: { shared: "yes" } });
+    expect(badShared.status).toBe(400);
+    expect(badShared.body.error).toMatch(/box\.shared/);
+    const badWait = await api("PUT", "/api/config", { box: { leaseWaitMs: -5 } });
+    expect(badWait.status).toBe(400);
+    expect(badWait.body.error).toMatch(/box\.leaseWaitMs/);
+
+    // toggling off (and clearing the prefix) restores the exact old shape
+    const off = await api("PUT", "/api/config", { box: { shared: false, namePrefix: "" } });
+    expect(off.status).toBe(200);
+    expect(off.body.box).toEqual({ configured: true });
+  });
+
   it("boot migrated the seeded plaintext secret out of config.json", async () => {
     // seeded pre-boot as plaintext (see beforeAll) — post-migration the file
     // holds a secret:// ref and the value lives only in the secret store

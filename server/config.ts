@@ -23,7 +23,13 @@ export interface AppConfig {
    * apiKey = ak_… project API key — optional, unlocks the full toolkit
    * catalog with official logos in the plugins marketplace. */
   composio?: { key?: string; apiKey?: string; url?: string };
-  box?: { token?: string; url?: string };
+  /** token/url are the vendor credentials. shared/namePrefix/leaseWaitMs are
+   * the shared-box knobs (3.2.4/D3/D4, decoded strictly in server/box.ts):
+   * shared = one cloud box for every bot in this install; namePrefix scopes
+   * this install's box names when a team shares one Box account (one API key
+   * per person, one prefix per install); leaseWaitMs is how long a turn
+   * queues for the shared box before failing loud (default 10 min). */
+  box?: { token?: string; url?: string; shared?: boolean; namePrefix?: string; leaseWaitMs?: number };
   /** Personal GitHub token. Write-only. Updater + GitHub listener polls. */
   github?: { token?: string };
   /** OpenAI BYO key (sk-…). Write-only. Used by A2 avatar generate. */

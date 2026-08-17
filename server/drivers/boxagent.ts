@@ -130,7 +130,14 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
       // provider-native machine handle — the harness resolved the bot's
-      // computer binding and attached the machine this turn runs ON
+      // computer binding and attached the machine this turn runs ON.
+      // 2026-08-17 shared-box note: the machine lease that serializes turns
+      // on a shared box is held by TURN DISPATCH (services/turns.ts) around
+      // this call — every boxAgent turn enters through startTurn, and a
+      // second acquire here would deadlock that FIFO. Box-native /prompt
+      // concurrency was not provable live (no token in the build env), so
+      // the dispatch lease keeps boxAgent and CLI turns from ever running
+      // at once on one box.
       const boxId = turn.integrations?.computer?.handle?.machineId;
       if (!token) throw new Error('box not configured — add {"box":{"token":"…"}} to ~/.velarixbot/config.json');
       if (!boxId) throw new Error("this bot has no computer yet — open the Computer panel and provision one");

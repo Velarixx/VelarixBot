@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { appendAudit } from "../approvals.ts";
 import * as box from "../box.ts";
 import type { AppConfig } from "../config.ts";
 import {
@@ -24,6 +25,28 @@ import {
 } from "./provider.ts";
 
 const KIND = "box";
+
+// 2026-08-17 [VERIFY] capabilities/destroy: this provider declares
+// suspend:true, mcp:true, destroy:false — destroy rejects with the
+// canonical unsupported error and is exposed on NO route (the panel offers
+// provision|join|sleep|exec|screenshot only), so shared mode adds no
+// destroy surface to guard. The migration cleanup below is the one
+// deliberate delete path, scoped to stranded per-bot boxes and never the
+// shared machine.
+
+/** Migration cleanup (3.8) — a provider-internal extension the composition
+ * root hands to the computer routes. NOT part of the ComputerProvider SPI:
+ * sharing (and cleaning up after it) is a box concern. */
+export interface BoxMaintenance {
+  list(): Promise<Array<{ id: string; name: string; state: string | null }>>;
+  destroy(ids: string[]): Promise<{ destroyed: Array<{ id: string; name: string }>; failed: Array<{ id: string; error: string }> }>;
+}
+
+const MAINTENANCE = new WeakMap<ComputerProvider, BoxMaintenance>();
+
+export function boxMaintenance(provider: ComputerProvider | null | undefined): BoxMaintenance | null {
+  return provider ? MAINTENANCE.get(provider) ?? null : null;
+}
 
 // the proxy entry lives next to server/ as .ts in dev and .js in the
 // compiled dist-server the packaged app ships
@@ -51,13 +74,31 @@ export const BoxComputerProviderFactory: ComputerProviderFactory<BoxProviderConf
   decodeConfig,
 
   async create({ id, config, appConfig }): Promise<ComputerProvider> {
-    // Effective vendor config for the box client: the write-only token
-    // always comes from the live app config (cfg.box.token); the URL can be
+    // Strict decode of the shared-box knobs (cfg.box.shared / namePrefix /
+    // leaseWaitMs): an invalid type rejects create, and the registry
+    // downgrades this provider to an unavailable shadow — a bad config value
+    // must never crash boot.
+    const sharing = box.decodeBoxSharing(appConfig);
+
+    // Effective vendor config for the box client: the write-only token and
+    // the shared-box knobs always come from the LIVE app config (the
+    // composition root mutates it in place on save, so a Settings toggle
+    // applies to the next operation without a restart); the URL can be
     // pinned per provider instance.
     const boxCfg = (): AppConfig => ({
-      box: { token: appConfig.box?.token, url: config.url ?? appConfig.box?.url },
+      box: { ...appConfig.box, url: config.url ?? appConfig.box?.url },
     });
     const token = () => appConfig.box?.token;
+
+    // Shared box = shared trust domain: any bot can read any path and the
+    // one Chrome's logins are common property (D1/D2). Exec, file reads,
+    // and desktop joins on the shared machine therefore land in the
+    // append-only audit log with machine:"shared"; per-bot mode stays
+    // audit-silent, exactly as before.
+    const auditShared = (botId: string, tool: string, decision: string, matcher: string) => {
+      if (!box.decodeBoxSharing(boxCfg()).shared) return;
+      appendAudit({ bot: botId, tool, matcher, decision, machine: "shared" });
+    };
 
     const provider: ComputerProvider = {
       id,
@@ -74,8 +115,17 @@ export const BoxComputerProviderFactory: ComputerProviderFactory<BoxProviderConf
         destroy: false,
         mcp: true,
       },
-      turnPrompt:
-        "You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps.",
+      // 2026-08-17 [VERIFY] turnPrompt IS static: a readonly string on the
+      // provider, and the computer registry is built once at boot
+      // (createApplication) — reloadProviders only rebuilds the DRIVER
+      // fleet. So the wording is chosen at create time and stays generic
+      // (no per-bot paths): shell commands are cwd-wrapped by the harness,
+      // the prompt only has to set expectations. A live Settings toggle
+      // changes naming/cwd/lease immediately; the prompt follows on the
+      // next boot.
+      turnPrompt: sharing.shared
+        ? "You have a cloud computer that is SHARED with the user's other bots — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps. Your shell commands start in your own folder under ~/workspaces/; files outside it, and the desktop's Chrome with its logins, may belong to other bots — leave their work alone unless asked."
+        : "You have your own cloud computer — use the computer tools (screenshot, computer_exec, open_url) whenever browsing or acting on a desktop helps.",
 
       async status(botId): Promise<ComputerStatus> {
         if (!token()) {
@@ -112,6 +162,7 @@ export const BoxComputerProviderFactory: ComputerProviderFactory<BoxProviderConf
       },
 
       async *execute(botId, command): AsyncIterable<ExecuteEvent> {
+        auditShared(botId, "computer_exec", "computer.exec", String(command ?? ""));
         // the Box run-command endpoint is synchronous — the stream settles
         // in one round trip
         const out = await box.execOnBox(boxCfg(), botId, command);
@@ -121,6 +172,7 @@ export const BoxComputerProviderFactory: ComputerProviderFactory<BoxProviderConf
       },
 
       async connectScreen(botId): Promise<ScreenConnection> {
+        auditShared(botId, "computer_join", "computer.join", box.sharedBoxName(boxCfg()));
         const r = await box.joinBox(boxCfg(), botId);
         if (!r.joinUrl) throw new Error("the box did not mint a desktop URL — try again");
         return { kind: "url", url: r.joinUrl, state: r.state ?? null };
@@ -141,6 +193,7 @@ export const BoxComputerProviderFactory: ComputerProviderFactory<BoxProviderConf
 
       async readFile(botId, path) {
         assertAbsolutePath(path);
+        auditShared(botId, "computer_read_file", "computer.read", path);
         return box.readBoxPath(boxCfg(), botId, path);
       },
 
@@ -158,10 +211,25 @@ export const BoxComputerProviderFactory: ComputerProviderFactory<BoxProviderConf
             OGB_BOX_URL: box.boxApiBase(boxCfg()),
             OGB_BOX_ID: machineId,
             OGB_BOX_TOKEN: t,
+            // 2026-08-17 [VERIFY]: the computer-proxy MCP hits the Box REST
+            // commands endpoint DIRECTLY (computer-proxy.ts runOnBox), never
+            // execOnBox — so the shared-mode per-bot cwd must ride the spawn
+            // contract and be re-applied by the proxy's computer_exec tool.
+            ...(box.decodeBoxSharing(boxCfg()).shared ? { OGB_BOX_CWD: box.botBoxCwd(botId) } : {}),
           },
         };
       },
     };
+    MAINTENANCE.set(provider, {
+      async list() {
+        if (!token()) throw new Error("box provider not enabled — add a Box token first");
+        return box.listStaleBotBoxes(boxCfg());
+      },
+      async destroy(ids) {
+        if (!token()) throw new Error("box provider not enabled — add a Box token first");
+        return box.destroyStaleBotBoxes(boxCfg(), ids);
+      },
+    });
     return provider;
   },
 };

@@ -54,6 +54,15 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const [phase, setPhase] = useState<Phase>("checking");
   const [boxState, setBoxState] = useState<string | null>(null);
+  // shared-box mode: one cloud computer for every bot in this install
+  const [shared, setShared] = useState(false);
+  const [inUseBy, setInUseBy] = useState<string | null>(null);
+  const [cleanup, setCleanup] = useState<{
+    boxes: Array<{ id: string; name: string; state: string | null }>;
+    confirming: boolean;
+    busy: boolean;
+    note: string | null;
+  } | null>(null);
   const [polledFrame, setPolledFrame] = useState<{ png: string; mime: string } | null>(null);
   const [localFrame, setLocalFrame] = useState<string | null>(null);
   const [pending, setPending] = useState<"join" | "sleep" | null>(null);
@@ -101,6 +110,9 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     setPolledFrame(null);
     setLocalFrame(null);
     setError(null);
+    setShared(false);
+    setInUseBy(null);
+    setCleanup(null);
     const isElectron = Boolean(window.ogb);
     if (bot.computer === "off") {
       setPhase("off");
@@ -115,6 +127,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     api(`/api/bots/${bot.id}/computer`)
       .then((status) => {
         if (!alive) return;
+        setShared(status.shared === true);
+        setInUseBy(status.inUseBy ?? null);
         const autoLocal = !remoteBound(bot.computer) && isElectron && localSupported;
         if (!status.configured) {
           setPhase(autoLocal ? "local" : "unconfigured");
@@ -140,6 +154,22 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       alive = false;
     };
   }, [bot.id, bot.computer, retry, localSupported]);
+
+  // shared box: refresh "in use by" while the panel is open (light status
+  // read; the screenshot poll below already talks to the vendor anyway)
+  useEffect(() => {
+    if (!shared || phase !== "ready") return;
+    let alive = true;
+    const timer = setInterval(() => {
+      api(`/api/bots/${bot.id}/computer`)
+        .then((status) => alive && setInUseBy(status.inUseBy ?? null))
+        .catch(() => {});
+    }, 10_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [shared, phase, bot.id]);
 
   // cloud preview: SSE frames win while the bot works; otherwise poll
   const live = state.screens[bot.id];
@@ -251,9 +281,21 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       <div className="flex-1 overflow-y-auto px-5 pb-5">
         {/* Screen preview */}
         <div className="mb-1.5 mt-2 flex items-center justify-between text-[13px] text-ink-secondary">
-          <span>{bot.name}'s screen</span>
+          <span className="flex items-center gap-2">
+            {shared ? "The shared computer" : `${bot.name}'s screen`}
+            {shared && (
+              <span className="rounded-full bg-raised px-2 py-0.5 text-[11px] text-ink" title="All bots use this one cloud box — files and Chrome logins on it are visible to every bot.">
+                Shared
+              </span>
+            )}
+          </span>
           {phase === "local" && <span className="text-[11px]">{localNoun}</span>}
         </div>
+        {shared && inUseBy && (
+          <div className="mb-1.5 text-[12px] text-ink-secondary">
+            In use by {inUseBy} — turns queue for the computer until it frees up.
+          </div>
+        )}
         <div className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-xl bg-card">
           {frameSrc ? (
             <img src={frameSrc} alt={`${bot.name}'s screen`} className="h-full w-full object-contain" />
@@ -364,6 +406,83 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
             ))}
           </div>
         </div>
+
+        {/* Shared mode: clean up old per-bot boxes (migration, prefix-scoped) */}
+        {shared && (
+          <div className="mt-4 rounded-xl bg-card p-4">
+            <div className="text-[15px] font-medium text-ink">Clean up old per-bot boxes</div>
+            <div className="mt-0.5 text-[13px] text-ink-secondary">
+              Switching to the shared computer strands each bot's old cloud box. Files on them do NOT move over.
+              Only this install's boxes (your name prefix) are listed — never the shared computer itself.
+            </div>
+            {!cleanup ? (
+              <button
+                onClick={() => {
+                  api("/api/computer/cleanup")
+                    .then((r) => setCleanup({ boxes: r.boxes ?? [], confirming: false, busy: false, note: null }))
+                    .catch((e) => setCleanup({ boxes: [], confirming: false, busy: false, note: e.message }));
+                }}
+                className="mt-3 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover"
+              >
+                List old boxes
+              </button>
+            ) : (
+              <div className="mt-3">
+                {cleanup.boxes.length === 0 && !cleanup.note && (
+                  <div className="text-[12px] text-ink-secondary">No old per-bot boxes found.</div>
+                )}
+                {cleanup.boxes.map((b) => (
+                  <div key={b.id} className="flex items-center justify-between py-1 text-[12px] text-ink-secondary">
+                    <span className="truncate">{b.name}</span>
+                    <span className="ml-2 shrink-0">{b.state ?? ""}</span>
+                  </div>
+                ))}
+                {cleanup.boxes.length > 0 &&
+                  (cleanup.confirming ? (
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        disabled={cleanup.busy}
+                        onClick={() => {
+                          setCleanup({ ...cleanup, busy: true });
+                          api("/api/computer/cleanup", {
+                            method: "POST",
+                            body: JSON.stringify({ boxIds: cleanup.boxes.map((b) => b.id) }),
+                          })
+                            .then((r) =>
+                              setCleanup({
+                                boxes: [],
+                                confirming: false,
+                                busy: false,
+                                note: `Destroyed ${r.destroyed?.length ?? 0} box${(r.destroyed?.length ?? 0) === 1 ? "" : "es"}${r.failed?.length ? `; ${r.failed.length} failed` : ""}.`,
+                              }),
+                            )
+                            .catch((e) => setCleanup({ ...cleanup, busy: false, confirming: false, note: e.message }));
+                        }}
+                        className="rounded-lg bg-danger/15 px-3 py-2 text-[13px] font-medium text-danger hover:bg-danger/25 disabled:opacity-50"
+                      >
+                        {cleanup.busy ? "Destroying…" : `Yes, destroy ${cleanup.boxes.length}`}
+                      </button>
+                      <button
+                        disabled={cleanup.busy}
+                        onClick={() => setCleanup({ ...cleanup, confirming: false })}
+                        className="rounded-lg bg-raised px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised-hover"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setCleanup({ ...cleanup, confirming: true })}
+                      className="mt-2 rounded-lg px-3 py-2 text-[13px] font-medium text-danger hover:bg-danger/10"
+                    >
+                      Destroy {cleanup.boxes.length} old box{cleanup.boxes.length === 1 ? "" : "es"} — disks included, this can't be undone
+                    </button>
+                  ))}
+                {cleanup.note && <div className="mt-2 text-[12px] text-ink-secondary">{cleanup.note}</div>}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Routines */}
         <div className="mt-4 rounded-xl bg-card p-4">

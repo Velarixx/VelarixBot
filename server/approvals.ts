@@ -301,6 +301,9 @@ export interface AuditEntry {
   matcher: string;
   decision: string;
   ruleId?: string;
+  /** Shared-box trust domain: exec/read/join on a machine shared by every
+   * bot in this install carry machine:"shared" (2026-08-17). */
+  machine?: string;
 }
 
 /** One line per decision: bot, tool, redacted matcher, decision, ruleId. */
@@ -313,6 +316,7 @@ export function appendAudit(entry: Omit<AuditEntry, "at">): void {
     matcher: redactSecrets(entry.matcher).slice(0, 200),
     decision: entry.decision,
     ...(entry.ruleId ? { ruleId: entry.ruleId } : {}),
+    ...(entry.machine ? { machine: entry.machine } : {}),
   };
   appendFileSync(join(RULES_DIR, AUDIT_FILE), JSON.stringify(line) + "\n", { mode: PRIVATE_FILE_MODE });
 }
