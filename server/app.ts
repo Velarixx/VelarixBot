@@ -172,6 +172,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     broadcast,
     port,
     commsToken,
+    now: () => clock.now(),
   });
   turnsRef = turns;
 

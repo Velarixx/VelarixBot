@@ -21,12 +21,14 @@ import {
   WORKSPACE_SCOPE,
   type ApprovalRule,
 } from "./approvals.ts";
+import { markUnattended, resetUnattended } from "./unattended.ts";
 
 const BOT = "bot-approve-1";
 const OTHER = "bot-approve-2";
 const RULES_DIR = join(DATA_DIR, "approvals");
 
 beforeEach(() => {
+  resetUnattended();
   rmSync(RULES_DIR, { recursive: true, force: true });
   mkdirSync(RULES_DIR, { recursive: true });
 });
@@ -233,6 +235,24 @@ describe("approval rules", () => {
       source: "rule",
     });
     expect(autoResolvePermission({ id: BOT, requireApproval: true }, "list_bots", "Allow list_bots")).toBeNull();
+  });
+});
+
+describe("unattended consult (before any allow-list)", () => {
+  it("suppresses a planted Always-allow rule and the alwaysAllow flag", () => {
+    persistAllowRule({ botId: BOT, tool: "shell", summary: "git status", behavior: "allow", always: true });
+    expect(autoResolvePermission({ id: BOT }, "shell", "git status")?.behavior).toBe("allow");
+    markUnattended(BOT);
+    expect(autoResolvePermission({ id: BOT }, "shell", "git status")).toBeNull();
+    expect(autoResolvePermission({ id: BOT, alwaysAllow: true }, "shell", "git status")).toBeNull();
+    // explicit context flag is enough even without a stored mark on OTHER
+    expect(autoResolvePermission({ id: OTHER, alwaysAllow: true }, "shell", "git status", { unattended: true })).toBeNull();
+  });
+
+  it("is bot-keyed: another bot's mark does not suppress this bot", () => {
+    persistAllowRule({ botId: BOT, tool: "shell", summary: "git status", behavior: "allow", always: true });
+    markUnattended(OTHER);
+    expect(autoResolvePermission({ id: BOT }, "shell", "git status")?.behavior).toBe("allow");
   });
 });
 

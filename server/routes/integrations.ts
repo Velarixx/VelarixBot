@@ -108,7 +108,11 @@ export function createIntegrationsRoutes(deps: {
           broadcast({ kind: "bot", bot: bots.publicBot(from.id) });
         }
         const prefixed = `[Message from @${fromName}, another bot in this VelarixBot workspace. Reply to them.]\n\n${message}`;
-        const reply = await turns.askBotQueued(toBotId, prefixed, depth, { visited: guard.chain, groupThreadId });
+        const reply = await turns.askBotQueued(toBotId, prefixed, depth, {
+          visited: guard.chain,
+          groupThreadId,
+          fromBotId,
+        });
         json(res, 200, { botName: target.name, text: reply });
         return true;
       }
