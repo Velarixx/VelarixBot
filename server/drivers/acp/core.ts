@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 
 import type {
   DriverCreateInput,
+  ModelCatalog,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,
@@ -107,6 +108,13 @@ export interface AcpSupport {
     env: Record<string, string | undefined>,
     prompt: string,
   ): Promise<string>;
+  /** Live model catalog. Called on identity-cache refresh only (60s),
+   * never per describe(). Return null to keep the create-time fallback. */
+  resolveModels?(
+    config: AcpConfig,
+    env: Record<string, string | undefined>,
+    init?: unknown,
+  ): Promise<ModelCatalog | null>;
 }
 
 const INIT_TIMEOUT = 20_000;
@@ -660,6 +668,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               ? await support.probeAuthenticated(config, env).catch(() => undefined)
               : undefined;
           identityCache = { key, at: Date.now(), ...probe, probedAuth };
+          if (probe.ok && support.resolveModels) {
+            const live = await support.resolveModels(config, env, probe.init).catch(() => null);
+            if (live?.options.length) models = live;
+          }
         }
         // Signed-in truth, in order: the probe's initialize result when the
         // harness derives auth from the handshake (undefined — unknown,

@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { cliExec } from "../cli.ts";
+import { catalogFromModelState } from "./catalog.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 // Hermes' credential-pool store (`hermes auth` persists pool state under the
@@ -48,8 +49,9 @@ const usableAuthMethod = (methods: Array<{ id?: string; type?: string }>) =>
 const support: AcpSupport = {
   driverKind: "hermesAgent",
   displayName: "Hermes",
-  // Static v1 catalog; eventually read from the initialize result's
-  // _meta.modelState once the CLI advertises one.
+  // [VERIFY] 2026-08-17: initialize `_meta.modelState` is currentModelId
+  // only — no list. Keep this static fallback unless a list appears.
+  // resolveModels reads `_meta.modelState.availableModels` when present.
   models: {
     default: "gpt-5.6-sol",
     options: [
@@ -144,6 +146,8 @@ const support: AcpSupport = {
     if (!result.ok) throw new Error(result.stderr.trim() || `\`${config.cli}\` exec failed`);
     return result.stdout.trim();
   },
+
+  resolveModels: async (_config, _env, init) => catalogFromModelState(init),
 };
 
 export const HermesAgentDriver = createAcpDriver(support);

@@ -37,6 +37,15 @@ describe("ClaudeDriver.decodeConfig", () => {
     expect(() => ClaudeDriver.decodeConfig({ permissionMode: "yolo" })).toThrow(/permissionMode/);
   });
 
+  it("driver.models stays the dated 4-id fallback; instance.models is a getter", async () => {
+    expect(ClaudeDriver.models.options.map((o) => o.id)).toEqual([
+      "claude-fable-5",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-haiku-4-5",
+    ]);
+  });
+
   it("advertises per-instance effort options (no ultracode)", async () => {
     const inst = await ClaudeDriver.create({
       instanceId: "claude",
@@ -77,10 +86,24 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
   afterEach(async () => {
     delete process.env.FAKE_CLAUDE_MODE;
     delete process.env.FAKE_CLAUDE_DUMP;
+    delete process.env.FAKE_CLAUDE_MODELS;
     delete process.env.ANTHROPIC_API_KEY;
     recorder?.stop();
     await instance?.dispose();
     rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("instance.models follows `claude models` instead of create-time constants", async () => {
+    process.env.FAKE_CLAUDE_MODELS = "claude-sonnet-5,claude-9-preview";
+    await create();
+    expect(instance.models.options.map((o) => o.id)).toEqual(["claude-sonnet-5", "claude-9-preview"]);
+    expect(instance.models.default).toBe("claude-sonnet-5");
+    expect(ClaudeDriver.models.options.map((o) => o.id)).toEqual([
+      "claude-fable-5",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-haiku-4-5",
+    ]);
   });
 
   it("normalizes a full turn into the canonical event sequence", async () => {

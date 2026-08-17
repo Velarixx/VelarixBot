@@ -22,6 +22,8 @@
 //                      Anything other than exactly `auth status --json` is
 //                      rejected (strict fake — an accept-anything probe would
 //                      hide a driver that dropped --json).
+//   FAKE_CLAUDE_MODELS comma-separated ids for `claude models` (default the
+//                      dated 4-id fallback). Strict: only `models`.
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { readFileSync, statSync, writeFileSync } from "node:fs";
@@ -43,6 +45,19 @@ if (argv.includes("--version")) {
 // Strict: only `auth status --json`. Missing --json or a different subcommand
 // is a hard fail so a driver that probes credentials.json / bare `auth status`
 // cannot hide behind an accept-anything fake.
+if (argv[0] === "models") {
+  if (argv.length !== 1) {
+    process.stderr.write("error: expected `models`\n");
+    process.exit(1);
+  }
+  const ids = (process.env.FAKE_CLAUDE_MODELS ?? "claude-sonnet-5,claude-opus-5,claude-fable-5,claude-haiku-4-5")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  process.stdout.write(JSON.stringify({ models: ids.map((id) => ({ id, display_name: id })) }) + "\n");
+  process.exit(0);
+}
+
 if (argv[0] === "auth") {
   if (argv[1] !== "status" || !argv.includes("--json")) {
     process.stderr.write("error: expected `auth status --json`\n");
