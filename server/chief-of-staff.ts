@@ -1,6 +1,6 @@
 // Coordinator prompt for bots that mount the agents tools.
 // Binding: tell the coordinator to use delegate_bot and not wait.
-// Do not copy the OpenMaus CoS "wait for the teammate's actual reply" sentence.
+// Do not tell the coordinator to wait for the teammate's actual reply.
 
 export function agentsCommsPrompt(): string {
   return (

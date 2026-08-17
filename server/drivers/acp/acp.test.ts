@@ -21,6 +21,7 @@ import { GEMINI_CREDENTIAL_ENV, GeminiAgentDriver } from "./gemini.ts";
 import { GrokAgentDriver } from "./grok.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
+// POSIX-only: the fake ACP CLI is a shebang script Windows cannot exec.
 const posixOnly = describe.skipIf(process.platform === "win32");
 
 /** A harness that exists only in tests: no transformEnv, no credentialEnv.
@@ -244,7 +245,7 @@ describe("ACP child env (fake driver, no transformEnv)", () => {
   });
 });
 
-posixOnly("ACP turns (fake CLI)", () => {
+posixOnly("ACP turns (fake CLI) — POSIX-only: shebang fake CLI", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
   let scratch: string;
@@ -540,7 +541,7 @@ posixOnly("ACP turns (fake CLI)", () => {
   });
 });
 
-describe.skipIf(process.platform === "win32")("ACP snapshot", () => {
+describe.skipIf(process.platform === "win32")("ACP snapshot (POSIX-only: shebang fake CLI)", () => {
   it("a missing binary is unavailable", async () => {
     const instance = await GrokAgentDriver.create({
       instanceId: "grok-missing",

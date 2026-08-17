@@ -33,6 +33,8 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
+          # [VERIFY] 2026-08-18 M1: Node 24 only. package.json engines is
+          # >=24. Do not advertise 22 — CI does not test it.
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile

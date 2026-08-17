@@ -1,5 +1,5 @@
 // Bot⇄bot comms visibility: channel creation, message mirroring, and
-// per-thread chips. Slim-ported from OpenMausBot server/comms-visibility.ts
+// per-thread chips for A⇄B DM visibility.
 // so ask_bot and delegate_bot share one A ⇄ B DM path.
 
 import type { BotRecord, GroupRecord, Message } from "./store.ts";

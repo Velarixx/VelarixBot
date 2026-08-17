@@ -19,6 +19,7 @@ import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { CLAUDE_EFFORT, ClaudeDriver } from "./claude.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-claude-cli.ts");
+// POSIX-only: the fake CLI is a shebang script Windows cannot exec (same as claude.cmd).
 const posixOnly = describe.skipIf(process.platform === "win32");
 
 describe("ClaudeDriver.decodeConfig", () => {
@@ -60,7 +61,7 @@ describe("ClaudeDriver.decodeConfig", () => {
   });
 });
 
-posixOnly("ClaudeDriver turns (fake CLI)", () => {
+posixOnly("ClaudeDriver turns (fake CLI) — POSIX-only: shebang fake CLI", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
   let scratch: string;
@@ -586,7 +587,7 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
 // Auth state must come from the CLI, not from probing its credential store:
 // on macOS the OAuth tokens live in the login Keychain, so the old
 // ~/.claude/.credentials.json check reported signed-in users as signed out.
-posixOnly("ClaudeDriver snapshot auth (fake CLI)", () => {
+posixOnly("ClaudeDriver snapshot auth (fake CLI) — POSIX-only: shebang fake CLI", () => {
   let instance: ProviderInstance;
 
   const create = async () => {

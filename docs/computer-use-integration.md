@@ -33,7 +33,7 @@ Electron main process
 
 ## Computer use: CUA only — bundle cua-driver, spawn from Electron main
 
-**Decision (Milind, 2026-08-12): CUA is the ONLY computer-use provider.
+**Decision (2026-08-12): CUA is the ONLY computer-use provider.
 No cliclick, no robotjs/nut.js, no Python computer-server, no fallbacks.**
 Everything that touches the user's screen/mouse/keyboard goes through the
 bundled `cua-driver` binary. Alternatives evaluated and rejected:
@@ -103,7 +103,7 @@ So the harness just adds one entry to a bot's `--mcp-config`:
 { "mcpServers": { "computer": {
     "command": "<cua-driver binary>",
     "args": ["mcp", "--embedded", "--socket", "<socketPath>"],
-    "env": { "CUA_DRIVER_EMBEDDED": "1", "CUA_DRIVER_HOST_BUNDLE_ID": "com.opengrokbot.app" }
+    "env": { "CUA_DRIVER_EMBEDDED": "1", "CUA_DRIVER_HOST_BUNDLE_ID": "com.velarix.bot" }
 } } }
 ```
 

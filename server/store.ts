@@ -37,7 +37,7 @@ export interface OptionCardData {
   answered?: string;
   dismissed?: boolean;
   requestId?: string;
-  requestType?: "permission" | "question" | "credential" | "secret" | "suggestion";
+  requestType?: "permission" | "question" | "credential" | "secret" | "suggestion" | "setup";
   connectUrl?: string;
   /** PRO extract card. Accept writes via createRoutine / insertMemoryRow. */
   suggestion?: { botId: string; type: "preference" | "fact" | "workflow"; text: string };
@@ -97,6 +97,9 @@ export interface BotRecord {
    * provider that is no longer configured stays on the record and simply
    * resolves to nothing at runtime. */
   computer: string; pinned?: boolean; hidden?: boolean; busy: boolean; state: BotState; stateDetail?: string;
+  /** Machine-readable block/stop code (spawn_error, no_engines, …). Never
+   * copy this into user-facing stateDetail — ChatView renders stateDetail. */
+  stateCode?: string;
   usage: Usage; currentTurnUsage?: Usage; createdAt: number; requireApproval?: boolean;
   /** Bot Settings → Permissions → Always allow: routine permission asks for
    * THIS bot auto-resolve to allow without a card. Scoped to this bot only —
@@ -219,6 +222,7 @@ export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } 
     unread: b.unread === true, modelSelection: validModelSelection(b.modelSelection) ?? { instanceId: "", model: "" }, resumeCursors: b.resumeCursors && typeof b.resumeCursors === "object" ? b.resumeCursors : {},
     computer: normalizeComputerBinding(b.computer), pinned: b.pinned, hidden: b.hidden, busy: crashed ? false : b.busy === true,
     state: crashed ? "BLOCKED" : STATES.has(b.state as BotState) ? b.state! : "IDLE", ...(crashed ? { stateDetail: "interrupted" } : b.stateDetail ? { stateDetail: b.stateDetail } : {}),
+    ...(crashed ? {} : typeof b.stateCode === "string" && b.stateCode ? { stateCode: b.stateCode } : {}),
     usage: validUsage(b.usage), currentTurnUsage: b.currentTurnUsage ? validUsage(b.currentTurnUsage) : undefined, createdAt: Number.isFinite(b.createdAt) ? b.createdAt! : Date.now(),
     ...(typeof b.avatarNonce === "number" && Number.isInteger(b.avatarNonce) && b.avatarNonce >= 0 ? { avatarNonce: b.avatarNonce } : {}),
     ...(validStoredHash(b.avatarImageHash) ? { avatarImageHash: b.avatarImageHash } : {}),

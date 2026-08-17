@@ -61,7 +61,8 @@ backed by local agent CLIs and optional per-bot cloud computers.
 ### 🧠 Pick a brain per bot
 
 A model picker with a provider rail — Claude and Codex models side by side, defaults marked, unavailable
-providers dimmed with the reason. Switch a bot's model mid-conversation.
+providers dimmed with the reason. Switch a bot's model mid-conversation. The picker reads
+`GET /api/instances` (there is no `/api/models` route).
 
 <img src="docs/screenshots/model-picker.png" alt="Model picker with provider rail" width="100%">
 
@@ -136,7 +137,7 @@ Secrets are write-only: the UI only ever sees "configured" flags.
 </table>
 
 **Also in the box:** streaming replies with tool-run activity chips · native macOS dictation from the
-composer mic (on-device Apple speech recognition — desktop app) · SupaMaus cursor mascots with role-aware
+composer mic (on-device Apple speech recognition — desktop app) · cursor mascots with role-aware
 expressions · screenshots of the bot's work folded into the transcript · persistent scheduled routines ·
 OS notifications, sidebar search, local file attachments, and in-app updates from private GitHub Releases.
 

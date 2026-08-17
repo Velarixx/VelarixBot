@@ -18,6 +18,7 @@ import { botWorkspaceDir, type AppConfig } from "../config.ts";
 import { deleteBlob, readBlob } from "../db/blobs.ts";
 import { newId, type ModelSelection } from "../contracts.ts";
 import type { Repositories } from "../repositories/index.ts";
+import { normalizeBotColor } from "../engine-setup.ts";
 import {
   BASE_COMPUTER_BINDINGS,
   STATES,
@@ -71,6 +72,7 @@ export function toPublicBot(bot: BotRecord, messages: Message[] = []): PublicBot
   if (bot.pinned !== undefined) pub.pinned = bot.pinned;
   if (bot.hidden !== undefined) pub.hidden = bot.hidden;
   if (bot.stateDetail !== undefined) pub.stateDetail = bot.stateDetail;
+  if (bot.stateCode !== undefined) pub.stateCode = bot.stateCode;
   if (bot.currentTurnUsage !== undefined) pub.currentTurnUsage = bot.currentTurnUsage;
   if (bot.requireApproval !== undefined) pub.requireApproval = bot.requireApproval;
   if (bot.alwaysAllow !== undefined) pub.alwaysAllow = bot.alwaysAllow;
@@ -230,6 +232,19 @@ export function createBotsService(opts: {
       for (const field of ["name", "title", "description"] as const) {
         if (patch[field] !== undefined && typeof patch[field] !== "string") invalid(field);
       }
+      // [VERIFY] 2026-08-18: whitespace-only names used to persist and
+      // render as blank sidebar rows. Reject (400) rather than silently
+      // rewrite to "New Bot" — a PATCH the user sent must not invent a name.
+      if (typeof patch.name === "string") {
+        const name = patch.name.trim();
+        if (!name) invalid("name");
+        patch = { ...patch, name };
+      }
+      if (patch.color !== undefined) {
+        const color = normalizeBotColor(patch.color);
+        if (!color) invalid("color");
+        patch = { ...patch, color };
+      }
       if (patch.modelSelection !== undefined && !validModelSelection(patch.modelSelection)) invalid("modelSelection");
       for (const field of ["alwaysAllow", "requireApproval", "mascotPinned"] as const) {
         if (patch[field] !== undefined && typeof patch[field] !== "boolean") invalid(field);
@@ -301,6 +316,14 @@ export function createBotsService(opts: {
         }
       }
       Object.assign(b, next);
+      if (Object.prototype.hasOwnProperty.call(patch, "stateDetail") && patch.stateDetail === undefined) {
+        delete b.stateDetail;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "stateCode") && !patch.stateCode) {
+        delete b.stateCode;
+      } else if (b.state !== "BLOCKED") {
+        delete b.stateCode;
+      }
       if (Object.prototype.hasOwnProperty.call(patch, "avatarImageHash") && (patch.avatarImageHash == null || patch.avatarImageHash === "")) {
         delete b.avatarImageHash;
       }
@@ -363,9 +386,14 @@ export function createBotsService(opts: {
       }
     },
     seedIfEmpty() {
+      // Empty workspace only. Never rename an existing row — a user who
+      // created "Milind" (or anything else) keeps that name forever.
+      // [VERIFY] 2026-08-18: product copy and tests already treat
+      // "Chief of Staff" as the on-brand seed (rc14-field, index MCP
+      // update_bot). Do not migrate historical names.
       if (repos.bots.count()) return;
       const b = service.createBot();
-      service.patchBot(b.id, { name: "Milind", color: "blue" });
+      service.patchBot(b.id, { name: "Chief of Staff", color: "blue" });
     },
     messagesFor: (threadId) => repos.messages.forThread(threadId),
     appendMessage: (threadId, message) => repos.messages.append(threadId, message),

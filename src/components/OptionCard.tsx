@@ -22,6 +22,7 @@ export function OptionCard({
   const credential = card?.requestType === "credential";
   const secret = card?.requestType === "secret";
   const suggestion = card?.requestType === "suggestion";
+  const setup = card?.requestType === "setup";
   const bot = state.bots.find((b) => b.id === botId);
   const offerDesktop = credential && shouldOfferDesktop(bot?.computer, state.config?.box.configured === true);
   const connectUrl = card?.connectUrl;
@@ -150,7 +151,7 @@ export function OptionCard({
         </form>
       )}
 
-      {!card.answered && !credential && !secret && !suggestion && (
+      {!card.answered && !credential && !secret && !suggestion && !setup && (
         <input
           value={custom}
           onChange={(e) => setCustom(e.target.value)}

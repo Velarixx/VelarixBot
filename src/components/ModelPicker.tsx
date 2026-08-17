@@ -1,4 +1,5 @@
 // Model picker: an instance rail + model list, backed by /api/instances.
+// There is no /api/models route — do not add one unless a real client needs it.
 // Routing is by exact instanceId only — an entry is never inferred from a
 // driver kind, and unavailable instances render disabled with the reason.
 import { useEffect, useRef, useState } from "react";

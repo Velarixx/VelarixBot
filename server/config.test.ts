@@ -89,6 +89,7 @@ describe("instanceConfigs", () => {
 });
 
 describe("config persistence hardening", () => {
+  // POSIX-only: Windows has no Unix 0700/0600 mode bits.
   const posixOnly = process.platform === "win32" ? it.skip : it;
 
   it("saves atomically (no temp litter); config.json holds secret refs, not values", async () => {
@@ -163,7 +164,7 @@ describe("config persistence hardening", () => {
     expect(await migrateConfigSecrets()).toBe(false);
   });
 
-  posixOnly("keeps the data dir 0700, config.json and secrets.json 0600", async () => {
+  posixOnly("keeps the data dir 0700, config.json and secrets.json 0600 — POSIX-only: Windows has no Unix mode bits", async () => {
     ensureDirs();
     await saveConfig({ box: { token: canary("mode") } });
     expect(statSync(DATA_DIR).mode & 0o777).toBe(0o700);

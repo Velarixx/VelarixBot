@@ -8,7 +8,7 @@ import {
 } from "./mentions";
 
 const bots = [
-  { id: "bot-1", name: "Milind" },
+  { id: "bot-1", name: "Ada" },
   { id: "bot-2", name: "Scout" },
   { id: "bot-hidden", name: "Ghost", hidden: true },
 ];

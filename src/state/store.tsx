@@ -37,7 +37,7 @@ export interface OptionCardData {
   dismissed?: boolean;
   /** Present when this card is a live provider ask (approval/question/sign-in). */
   requestId?: string;
-  requestType?: "permission" | "question" | "credential" | "secret" | "suggestion";
+  requestType?: "permission" | "question" | "credential" | "secret" | "suggestion" | "setup";
   /** Composio OAuth URL for connect_app — opened in the user's browser. */
   connectUrl?: string;
   /** PRO extract card. Accept writes via the card PATCH, never a new turn. */
@@ -104,6 +104,8 @@ export interface Bot {
   busy?: boolean;
   state: BotState;
   stateDetail?: string;
+  /** Machine-readable block code (spawn_error, no_engines). Not user-facing. */
+  stateCode?: string;
   usage: Usage;
   currentTurnUsage?: Usage;
   modelSelection: ModelSelection;
@@ -805,7 +807,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 ...(action.always === true ? { persistScope: action.persistScope ?? "bot" } : {}),
               }),
             }).catch(showError);
-          } else if (card?.requestType === "suggestion") {
+          } else if (card?.requestType === "suggestion" || card?.requestType === "setup") {
             persistCard(action.botId, action.messageId, { answered: action.answer });
           } else {
             persistCard(action.botId, action.messageId, { answered: action.answer });

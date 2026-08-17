@@ -150,7 +150,7 @@ export function createRoutinesService(deps: {
     botId: string,
     text: string,
     opts?: { extraSkillIds?: string[]; unattended?: boolean; systemNote?: string },
-  ): Promise<void>;
+  ): Promise<{ threadId: string; messageId: string } | void>;
   getSkill(id: string): SkillRecord | null;
   skillPrompt(skill: SkillRecord | null, prompt: string): string;
   pollListener?: ListenerPoller;

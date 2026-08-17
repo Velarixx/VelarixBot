@@ -64,22 +64,22 @@ describe("mentionedBots", () => {
   const peers = [
     { id: "1", name: "New Bot" },
     { id: "2", name: "New Bot 2" },
-    { id: "3", name: "Milind" },
+    { id: "3", name: "Ada" },
     { id: "4", name: "Ghost", hidden: true },
     { id: "5", name: "Scout" },
   ];
   it("matches a tag at a word start, case-insensitively", () => {
     expect(mentionedBots("hey @milind, look", peers).map((b) => b.id)).toEqual(["3"]);
-    expect(mentionedBots("@Milind first thing", peers).map((b) => b.id)).toEqual(["3"]);
+    expect(mentionedBots("@Ada first thing", peers).map((b) => b.id)).toEqual(["3"]);
   });
   it("prefers the longest name so prefixes never half-match", () => {
     expect(mentionedBots("ask @New Bot 2 about it", peers).map((b) => b.id)).toEqual(["2"]);
   });
   it("dedupes repeats and collects multiple bots", () => {
-    expect(mentionedBots("@Milind and @New Bot and @Milind", peers).map((b) => b.id)).toEqual(["3", "1"]);
+    expect(mentionedBots("@Ada and @New Bot and @Ada", peers).map((b) => b.id)).toEqual(["3", "1"]);
   });
   it("group mention includes all named bots", () => {
-    expect(mentionedBots("@Milind and @Scout, please both look", peers).map((b) => b.id)).toEqual(["3", "5"]);
+    expect(mentionedBots("@Ada and @Scout, please both look", peers).map((b) => b.id)).toEqual(["3", "5"]);
   });
   it("ignores emails, hidden bots, and mid-word @", () => {
     expect(mentionedBots("mail milind@milind.dev please", peers)).toEqual([]);
