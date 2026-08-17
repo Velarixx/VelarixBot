@@ -201,14 +201,30 @@ export function createBotsRoutes(deps: {
       json(res, 200, { sessions: listTeachSessions() });
       return true;
     }
-    let teachMatch = path.match(/^\/api\/bots\/([\w-]+)\/teach\/(start|stop)$/);
+    let teachMatch = path.match(/^\/api\/bots\/([\w-]+)\/teach\/(start|stop|save|discard)$/);
     if (teachMatch && method === "POST") {
-      if (teachMatch[2] === "start") {
-        json(res, 200, teach.startTeachSession(teachMatch[1]));
+      const botId = teachMatch[1];
+      const action = teachMatch[2];
+      if (action === "start") {
+        json(res, 200, teach.startTeachSession(botId));
         return true;
       }
       const body = await readBody(req).catch(() => ({}));
-      json(res, 200, await teach.stopTeachSession(teachMatch[1], typeof body.name === "string" ? body.name : undefined));
+      if (action === "stop") {
+        json(res, 200, await teach.stopTeachSession(botId, typeof body.name === "string" ? body.name : undefined));
+        return true;
+      }
+      if (action === "save") {
+        const saved = teach.saveTeachSession(botId, {
+          name: typeof body.name === "string" ? body.name : undefined,
+          markdown: typeof body.markdown === "string" ? body.markdown : undefined,
+          sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+        });
+        broadcast({ kind: "bot", bot: saved.bot });
+        json(res, 200, saved);
+        return true;
+      }
+      json(res, 200, teach.discardTeachSession(botId, typeof body.sessionId === "string" ? body.sessionId : undefined));
       return true;
     }
     teachMatch = path.match(/^\/api\/bots\/([\w-]+)\/teach$/);

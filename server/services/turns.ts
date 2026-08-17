@@ -45,7 +45,7 @@ import type { Proactive } from "../proactive.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "../response-options.ts";
 import { enabledSkillIds, LAST_BOT_ERROR, mentionedBots, uniqueSkillIds, wouldEmptyWorkspace, type Message, type Usage } from "../store.ts";
-import { appendTeachFrame, deleteSkillsForBot, getSkill, saveSkill, skillSystemNote, skillsForTurn } from "../teach.ts";
+import { deleteSkillsForBot, getSkill, saveSkill, skillSystemNote, skillsForTurn } from "../teach.ts";
 import type { Broadcast } from "./events.ts";
 import type { BotsService } from "./bots.ts";
 import type { RoutinesService } from "./routines.ts";
@@ -100,6 +100,8 @@ export interface TurnsService {
   defaultSelection(): Promise<ModelSelection>;
   selectionForModel(model?: string): Promise<ModelSelection>;
   lastScreenFrame(botId: string): { png: string; mime: string } | null;
+  /** Idle record: count a frame from the existing screenshot stream (no second poller). */
+  noteScreenshot(botId: string): void;
 }
 
 export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
@@ -754,7 +756,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         const { png, format } = await provider.screenshot(botId);
         const frame = { png, mime: format === "jpeg" ? "image/jpeg" : "image/png" };
         entry.last = frame;
-        appendTeachFrame(botId);
+        teach.noteFrame(botId);
         broadcast({ kind: "screen", botId, ...frame });
       } catch {
         /* box asleep or mid-command — try again next tick */
@@ -1058,6 +1060,10 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     selectionForModel,
     lastScreenFrame(botId) {
       return screenPollers.get(botId)?.last ?? null;
+    },
+    noteScreenshot(botId) {
+      if (screenPollers.has(botId)) return;
+      teach.noteFrame(botId);
     },
   };
   return service;

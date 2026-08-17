@@ -653,9 +653,13 @@ describe("harness HTTP API", () => {
     expect(listed.body.skills.some((s: { id: string }) => s.id === skill.body.skill.id)).toBe(true);
   });
 
-    it("records a teach session into a reviewable skill without a live box", async () => {
-    const { body } = await api("GET", "/api/bots");
-    const bot = body.bots[0];
+  it("records a teach session into a reviewable draft; save enables without replacing priors", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const priorA = await api("POST", "/api/skills", { botId: bot.id, name: "A", markdown: "# A\n\n1. Alpha\n" });
+    const priorB = await api("POST", "/api/skills", { botId: bot.id, name: "B", markdown: "# B\n\n1. Bravo\n" });
+    await api("PATCH", `/api/bots/${bot.id}`, { enabledSkills: [priorA.body.skill.id, priorB.body.skill.id] });
+
     const start = await api("POST", `/api/bots/${bot.id}/teach/start`);
     expect(start.status).toBe(200);
     expect(start.body.recording).toBe(true);
@@ -665,14 +669,45 @@ describe("harness HTTP API", () => {
     expect(listed.body.sessions.some((s: { botId: string; status: string }) => s.botId === bot.id && s.status === "recording")).toBe(true);
     const current = await api("GET", `/api/bots/${bot.id}/teach`);
     expect(current.body.session.status).toBe("recording");
+
+    const beforeStop = await api("GET", "/api/skills");
+    const skillCountBeforeStop = beforeStop.body.skills.length;
     const stop = await api("POST", `/api/bots/${bot.id}/teach/stop`, { name: "Empty session" });
     expect(stop.status).toBe(200);
-    expect(stop.body.skill.markdown).toMatch(/1\./);
-    expect(stop.body.skill.name).toBe("Empty session");
+    expect(stop.body.skill).toBeUndefined();
+    expect(stop.body.markdown).toMatch(/1\./);
+    expect(stop.body.markdown).toContain("Review the recorded session and describe the task in order.");
+    expect(stop.body.name).toBe("Empty session");
     expect(stop.body.session.status).toBe("completed");
-    expect(stop.body.session.skillId).toBe(stop.body.skill.id);
+    expect(stop.body.session.skillId).toBeUndefined();
+    expect(stop.body.session.draftMarkdown).toBe(stop.body.markdown);
+    const afterStop = await api("GET", "/api/skills");
+    expect(afterStop.body.skills).toHaveLength(skillCountBeforeStop);
+
+    const saved = await api("POST", `/api/bots/${bot.id}/teach/save`, {
+      name: "Empty session",
+      markdown: stop.body.markdown,
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.skill.name).toBe("Empty session");
+    expect(saved.body.session.skillId).toBe(saved.body.skill.id);
+    expect(saved.body.bot.enabledSkills).toEqual([priorA.body.skill.id, priorB.body.skill.id, saved.body.skill.id]);
     const after = await api("GET", "/api/teach-sessions");
     expect(after.body.sessions.some((s: { id: string; status: string }) => s.id === stop.body.session.id && s.status === "completed")).toBe(true);
+  });
+
+  it("discards a teach draft without writing a library skill", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const before = await api("GET", "/api/skills");
+    await api("POST", `/api/bots/${bot.id}/teach/start`);
+    const stop = await api("POST", `/api/bots/${bot.id}/teach/stop`, { name: "Scratch" });
+    expect(stop.body.skill).toBeUndefined();
+    const discarded = await api("POST", `/api/bots/${bot.id}/teach/discard`, { sessionId: stop.body.session.id });
+    expect(discarded.status).toBe(200);
+    const after = await api("GET", "/api/skills");
+    expect(after.body.skills).toHaveLength(before.body.skills.length);
+    expect(after.body.skills.some((s: { name: string }) => s.name === "Scratch")).toBe(false);
   });
 
   it("attaches a skill to a bot and persists iconShape", async () => {

@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useStore, type Bot, type Skill } from "@/state/store";
+import { teachCardPhase, teachPrimaryLabel, teachShowsEditor, teachShowsSaveDiscard } from "@/lib/teach-card";
 import { ApiKeyRow } from "./ApiKeys";
 import { cn } from "@/lib/cn";
 
@@ -54,8 +55,11 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [retry, setRetry] = useState(0);
   const [teaching, setTeaching] = useState(false);
   const [teachBusy, setTeachBusy] = useState(false);
+  const [teachDraft, setTeachDraft] = useState<{ name: string; markdown: string; sessionId?: string } | null>(null);
   const [taught, setTaught] = useState<Skill | null>(null);
   const localSupported = window.ogb?.platform !== "win32";
+  const teachPhase = teachCardPhase({ recording: teaching, hasDraft: Boolean(teachDraft), hasSaved: Boolean(taught) && !teachDraft });
+  const teachLabel = teachPrimaryLabel(teachPhase);
 
   useEffect(() => {
     let alive = true;
@@ -63,18 +67,22 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       .then((result) => {
         if (!alive) return;
         setTeaching(result.session?.status === "recording");
-        const completed = (result.sessions ?? []).find((s: { status: string; skillId?: string }) => s.status === "completed" && s.skillId);
-        if (completed?.skillId) {
-          return api(`/api/skills/${completed.skillId}`).then((r) => {
-            if (alive && r.skill) setTaught(r.skill);
-          });
+        const draft = (result.sessions ?? []).find(
+          (s: { status: string; skillId?: string; draftMarkdown?: string; name?: string; id: string }) =>
+            s.status === "completed" && !s.skillId && s.draftMarkdown,
+        );
+        if (draft?.draftMarkdown) {
+          setTeachDraft({ name: draft.name || `${bot.name} skill`, markdown: draft.draftMarkdown, sessionId: draft.id });
+          setTaught(null);
+          return;
         }
+        setTeachDraft(null);
       })
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [bot.id]);
+  }, [bot.id, bot.name]);
 
   // resolve the mode on open; box endpoints are only ever hit on the
   // cloud path, so local/off can never render a JSON error as an image
@@ -363,49 +371,121 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           </button>
         </div>
 
-        {/* Teach-a-task: record this Box session into a reviewable skill */}
+        {/* Teach-a-task: record → reviewable draft → Save / Discard */}
         <div className="mt-4 rounded-xl bg-card p-4">
           <div className="text-[15px] font-medium text-ink">Teach a task</div>
           <div className="mt-0.5 text-[13px] text-ink-secondary">
             Record this computer session into an ordered skill you can attach to a bot or a routine. Frames are counted, not replayed.
           </div>
-          <button
-            onClick={() => {
-              setTeachBusy(true);
-              setError(null);
-              const path = teaching ? `/api/bots/${bot.id}/teach/stop` : `/api/bots/${bot.id}/teach/start`;
-              api(path, {
-                method: "POST",
-                body: teaching ? JSON.stringify({ name: `${bot.name} skill` }) : undefined,
-              })
-                .then((result) => {
-                  setTeaching(!teaching);
-                  if (result.skill) setTaught(result.skill);
+          {teachLabel && (
+            <button
+              onClick={() => {
+                setTeachBusy(true);
+                setError(null);
+                const path = teaching ? `/api/bots/${bot.id}/teach/stop` : `/api/bots/${bot.id}/teach/start`;
+                api(path, {
+                  method: "POST",
+                  body: teaching ? JSON.stringify({ name: teachDraft?.name || `${bot.name} skill` }) : undefined,
                 })
-                .catch((e) => setError(e.message))
-                .finally(() => setTeachBusy(false));
-            }}
-            disabled={teachBusy}
-            className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-raised py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
-          >
-            {teachBusy ? <Loader2 size={14} className="animate-spin" /> : teaching ? <Square size={14} /> : null}
-            {teaching ? "Stop and save skill" : "Start recording"}
-          </button>
-          {taught && (
+                  .then((result) => {
+                    if (teaching) {
+                      setTeaching(false);
+                      setTaught(null);
+                      setTeachDraft({
+                        name: result.name || `${bot.name} skill`,
+                        markdown: result.markdown,
+                        sessionId: result.session?.id,
+                      });
+                      return;
+                    }
+                    setTeaching(true);
+                    setTeachDraft(null);
+                    setTaught(null);
+                  })
+                  .catch((e) => setError(e.message))
+                  .finally(() => setTeachBusy(false));
+              }}
+              disabled={teachBusy}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-raised py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
+            >
+              {teachBusy ? <Loader2 size={14} className="animate-spin" /> : teaching ? <Square size={14} /> : null}
+              {teachLabel}
+            </button>
+          )}
+          {teachShowsEditor(teachPhase) && (teachDraft || taught) && (
             <div className="mt-3">
-              <div className="text-[12px] text-ink-secondary">{taught.name} — review the steps, then attach it on a bot or a routine.</div>
+              <div className="text-[12px] text-ink-secondary">
+                {teachShowsSaveDiscard(teachPhase)
+                  ? "Review the steps, name the skill, then Save to add it to this bot — or Discard."
+                  : `${taught?.name ?? teachDraft?.name} — saved to the library and enabled on this bot.`}
+              </div>
+              {teachShowsSaveDiscard(teachPhase) && teachDraft && (
+                <input
+                  value={teachDraft.name}
+                  onChange={(e) => setTeachDraft({ ...teachDraft, name: e.target.value })}
+                  placeholder="Skill name"
+                  className="mt-2 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink"
+                />
+              )}
               <textarea
-                value={taught.markdown}
-                onChange={(e) => setTaught({ ...taught, markdown: e.target.value })}
-                onBlur={() => {
-                  void api(`/api/skills/${taught.id}`, {
-                    method: "PATCH",
-                    body: JSON.stringify({ markdown: taught.markdown, name: taught.name }),
-                  }).catch((e) => setError(e.message));
+                value={teachDraft?.markdown ?? taught?.markdown ?? ""}
+                onChange={(e) => {
+                  if (teachDraft) setTeachDraft({ ...teachDraft, markdown: e.target.value });
                 }}
+                readOnly={!teachShowsSaveDiscard(teachPhase)}
                 rows={8}
                 className="mt-2 w-full resize-y rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12px] text-ink"
               />
+              {teachShowsSaveDiscard(teachPhase) && teachDraft && (
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={() => {
+                      setTeachBusy(true);
+                      setError(null);
+                      api(`/api/bots/${bot.id}/teach/save`, {
+                        method: "POST",
+                        body: JSON.stringify({
+                          name: teachDraft.name,
+                          markdown: teachDraft.markdown,
+                          sessionId: teachDraft.sessionId,
+                        }),
+                      })
+                        .then((result) => {
+                          setTaught(result.skill);
+                          setTeachDraft(null);
+                          if (result.bot) dispatch({ type: "botPatched", bot: result.bot });
+                        })
+                        .catch((e) => setError(e.message))
+                        .finally(() => setTeachBusy(false));
+                    }}
+                    disabled={teachBusy || !teachDraft.name.trim() || !teachDraft.markdown.trim()}
+                    className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-raised py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50"
+                  >
+                    {teachBusy ? <Loader2 size={14} className="animate-spin" /> : null}
+                    Save
+                  </button>
+                  <button
+                    onClick={() => {
+                      setTeachBusy(true);
+                      setError(null);
+                      api(`/api/bots/${bot.id}/teach/discard`, {
+                        method: "POST",
+                        body: JSON.stringify({ sessionId: teachDraft.sessionId }),
+                      })
+                        .then(() => {
+                          setTeachDraft(null);
+                          setTaught(null);
+                        })
+                        .catch((e) => setError(e.message))
+                        .finally(() => setTeachBusy(false));
+                    }}
+                    disabled={teachBusy}
+                    className="flex items-center justify-center rounded-lg bg-raised px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised-hover hover:text-ink disabled:opacity-50"
+                  >
+                    Discard
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

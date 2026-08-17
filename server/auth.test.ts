@@ -136,6 +136,11 @@ describe("API auth e2e (real harness server)", () => {
     expect(good.status).toBe(200);
     const post = await fetch(`${h.base}/api/bots`, { method: "POST" });
     expect(post.status).toBe(401);
+    const bot = (await h.api("GET", "/api/bots")).body.bots[0];
+    for (const action of ["start", "stop", "save", "discard"]) {
+      const denied = await fetch(`${h.base}/api/bots/${bot.id}/teach/${action}`, { method: "POST" });
+      expect(denied.status).toBe(401);
+    }
   });
 
   it("keeps /api/health open and minimal (port-fallback identity probe)", async () => {
