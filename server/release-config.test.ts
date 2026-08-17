@@ -12,6 +12,8 @@ describe("internal desktop releases", () => {
     expect(pkg.scripts["package:mac"]).toContain("--arm64");
     expect(pkg.scripts["package:mac"]).toContain("fetch:cua");
     expect(pkg.scripts["package:win"]).toContain("--win");
+    expect(pkg.scripts["package:win"]).toContain("fetch:cua");
+    expect(pkg.scripts["package:win"]).toContain("stage:cua-sdk");
     expect(pkg.scripts["package:win"]).not.toContain("build:speech");
   });
 
@@ -24,7 +26,11 @@ describe("internal desktop releases", () => {
     expect(mac).toContain("- arm64");
     expect(mac).not.toMatch(/^\s+- x64\s*$/m);
     expect(builder).toContain("electron/resources/cua-driver");
+    expect(builder).toContain("electron/resources/cua-driver.exe");
     expect(builder).toContain("build/generated-cua-sdk/node_modules/@trycua");
+    const win = builder.slice(builder.indexOf("\nwin:"));
+    expect(win).toContain("cua-driver.exe");
+    expect(win).toContain("cua-sdk/node_modules/@trycua");
     expect(builder).toContain("sign: false");
   });
 

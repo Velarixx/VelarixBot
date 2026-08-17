@@ -4,8 +4,9 @@
 //  - "embedded" (packaged app): spawn our own private daemon via
 //    EmbeddedCuaDriverHost so TCC grants attribute to VelarixBot and the
 //    driver inherits them. One prompt, named VelarixBot, out of the box.
-//  - "standalone" (dev): attach to an already-installed CuaDriver.app daemon
-//    (its own TCC identity, typically already granted on a dev machine).
+//    Windows uses the same host; the SDK returns a named-pipe path.
+//  - "standalone" (dev): attach to an already-installed CuaDriver daemon
+//    (unix socket on macOS, named pipe on Windows).
 //
 // Agents never talk to the daemon socket directly — they spawn the official
 // stdio MCP proxy: `cua-driver mcp [--embedded --socket <path>]`. The proxy
@@ -20,13 +21,12 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-
-const INSTALLED_DRIVER = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver";
-const STANDALONE_SOCKET = path.join(
-  app.getPath("home"),
-  "Library/Caches/cua-driver/cua-driver.sock",
-);
-const HOST_BUNDLE_ID = "com.velarix.bot";
+import {
+  HOST_BUNDLE_ID,
+  isNamedPipePath,
+  resolveCuaConnection,
+  resolveDriverBinaryWith,
+} from "./cua-connection.mjs";
 
 let embeddedHost = null; // EmbeddedCuaDriverHost | null
 let connection = null; // descriptor exposed to harness + renderer
@@ -41,18 +41,18 @@ function saveConnection() {
 }
 
 export function resolveDriverBinary() {
-  if (process.env.CUA_DRIVER_PATH) return process.env.CUA_DRIVER_PATH;
-  if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, "cua-driver");
-    if (fs.existsSync(bundled)) return bundled;
-  }
-  if (fs.existsSync(INSTALLED_DRIVER)) return INSTALLED_DRIVER;
-  return null;
+  return resolveDriverBinaryWith({
+    platform: process.platform,
+    envPath: process.env.CUA_DRIVER_PATH,
+    packaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    exists: (p) => fs.existsSync(p),
+  });
 }
 
 function socketAlive(sockPath) {
   return new Promise((resolve) => {
-    if (!fs.existsSync(sockPath)) return resolve(false);
+    if (!isNamedPipePath(sockPath) && !fs.existsSync(sockPath)) return resolve(false);
     const s = net.createConnection(sockPath);
     const done = (ok) => {
       s.destroy();
@@ -72,58 +72,18 @@ async function startEmbedded(binary) {
     : "@trycua/cua-driver/embedded";
   const { EmbeddedCuaDriverHost } = await import(sdkEntry);
   embeddedHost = new EmbeddedCuaDriverHost(binary, HOST_BUNDLE_ID);
-  const conn = await embeddedHost.start();
-  return {
-    mode: "embedded",
-    socketPath: conn.socketPath,
-    mcpCommand: binary,
-    mcpArgs: ["mcp", "--embedded", "--socket", conn.socketPath],
-    mcpEnv: { CUA_DRIVER_EMBEDDED: "1", CUA_DRIVER_HOST_BUNDLE_ID: HOST_BUNDLE_ID },
-  };
+  return embeddedHost.start();
 }
 
 export async function startCua() {
-  if (process.platform === "win32") {
-    connection = {
-      mode: "unavailable",
-      reason: "local computer control is not available in the first Windows release; use Off or Cloud",
-    };
-    return saveConnection();
-  }
-  const binary = resolveDriverBinary();
-  if (!binary) {
-    connection = { mode: "unavailable", reason: "cua-driver binary not found" };
-    return saveConnection();
-  }
-  const wantEmbedded =
-    app.isPackaged || process.env.OPENMAUSBOT_CUA_EMBEDDED === "1";
-
-  if (wantEmbedded) {
-    try {
-      connection = await startEmbedded(binary);
-    } catch (err) {
-      connection = {
-        mode: "unavailable",
-        reason: `embedded host failed: ${err?.message ?? err}`,
-      };
-    }
-  } else if (await socketAlive(STANDALONE_SOCKET)) {
-    // Dev machine with CuaDriver.app's daemon already running.
-    connection = {
-      mode: "standalone",
-      socketPath: STANDALONE_SOCKET,
-      mcpCommand: binary,
-      mcpArgs: ["mcp"],
-      mcpEnv: {},
-    };
-  } else {
-    connection = {
-      mode: "unavailable",
-      reason:
-        "no running cua-driver daemon; run `cua-driver serve` or grant via `cua-driver permissions grant`",
-    };
-  }
-
+  connection = await resolveCuaConnection({
+    platform: process.platform,
+    binary: resolveDriverBinary(),
+    wantEmbedded: app.isPackaged || process.env.OPENMAUSBOT_CUA_EMBEDDED === "1",
+    socketAlive,
+    startEmbedded,
+    home: app.getPath("home"),
+  });
   return saveConnection();
 }
 

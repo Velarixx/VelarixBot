@@ -11,6 +11,7 @@ import {
 } from "@/lib/mascot";
 import { ICON_SHAPE_NAMES } from "@/lib/mascot-shapes";
 import { NOTIFY_EVENTS, NOTIFY_EVENT_LABELS, type NotifyEventType } from "@/lib/notify";
+import { localComputerSupported } from "@/lib/local-computer";
 import { ModelPicker } from "./ModelPicker";
 import { cn } from "@/lib/cn";
 
@@ -468,7 +469,10 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
               {/* "cloud" is the legacy alias the server resolves to the
                   configured remote provider binding (the bundled "box") */}
-              {(["cloud", "local", "off"] as const).map((mode, i) => (
+              {(localComputerSupported(window.ogb?.platform)
+                ? (["cloud", "local", "off"] as const)
+                : (["cloud", "off"] as const)
+              ).map((mode, i) => (
                 <button
                   key={mode}
                   onClick={() => patch({ computer: mode })}

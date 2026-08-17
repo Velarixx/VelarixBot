@@ -24,7 +24,7 @@
     "stage:cua-sdk": "node scripts/stage-cua-sdk.mjs",
     "stage:sqlite": "node scripts/stage-sqlite.mjs",
     "package:mac": "pnpm build && pnpm build:server && pnpm stage:sqlite && pnpm build:speech && pnpm fetch:cua && pnpm stage:cua-sdk && electron-builder --mac --arm64 --publish never",
-    "package:win": "pnpm build && pnpm build:server && pnpm stage:sqlite && electron-builder --win nsis --x64 --publish never"
+    "package:win": "pnpm build && pnpm build:server && pnpm stage:sqlite && pnpm fetch:cua && pnpm stage:cua-sdk && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@trycua/cua-driver": "^0.19.3",

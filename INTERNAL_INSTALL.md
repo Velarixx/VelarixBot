@@ -42,7 +42,7 @@ xattr -dr com.apple.quarantine "/Applications/VelarixBot.app"
 3. Confirm that the app name is VelarixBot, then select **Run anyway**.
 4. Complete the installer.
 
-Do not disable SmartScreen or Microsoft Defender globally. The first Windows release supports bots and the shared cloud computer; local Windows computer control and native dictation are unavailable.
+Do not disable SmartScreen or Microsoft Defender globally. Windows supports bots, the shared cloud computer, and local computer control (Claude/Codex via the bundled CUA driver). Native dictation is unavailable.
 
 ## Updates
 

@@ -51,7 +51,7 @@ Eval secrets (values stay in Actions / your env — never commit them): `CLAUDE_
 | `server/app.ts` + `server/index.ts` | `createApplication({repos, providers, clock, …})` is the composition root; `index.ts` reads env, opens the database, and listens. |
 | `server/testing/` | Test fakes: an in-memory driver, plus scripted fake `claude` / `codex` CLIs. |
 | `src/` | The React chat app. No transports of its own — HTTP commands out, one SSE stream in. |
-| `electron/` | Desktop shell: dictation, screen capture, local computer-use daemon. macOS-specific code lives here, gated. |
+| `electron/` | Desktop shell: dictation, screen capture, local computer-use daemon. macOS-only helpers (dictation, TCC) stay gated; local CUA is darwin + win32. |
 | `dist-server/` | **Build output, gitignored.** Never hand-edit, never commit — `pnpm build:server` regenerates it at package/release time. |
 
 Data lives in `~/.velarixbot/`: `velarixbot.db` (SQLite, WAL — bots, transcripts, routines, event log),

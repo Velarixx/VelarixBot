@@ -270,7 +270,7 @@ export function createBotsRoutes(deps: {
         patch.computer = binding;
       }
       if (patch.computer === "local" && process.env.OMB_LOCAL_CUA_SUPPORTED === "0") {
-        json(res, 409, { error: "local computer control is not available on Windows; choose Cloud box or Off" });
+        json(res, 409, { error: "local computer control is not available on this platform; choose Cloud box or Off" });
         return true;
       }
       // Same unsafe-combination rule as provider full-auto: a bot allowed to

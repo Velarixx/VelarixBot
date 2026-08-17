@@ -201,7 +201,7 @@ flowchart LR
 | API | `server/routes/` + `server/index.ts` | Bots, turns, approvals, model catalog, computer lifecycle, connectors, config — HTTP + SSE. `server/app.ts` is the composition root; `index.ts` only boots and listens. |
 | Store | `server/db/` + `server/repositories/` | One SQLite database (`~/.velarixbot/velarixbot.db`, WAL) behind repositories. Screenshots stay on disk as content-hash blobs; existing JSON stores import automatically (backed up first, originals untouched). |
 | App | `src/` | The chat shell. Server-backed store, one reducer, zero client-side transports. |
-| Desktop | `electron/` | macOS and Windows shell; dictation and local CUA are macOS-only in the first Windows release. |
+| Desktop | `electron/` | macOS and Windows shell; native dictation is macOS-only. Local computer control uses the bundled CUA driver on macOS and Windows. |
 
 ## Quick start
 
@@ -292,8 +292,8 @@ downloadable release artifacts.
 
 The main loop works end to end: message → explicitly selected agent/model → streamed reply → tools → approvals →
 computer use, with persistent scheduled routines and visible runtime/usage state. GitHub Actions builds internal macOS
-and Windows release candidates. Native dictation and local-computer control are unavailable in the first Windows release;
-chat, routines, provider CLIs, and per-bot Box cloud computers remain available.
+and Windows release candidates. Native dictation is unavailable on Windows;
+chat, routines, provider CLIs, local CUA (Claude/Codex), and per-bot Box cloud computers remain available.
 
 Shipped teammates runtime (local-first, no cloud service, no telemetry, no paid gating):
 

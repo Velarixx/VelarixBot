@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { mintApiToken, serverUrlFilter, withAuthHeader } from "./api-auth.mjs";
 import { createSecretBrokerHandler } from "./secret-broker.mjs";
 import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
+import { packagedLocalCuaSupported } from "./cua-connection.mjs";
 import { startSpeech, stopSpeech } from "./speech.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { registerNotifyIpc } from "./notify.mjs";
@@ -58,7 +59,7 @@ async function startServerOn(port) {
       OMB_USER_DATA: app.getPath("userData"),
       // diagnostics export: the packaged server has no package.json to read
       OMB_APP_VERSION: app.getVersion(),
-      OMB_LOCAL_CUA_SUPPORTED: IS_MAC ? "1" : "0",
+      OMB_LOCAL_CUA_SUPPORTED: packagedLocalCuaSupported(process.platform),
       VELARIX_API_TOKEN: API_TOKEN,
       VELARIX_SAFE_STORAGE: safeStorageReady ? "1" : "0",
     },
@@ -282,8 +283,10 @@ function createTray() {
   return tray;
 }
 
-// "This Mac" screen preview — served from the main process so the Screen
-// Recording permission prompt attributes to the app, never the server
+// Local screen preview ("This Mac" / "This PC") — served from the main
+// process so the Screen Recording permission prompt attributes to the app,
+// never the server. desktopCapturer has no platform gate; the UI offers
+// local on darwin and win32 only.
 ipcMain.handle("screen:frame", async () => {
   const sources = await desktopCapturer.getSources({
     types: ["screen"],

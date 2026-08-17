@@ -12,6 +12,7 @@ files:
   - electron/**
   - "!electron/resources/speech-helper"
   - "!electron/resources/cua-driver"
+  - "!electron/resources/cua-driver.exe"
   - "!electron/vendor/**"
   - "!**/node_modules/**"
   - package.json
@@ -67,6 +68,13 @@ win:
     - target: nsis
       arch:
         - x64
+  extraResources:
+    - from: electron/resources/cua-driver.exe
+      to: cua-driver.exe
+    - from: build/generated-cua-sdk/node_modules/@trycua
+      to: cua-sdk/node_modules/@trycua
+    - from: build/generated-cua-sdk/node_modules/@ubjs
+      to: cua-sdk/node_modules/@ubjs
   icon: build/icon.ico
   artifactName: VelarixBot-Setup-${version}-${arch}.${ext}
   signAndEditExecutable: false

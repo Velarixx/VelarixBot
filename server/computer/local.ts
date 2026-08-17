@@ -1,6 +1,6 @@
 // Local computer provider — CORE, always registered, approval-gated. The
 // user's own machine via the Electron-hosted cua-driver daemon: Electron
-// main owns the daemon (macOS TCC attribution) and writes its MCP spawn
+// main owns the daemon (macOS TCC attribution; Windows named pipe) and writes its MCP spawn
 // contract to <userData>/cua-connection.json; the harness only reads that
 // file and points the agent CLI at the already-running socket. No token,
 // no vendor, no first-run dependency on anything cloud.
@@ -85,7 +85,7 @@ export const LocalComputerProviderFactory: ComputerProviderFactory<LocalProvider
 
       async status(): Promise<ComputerStatus> {
         if (process.env.OMB_LOCAL_CUA_SUPPORTED === "0") {
-          return { configured: false, reason: "local computer control is not available on Windows", machine: null };
+          return { configured: false, reason: "local computer control is not available on this platform", machine: null };
         }
         const conn = readCuaConnection();
         if (!conn) {
