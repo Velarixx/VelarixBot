@@ -52,17 +52,21 @@ describe("filterCatalogCards", () => {
 describe("hub empty state", () => {
   it("points at App Settings when Composio is optional and unset", () => {
     const copy = hubUnconfiguredCopy();
-    expect(copy.title).toMatch(/No Composio Connect key/i);
+    expect(copy.title).toMatch(/No Composio API key/i);
     expect(copy.action).toMatch(/App Settings/);
   });
 });
 
 describe("connector paths", () => {
-  it("reuses the existing connectors and per-bot PATCH routes", () => {
+  it("exposes Sessions create/list/revoke plus the existing connectors and per-bot PATCH routes", () => {
     expect(CONNECTOR_PATHS.catalog).toBe("/api/connectors/catalog");
-    expect(CONNECTOR_PATHS.status(["gmail", "slack"])).toBe("/api/connectors?services=gmail,slack");
-    expect(CONNECTOR_PATHS.authorize("gmail")).toBe("/api/connectors/gmail/authorize");
-    expect(CONNECTOR_PATHS.disconnect("gmail")).toBe("/api/connectors/gmail");
+    expect(CONNECTOR_PATHS.sessions).toBe("/api/connectors/sessions");
+    expect(CONNECTOR_PATHS.revoke("sess-1")).toBe("/api/connectors/sessions/sess-1");
+    expect(CONNECTOR_PATHS.status(["gmail", "slack"], "bot-1")).toBe(
+      "/api/connectors?services=gmail,slack&botId=bot-1",
+    );
+    expect(CONNECTOR_PATHS.authorize("gmail", "bot-1")).toBe("/api/connectors/gmail/authorize?botId=bot-1");
+    expect(CONNECTOR_PATHS.disconnect("gmail", "bot-1")).toBe("/api/connectors/gmail?botId=bot-1");
     expect(CONNECTOR_PATHS.bot("bot-1")).toBe("/api/bots/bot-1");
   });
 });

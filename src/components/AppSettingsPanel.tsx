@@ -296,12 +296,12 @@ export function AppSettingsPanel() {
             shown again.
           </div>
           <div className="mt-4 flex flex-col gap-4">
-            <ApiKeyRow section="composio" label="Composio Connect key" placeholder="ck_…" />
             <ApiKeyRow
               section="composioApi"
-              label="Composio API key (optional)"
-              placeholder="ak_…  unlocks the full app catalog"
+              label="Composio API key"
+              placeholder="ak_…  Sessions per bot + full catalog"
             />
+            <ApiKeyRow section="composio" label="Composio Connect key (optional)" placeholder="ck_…  optional fallback" />
             <button
               type="button"
               onClick={() => {

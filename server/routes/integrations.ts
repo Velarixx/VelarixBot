@@ -13,6 +13,14 @@ import {
 } from "../comms.ts";
 import { bindCommsStore, getOrCreateChannel, mirrorExchange, mirrorReply } from "../comms-visibility.ts";
 import * as composio from "../composio.ts";
+import {
+  composioConfigured,
+  composioSessionKey,
+  createSession,
+  publicSessions,
+  revokeSession,
+  sessionUserId,
+} from "../composio-sessions.ts";
 import type { AppConfig } from "../config.ts";
 import { loadConfig, saveConfig } from "../config.ts";
 import { MAX_DELEGATION_DEPTH, queueDelegation } from "../delegations.ts";
@@ -48,7 +56,11 @@ export function createIntegrationsRoutes(deps: {
   function configStatus() {
     return {
       xai: { configured: Boolean(cfg.xai?.key) },
-      composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
+      composio: {
+        configured: composioConfigured(cfg),
+        apiKeyConfigured: Boolean(cfg.composio?.apiKey),
+        connectKeyConfigured: Boolean(cfg.composio?.key),
+      },
       // shared/namePrefix are settings, not secrets — echoed only when set
       // so the default shape (and its consumers) stays byte-identical
       box: {
@@ -377,27 +389,59 @@ export function createIntegrationsRoutes(deps: {
     // ── connectors (Composio) ──
     if (method === "GET" && path === "/api/connectors/catalog") {
       const { cards, source } = await composio.listToolkits(cfg);
-      json(res, 200, { configured: Boolean(cfg.composio?.key), source, cards });
+      json(res, 200, { configured: composioConfigured(cfg), source, cards });
+      return true;
+    }
+    if (method === "GET" && path === "/api/connectors/sessions") {
+      json(res, 200, {
+        configured: Boolean(composioSessionKey(cfg)),
+        sessions: publicSessions(),
+      });
+      return true;
+    }
+    if (method === "POST" && path === "/api/connectors/sessions") {
+      if (!composioSessionKey(cfg)) {
+        json(res, 200, { configured: false, error: "no Composio API key — Sessions need an ak_ key, not a Connect ck_" });
+        return true;
+      }
+      const body = await readBody(req);
+      const botId = String(body.botId ?? "").trim();
+      if (!botId || !bots.bot(botId)) {
+        json(res, 404, { error: "no such bot" });
+        return true;
+      }
+      const bot = bots.bot(botId)!;
+      const mcp = await createSession(cfg, botId, bot.enabledApps ?? []);
+      json(res, 200, { session: { botId, userId: mcp.userId, sessionId: mcp.sessionId } });
+      return true;
+    }
+    let sessionRevoke = path.match(/^\/api\/connectors\/sessions\/([\w-]+)$/);
+    if (sessionRevoke && method === "DELETE") {
+      json(res, 200, await revokeSession(cfg, sessionRevoke[1]));
       return true;
     }
     if (method === "GET" && path === "/api/connectors") {
       const services = (url.searchParams.get("services") ?? "").split(",").filter(Boolean);
-      if (!cfg.composio?.key) {
+      const botId = url.searchParams.get("botId") || undefined;
+      if (!composioConfigured(cfg)) {
         json(res, 200, { configured: false, services: {} });
         return true;
       }
-      const status = await composio.connectionStatus(cfg, services.length ? services : composio.CURATED_SLUGS);
+      const status = await composio.connectionStatus(cfg, services.length ? services : composio.CURATED_SLUGS, botId);
       json(res, 200, { configured: true, services: status });
       return true;
     }
     let m = path.match(/^\/api\/connectors\/([\w-]+)\/authorize$/);
     if (m && method === "POST") {
-      json(res, 200, await composio.authorizeService(cfg, m[1]));
+      const body = await readBody(req);
+      const botId = typeof body.botId === "string" ? body.botId : url.searchParams.get("botId") || undefined;
+      json(res, 200, await composio.authorizeService(cfg, m[1], botId));
       return true;
     }
     m = path.match(/^\/api\/connectors\/([\w-]+)$/);
     if (m && method === "DELETE") {
-      json(res, 200, await composio.removeService(cfg, m[1]));
+      const botId = url.searchParams.get("botId") || undefined;
+      json(res, 200, await composio.removeService(cfg, m[1], botId));
       return true;
     }
     return false;

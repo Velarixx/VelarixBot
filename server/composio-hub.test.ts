@@ -38,7 +38,7 @@ describe("apps hub connectors (no Composio key)", () => {
     expect(status.body).toEqual({ configured: false, services: {} });
 
     const cfg = await h.api("GET", "/api/config");
-    expect(cfg.body.composio).toEqual({ configured: false, apiKeyConfigured: false });
+    expect(cfg.body.composio).toEqual({ configured: false, apiKeyConfigured: false, connectKeyConfigured: false });
   });
 
   it("does not bypass the per-launch bearer on catalog, connectors, or bot PATCH", async () => {
@@ -129,7 +129,7 @@ describe("apps hub connect/disconnect (fake Composio)", () => {
       composio: { key: KEY, url: `http://127.0.0.1:${stubPort}` },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.composio).toEqual({ configured: true, apiKeyConfigured: false });
+    expect(saved.body.composio).toEqual({ configured: true, apiKeyConfigured: false, connectKeyConfigured: true });
     expect(JSON.stringify(saved.body)).not.toContain(KEY);
   }, 30_000);
 

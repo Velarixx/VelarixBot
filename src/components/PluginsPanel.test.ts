@@ -9,16 +9,21 @@ const hub = readFileSync(join(HERE, "PluginsPanel.tsx"), "utf8");
 const sidebar = readFileSync(join(HERE, "Sidebar.tsx"), "utf8");
 
 describe("Apps hub surface", () => {
-  it("is the one place with catalog, status, Connect/Disconnect, and per-bot enable", () => {
+  it("is the one place with Sessions create/list/revoke, catalog, Connect/Disconnect, and per-bot enable", () => {
     expect(hub).toContain("CONNECTOR_PATHS.catalog");
+    expect(hub).toContain("CONNECTOR_PATHS.sessions");
+    expect(hub).toContain("CONNECTOR_PATHS.revoke");
     expect(hub).toContain("CONNECTOR_PATHS.status");
     expect(hub).toContain("CONNECTOR_PATHS.authorize");
     expect(hub).toContain("CONNECTOR_PATHS.disconnect");
     expect(hub).toContain("toggleEnabledApp");
     expect(hub).toContain("enabledAppSlugs");
+    expect(hub).toContain("sessionUserId");
     expect(hub).toContain('role="switch"');
     expect(hub).toContain("Connect");
     expect(hub).toContain("Disconnect");
+    expect(hub).toContain("Create session");
+    expect(hub).toContain("Revoke");
     expect(hub).toContain("hubUnconfiguredCopy");
   });
 
@@ -41,9 +46,12 @@ describe("hub actions hit the existing routes", () => {
     };
 
     void request(CONNECTOR_PATHS.catalog);
-    void request(CONNECTOR_PATHS.status(["gmail"]));
-    void request(CONNECTOR_PATHS.authorize("gmail"), { method: "POST" });
-    void request(CONNECTOR_PATHS.disconnect("gmail"), { method: "DELETE" });
+    void request(CONNECTOR_PATHS.sessions);
+    void request(CONNECTOR_PATHS.status(["gmail"], "bot-a"));
+    void request(CONNECTOR_PATHS.authorize("gmail", "bot-a"), { method: "POST" });
+    void request(CONNECTOR_PATHS.disconnect("gmail", "bot-a"), { method: "DELETE" });
+    void request(CONNECTOR_PATHS.sessions, { method: "POST", body: JSON.stringify({ botId: "bot-a" }) });
+    void request(CONNECTOR_PATHS.revoke("sess-1"), { method: "DELETE" });
 
     const selected = { id: "bot-a", enabledApps: [] as string[] };
     const other = { id: "bot-b", enabledApps: ["slack"] };
@@ -55,12 +63,15 @@ describe("hub actions hit the existing routes", () => {
 
     expect(calls.map((c) => [c.path, c.init?.method])).toEqual([
       ["/api/connectors/catalog", undefined],
-      ["/api/connectors?services=gmail", undefined],
-      ["/api/connectors/gmail/authorize", "POST"],
-      ["/api/connectors/gmail", "DELETE"],
+      ["/api/connectors/sessions", undefined],
+      ["/api/connectors?services=gmail&botId=bot-a", undefined],
+      ["/api/connectors/gmail/authorize?botId=bot-a", "POST"],
+      ["/api/connectors/gmail?botId=bot-a", "DELETE"],
+      ["/api/connectors/sessions", "POST"],
+      ["/api/connectors/sessions/sess-1", "DELETE"],
       ["/api/bots/bot-a", "PATCH"],
     ]);
-    expect(JSON.parse(String(calls[4]?.init?.body))).toEqual({ enabledApps: ["gmail"] });
+    expect(JSON.parse(String(calls[7]?.init?.body))).toEqual({ enabledApps: ["gmail"] });
     expect(other.enabledApps).toEqual(["slack"]);
     expect(enabledAppSlugs(selected)).toEqual([]);
   });

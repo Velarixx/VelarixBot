@@ -14,7 +14,7 @@ const SECTIONS: Record<
 > = {
   xai: { body: (v) => ({ xai: { key: v } }), flag: (c) => c.xai?.configured ?? false },
   openai: { body: (v) => ({ openai: { key: v } }), flag: (c) => c.openai?.configured ?? false },
-  composio: { body: (v) => ({ composio: { key: v } }), flag: (c) => c.composio.configured },
+  composio: { body: (v) => ({ composio: { key: v } }), flag: (c) => c.composio.connectKeyConfigured ?? false },
   composioApi: {
     body: (v) => ({ composio: { apiKey: v } }),
     flag: (c) => c.composio.apiKeyConfigured ?? false,

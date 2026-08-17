@@ -19,10 +19,10 @@ import { isSecretRef, secretStore } from "./secrets.ts";
 
 export interface AppConfig {
   xai?: { key?: string; url?: string };
-  /** key = ck_… Connect consumer key (connections + agent tools);
-   * apiKey = ak_… project API key — optional, unlocks the full toolkit
-   * catalog with official logos in the plugins marketplace. */
-  composio?: { key?: string; apiKey?: string; url?: string };
+  /** key = ck_… Connect consumer key (optional — connections when no Session);
+   * apiKey = ak_… project API key — Sessions path + full toolkit catalog.
+   * backendUrl overrides the v3.1 API base (tests). url is Connect MCP. */
+  composio?: { key?: string; apiKey?: string; url?: string; backendUrl?: string };
   /** token/url are the vendor credentials. shared/namePrefix/leaseWaitMs are
    * the shared-box knobs (3.2.4/D3/D4, decoded strictly in server/box.ts):
    * shared = one cloud box for every bot in this install; namePrefix scopes

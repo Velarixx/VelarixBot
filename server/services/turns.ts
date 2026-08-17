@@ -15,6 +15,7 @@ import {
 } from "../approvals.ts";
 import { clearUnattended, hopUnattended, isUnattended, markUnattended, configureUnattended } from "../unattended.ts";
 import * as composio from "../composio.ts";
+import { composioConfigured, composioSessionKey, ensureBotSession, sessionProxyEnv } from "../composio-sessions.ts";
 import type { ComputerProvider } from "../computer/provider.ts";
 import { createLeaseBroker, LEASE_WAIT_DEFAULT_MS, type LeaseBroker } from "../computer/leases.ts";
 import type { ComputerRegistry } from "../computer/registry.ts";
@@ -196,15 +197,13 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     };
   }
 
-  function composioIntegration(allowedApps: string[]) {
+  function composioIntegration(allowedApps: string[], sessionEnv: Record<string, string>) {
     return {
       command: process.execPath,
       args: [composioProxyPath],
       env: {
         ...AGENTS_NODE_FLAG,
-        OMB_COMPOSIO_URL: cfg.composio?.url || "",
-        OMB_COMPOSIO_KEY: cfg.composio!.key!,
-        OMB_ALLOWED_TOOLKITS: allowedApps.join(","),
+        ...sessionEnv,
       },
     };
   }
@@ -487,8 +486,8 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (listener === "github" || listener === "slack") {
           const every = Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15;
           if (listener === "slack") {
-            const status = cfg.composio?.key
-              ? await composio.connectionStatus(cfg, ["slack"]).catch(() => ({ slack: { connected: false } }))
+            const status = composioConfigured(cfg)
+              ? await composio.connectionStatus(cfg, ["slack"], fromBotId).catch(() => ({ slack: { connected: false } }))
               : { slack: { connected: false } };
             if (!status.slack?.connected) {
               return {
@@ -583,13 +582,13 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       if (tool === "connect_app") {
         const slug = String(args.slug ?? "").trim().toLowerCase();
         if (!slug) return { error: "connect_app needs a catalog slug (e.g. github)." };
-        if (!cfg.composio?.key) {
+        if (!composioConfigured(cfg)) {
           return {
             error:
-              "Composio Connect is not configured. The user must add a Connect key in App Settings. Never ask them to paste a token in chat.",
+              "Composio is not configured. The user must add a Composio API key in App Settings. Never ask them to paste a token in chat.",
           };
         }
-        const auth = await composio.authorizeService(cfg, slug);
+        const auth = await composio.authorizeService(cfg, slug, fromBotId);
         const url = typeof auth?.url === "string" ? auth.url : "";
         if (!url) return { error: `could not start connect for ${slug}` };
         const enabled = Array.from(new Set([...(bot.enabledApps ?? []), slug]));
@@ -954,8 +953,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     void (async () => {
       try {
         const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
-        if (cfg.composio?.key && bot.enabledApps?.length) {
-          integrations.composio = composioIntegration(bot.enabledApps);
+        if (bot.enabledApps?.length && composioSessionKey(cfg)) {
+          const session = await ensureBotSession(cfg, bot.id, bot.enabledApps);
+          if (session) {
+            integrations.composio = composioIntegration(bot.enabledApps, sessionProxyEnv(session, bot.enabledApps));
+          }
         }
         // The bot's computer BINDING resolves to a provider; only drivers
         // that can actually act on that machine (mount the provider-built
