@@ -227,6 +227,16 @@ export function AppSettingsPanel() {
               label="Composio API key (optional)"
               placeholder="ak_…  unlocks the full app catalog"
             />
+            <button
+              type="button"
+              onClick={() => {
+                dispatch({ type: "toggleAppSettings", open: false });
+                dispatch({ type: "togglePlugins", open: true });
+              }}
+              className="self-start text-[13px] text-ink-secondary underline hover:text-ink"
+            >
+              Manage apps
+            </button>
             <ApiKeyRow section="box" label="Box token" placeholder="Token from box.ascii.dev" />
             <ApiKeyRow
               section="github"

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, Trash2, X } from "lucide-react";
 import { api, useStore, type Bot, type Skill } from "@/state/store";
+import { CONNECTOR_PATHS, enabledAppSlugs, toggleEnabledApp } from "@/lib/apps";
 import { enabledSkillIds, toggleSkillId } from "@/lib/skills";
 import { BotFace, MausAvatar } from "./Avatar";
 import {
@@ -90,7 +91,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 
   useEffect(() => {
     let alive = true;
-    api("/api/connectors/catalog")
+    api(CONNECTOR_PATHS.catalog)
       .then((r) => {
         if (!alive) return;
         setApps((r.cards ?? []).map((c: { slug: string; label: string }) => ({ slug: c.slug, label: c.label })));
@@ -136,8 +137,12 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   }, [bot.id]);
 
   const toggleApp = (slug: string) => {
-    const current = bot.enabledApps ?? [];
-    patch({ enabledApps: current.includes(slug) ? current.filter((s) => s !== slug) : [...current, slug] });
+    patch({ enabledApps: toggleEnabledApp(enabledAppSlugs(bot), slug) });
+  };
+
+  const openAppsHub = () => {
+    dispatch({ type: "toggleSettings", open: false });
+    dispatch({ type: "togglePlugins", open: true });
   };
 
   const toggleSkill = (skillId: string) => {
@@ -684,16 +689,29 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
           </div>
 
           <div className="rounded-xl bg-card p-4">
-            <div className="text-[15px] font-medium text-ink">Apps this bot may use</div>
-            <div className="mt-0.5 text-[13px] text-ink-secondary">
-              Connected apps stay workspace-wide. Only toggled apps are mounted as tools for this bot.
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[15px] font-medium text-ink">Apps this bot may use</div>
+                <div className="mt-0.5 text-[13px] text-ink-secondary">
+                  Connected apps stay workspace-wide. Only toggled apps are mounted as tools for this bot.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={openAppsHub}
+                className="shrink-0 rounded-md px-2 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
+              >
+                Open Apps
+              </button>
             </div>
             {apps.length === 0 ? (
-              <div className="mt-3 text-[12px] text-ink-secondary">No catalog yet — connect apps from the plugins panel.</div>
+              <div className="mt-3 text-[12px] text-ink-secondary">
+                No catalog yet — open Apps to connect through Composio.
+              </div>
             ) : (
               <div className="mt-3 max-h-56 overflow-y-auto rounded-lg border border-hairline/40">
                 {apps.map((app, i) => {
-                  const on = (bot.enabledApps ?? []).includes(app.slug);
+                  const on = enabledAppSlugs(bot).includes(app.slug);
                   return (
                     <div
                       key={app.slug}
@@ -701,6 +719,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                     >
                       <span className="truncate text-[13px] text-ink">{app.label}</span>
                       <button
+                        type="button"
                         role="switch"
                         aria-checked={on}
                         aria-label={`${on ? "Disable" : "Enable"} ${app.label}`}
