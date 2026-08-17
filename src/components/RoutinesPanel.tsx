@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { CalendarClock, FlaskConical, History, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
-import { api, useStore, type MissedPolicy, type Routine, type RoutineRun, type RoutineSchedule, type Skill } from "@/state/store";
-
-function scheduleLabel(schedule: RoutineSchedule) {
-  if (schedule.kind === "daily") return `Daily at ${schedule.time}${schedule.timeZone ? ` (${schedule.timeZone})` : ""}`;
-  if (schedule.kind === "weekdays") return `Weekdays at ${schedule.time}${schedule.timeZone ? ` (${schedule.timeZone})` : ""}`;
-  if (schedule.kind === "listener") return `${schedule.source} listener`;
-  return `Every ${schedule.everyMinutes} min`;
-}
+import { GITHUB_LISTENER_EVENTS, listenerScheduleFromForm, scheduleLabel, SLACK_LISTENER_MATCHES, type RoutineFormKind } from "@/lib/routines";
+import { api, useStore, type GithubListenerEvent, type MissedPolicy, type Routine, type RoutineRun, type Skill, type SlackListenerMatch } from "@/state/store";
 
 const MISSED_POLICY_LABELS: Array<[MissedPolicy, string]> = [
   ["run-once", "Run once (coalesce missed)"],
@@ -23,12 +17,18 @@ const RUN_STATUS_STYLE: Record<RoutineRun["status"], string> = {
   interrupted: "bg-danger/10 text-danger",
 };
 
+const KIND_TABS: Array<[RoutineFormKind, string]> = [
+  ["interval", "Interval"],
+  ["daily", "Daily"],
+  ["github", "GitHub"],
+  ["slack", "Slack"],
+];
+
 function RunHistory({ routine }: { routine: Routine }) {
   const [runs, setRuns] = useState<RoutineRun[] | null>(null);
   const refresh = useCallback(() => {
     api(`/api/routines/${routine.id}/runs`).then(({ runs: list }) => setRuns(list ?? [])).catch(() => setRuns([]));
   }, [routine.id]);
-  // reload when the routine's live state changes (runs start/finish over SSE)
   useEffect(() => { refresh(); }, [refresh, routine.running, routine.lastResult, routine.nextRunAt]);
   if (runs === null) return <div className="mt-2 text-[11px] text-ink-secondary">Loading history…</div>;
   if (runs.length === 0) return <div className="mt-2 text-[11px] text-ink-secondary">No runs yet.</div>;
@@ -45,6 +45,67 @@ function RunHistory({ routine }: { routine: Routine }) {
   </ul>;
 }
 
+function EventChecks({ events, onChange }: { events: GithubListenerEvent[]; onChange: (events: GithubListenerEvent[]) => void }) {
+  return <div className="mt-1 grid grid-cols-2 gap-1">
+    {GITHUB_LISTENER_EVENTS.map(([value, label]) => {
+      const on = events.includes(value);
+      return <label key={value} className="flex items-center gap-1.5 text-[12px] text-ink">
+        <input type="checkbox" checked={on} onChange={() => onChange(on ? events.filter((e) => e !== value) : [...events, value])} className="accent-accent" />
+        {label}
+      </label>;
+    })}
+  </div>;
+}
+
+function ListenerFields({
+  kind,
+  everyMinutes,
+  setEveryMinutes,
+  repoOwner,
+  setRepoOwner,
+  repoName,
+  setRepoName,
+  events,
+  setEvents,
+  channel,
+  setChannel,
+  match,
+  setMatch,
+  keyword,
+  setKeyword,
+}: {
+  kind: RoutineFormKind;
+  everyMinutes: number;
+  setEveryMinutes: (n: number) => void;
+  repoOwner: string;
+  setRepoOwner: (v: string) => void;
+  repoName: string;
+  setRepoName: (v: string) => void;
+  events: GithubListenerEvent[];
+  setEvents: (v: GithubListenerEvent[]) => void;
+  channel: string;
+  setChannel: (v: string) => void;
+  match: SlackListenerMatch | "";
+  setMatch: (v: SlackListenerMatch | "") => void;
+  keyword: string;
+  setKeyword: (v: string) => void;
+}) {
+  return <>
+    {kind === "github" ? <>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="block text-[12px] text-ink-secondary">Owner<input required value={repoOwner} onChange={(e) => setRepoOwner(e.target.value)} placeholder="Velarixx" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
+        <label className="block text-[12px] text-ink-secondary">Repository<input required value={repoName} onChange={(e) => setRepoName(e.target.value)} placeholder="VelarixBot" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
+      </div>
+      <div className="block text-[12px] text-ink-secondary">Events (pick at least one — no wildcard)<EventChecks events={events} onChange={setEvents} /></div>
+    </> : <>
+      <label className="block text-[12px] text-ink-secondary">Channel or DM<input required value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="#eng or D0123 or @jane" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
+      <label className="block text-[12px] text-ink-secondary">Match<select required value={match} onChange={(e) => setMatch(e.target.value as SlackListenerMatch | "")} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink"><option value="">Choose…</option>{SLACK_LISTENER_MATCHES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      {match === "keyword" ? <label className="block text-[12px] text-ink-secondary">Keyword<input required value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="deploy" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label> : null}
+    </>}
+    <label className="block text-[12px] text-ink-secondary">Poll every (minutes)<input type="number" min={1} value={everyMinutes} onChange={(e) => setEveryMinutes(Math.max(1, Number(e.target.value)))} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /><span className="mt-1 block text-[11px] text-ink-secondary">Polls while VelarixBot is open. No matching event means no turn.</span></label>
+  </>;
+}
+
 function RoutineCard({ routine, botName, skills, onPatch, onDelete, onError }: {
   routine: Routine;
   botName: string;
@@ -55,7 +116,17 @@ function RoutineCard({ routine, botName, skills, onPatch, onDelete, onError }: {
 }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const schedule = routine.schedule;
+  const [everyMinutes, setEveryMinutes] = useState(schedule.kind === "listener" ? (schedule.everyMinutes ?? 15) : 15);
+  const [repoOwner, setRepoOwner] = useState(schedule.kind === "listener" && schedule.source === "github" ? (schedule.repo?.owner ?? "") : "");
+  const [repoName, setRepoName] = useState(schedule.kind === "listener" && schedule.source === "github" ? (schedule.repo?.name ?? "") : "");
+  const [events, setEvents] = useState<GithubListenerEvent[]>(schedule.kind === "listener" && schedule.source === "github" ? (schedule.events ?? []) : []);
+  const [channel, setChannel] = useState(schedule.kind === "listener" && schedule.source === "slack" ? (schedule.channel ?? "") : "");
+  const [match, setMatch] = useState<SlackListenerMatch | "">(schedule.kind === "listener" && schedule.source === "slack" ? (schedule.match ?? "") : "");
+  const [keyword, setKeyword] = useState(schedule.kind === "listener" && schedule.source === "slack" ? (schedule.keyword ?? "") : "");
   const skill = skills.find((item) => item.id === routine.skillId);
+  const listenerKind = schedule.kind === "listener" ? schedule.source : null;
 
   const testRun = async () => {
     setTesting(true); onError(null);
@@ -64,6 +135,25 @@ function RoutineCard({ routine, botName, skills, onPatch, onDelete, onError }: {
       setHistoryOpen(true);
     } catch (e) { onError(e instanceof Error ? e.message : String(e)); }
     finally { setTesting(false); }
+  };
+
+  const saveListener = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!listenerKind) return;
+    await onPatch(routine, {
+      schedule: listenerScheduleFromForm({
+        kind: listenerKind,
+        everyMinutes,
+        time: "09:00",
+        repoOwner,
+        repoName,
+        events,
+        channel,
+        match,
+        keyword,
+      }),
+    });
+    setEditing(false);
   };
 
   return <div className="rounded-xl bg-card p-3.5">
@@ -79,6 +169,10 @@ function RoutineCard({ routine, botName, skills, onPatch, onDelete, onError }: {
       <label className="block text-[11px] text-ink-secondary">If runs are missed<select value={routine.missedPolicy} onChange={(e) => void onPatch(routine, { missedPolicy: e.target.value as MissedPolicy })} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink">{MISSED_POLICY_LABELS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       <label className="block text-[11px] text-ink-secondary">Skill<select value={routine.skillId ?? ""} onChange={(e) => void onPatch(routine, { skillId: e.target.value || "" })} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink"><option value="">None</option>{skills.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
     </div>
+    {listenerKind && editing ? <form onSubmit={(e) => void saveListener(e)} className="mt-3 space-y-2 rounded-lg bg-inset p-2.5">
+      <ListenerFields kind={listenerKind} everyMinutes={everyMinutes} setEveryMinutes={setEveryMinutes} repoOwner={repoOwner} setRepoOwner={setRepoOwner} repoName={repoName} setRepoName={setRepoName} events={events} setEvents={setEvents} channel={channel} setChannel={setChannel} match={match} setMatch={setMatch} keyword={keyword} setKeyword={setKeyword} />
+      <div className="flex justify-end gap-2"><button type="button" onClick={() => setEditing(false)} className="rounded-lg px-2 py-1 text-[12px] text-ink-secondary">Cancel</button><button className="rounded-lg bg-accent px-2 py-1 text-[12px] font-medium text-white">Save filter</button></div>
+    </form> : listenerKind ? <button type="button" onClick={() => setEditing(true)} className="mt-2 text-[12px] text-accent hover:underline">Edit {listenerKind} filter</button> : null}
     <div className="mt-3 flex items-center justify-between">
       <span className="text-[11px] text-ink-secondary">Next {new Date(routine.nextRunAt).toLocaleString()}</span>
       <div className="flex gap-1">
@@ -101,9 +195,15 @@ export function RoutinesPanel() {
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [botId, setBotId] = useState(state.selectedId || state.bots[0]?.id || "");
-  const [kind, setKind] = useState<"interval" | "daily">("interval");
+  const [kind, setKind] = useState<RoutineFormKind>("interval");
   const [everyMinutes, setEveryMinutes] = useState(60);
   const [time, setTime] = useState("09:00");
+  const [repoOwner, setRepoOwner] = useState("");
+  const [repoName, setRepoName] = useState("");
+  const [events, setEvents] = useState<GithubListenerEvent[]>([]);
+  const [channel, setChannel] = useState("");
+  const [match, setMatch] = useState<SlackListenerMatch | "">("");
+  const [keyword, setKeyword] = useState("");
   const [missedPolicy, setMissedPolicy] = useState<MissedPolicy>("run-once");
   const [thenBotId, setThenBotId] = useState("");
   const [thenPrompt, setThenPrompt] = useState("");
@@ -133,8 +233,19 @@ export function RoutinesPanel() {
   const create = async (event: FormEvent) => {
     event.preventDefault();
     if (!botId || !name.trim() || !prompt.trim()) return;
-    const schedule: RoutineSchedule =
-      kind === "daily" ? { kind: "daily", time: time.slice(0, 5), timeZone: browserZone } : { kind: "interval", everyMinutes };
+    if (kind === "github" && !events.length) { setError("Pick at least one GitHub event."); return; }
+    const schedule = listenerScheduleFromForm({
+      kind,
+      everyMinutes: kind === "daily" ? 60 : everyMinutes,
+      time,
+      timeZone: browserZone,
+      repoOwner,
+      repoName,
+      events,
+      channel,
+      match,
+      keyword,
+    });
     setSaving(true); setError(null);
     try {
       const { routine } = await api("/api/routines", {
@@ -150,7 +261,9 @@ export function RoutinesPanel() {
         }),
       });
       dispatch({ type: "routineSaved", routine });
-      setName(""); setPrompt(""); setThenBotId(""); setThenPrompt(""); setSkillId(""); setMissedPolicy("run-once"); setCreating(false);
+      setName(""); setPrompt(""); setThenBotId(""); setThenPrompt(""); setSkillId(""); setMissedPolicy("run-once");
+      setRepoOwner(""); setRepoName(""); setEvents([]); setChannel(""); setMatch(""); setKeyword("");
+      setKind("interval"); setCreating(false);
       dispatch({ type: "toggleRoutines", open: true });
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setSaving(false); }
@@ -165,21 +278,23 @@ export function RoutinesPanel() {
   return <aside className="animate-panel-in flex h-full w-[420px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
     <div className="flex items-center justify-between px-4 py-3"><CalendarClock size={18} className="text-ink-secondary" /><span className="text-[15px] font-semibold text-ink">Routines</span><button aria-label="Close routines" onClick={() => dispatch({ type: "toggleRoutines", open: false })} className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"><X size={18} /></button></div>
     <div className="flex-1 overflow-y-auto px-4 pb-4">
-      <p className="text-[13px] leading-relaxed text-ink-secondary">Schedule a prompt for a bot. Routines persist locally and run while VelarixBot is open — they do not run when the app is closed. Each routine's missed-run policy decides what happens to runs that came due while it was.</p>
+      <p className="text-[13px] leading-relaxed text-ink-secondary">Schedule a prompt for a bot. Routines persist locally and run while VelarixBot is open — they do not run when the app is closed. Each routine's missed-run policy decides what happens to runs that came due while it was. GitHub and Slack listeners poll while the app is open; they fire only on a new matching event.</p>
       {error && <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 p-2 text-[12px] text-danger">{error}</div>}
       {creating ? <form onSubmit={create} className="mt-4 space-y-3 rounded-xl bg-card p-4">
         <label className="block text-[12px] text-ink-secondary">Bot<select value={botId} onChange={(e) => setBotId(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink">{state.bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label>
         <label className="block text-[12px] text-ink-secondary">Name<input autoFocus required value={name} onChange={(e) => setName(e.target.value)} placeholder="Morning briefing" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
         <label className="block text-[12px] text-ink-secondary">Prompt<textarea required rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Summarize today's priorities…" className="mt-1 w-full resize-none rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
         <div className="flex overflow-hidden rounded-lg border border-hairline/40">
-          {([["interval", "Interval"], ["daily", "Daily"]] as const).map(([value, label], i) => (
-            <button key={value} type="button" onClick={() => setKind(value)} className={`flex-1 py-1.5 text-[13px] ${i > 0 ? "border-l border-hairline/40" : ""} ${kind === value ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/60 hover:text-ink"}`}>{label}</button>
+          {KIND_TABS.map(([value, label], i) => (
+            <button key={value} type="button" onClick={() => setKind(value)} className={`flex-1 py-1.5 text-[12px] ${i > 0 ? "border-l border-hairline/40" : ""} ${kind === value ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/60 hover:text-ink"}`}>{label}</button>
           ))}
         </div>
         {kind === "daily" ? (
           <label className="block text-[12px] text-ink-secondary">Time<input type="time" required value={time} onChange={(e) => setTime(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /><span className="mt-1 block text-[11px] text-ink-secondary">In your time zone ({browserZone}) — daylight saving handled automatically.</span></label>
-        ) : (
+        ) : kind === "interval" ? (
           <label className="block text-[12px] text-ink-secondary">Run every (minutes)<input type="number" min={1} value={everyMinutes} onChange={(e) => setEveryMinutes(Math.max(1, Number(e.target.value)))} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
+        ) : (
+          <ListenerFields kind={kind} everyMinutes={everyMinutes} setEveryMinutes={setEveryMinutes} repoOwner={repoOwner} setRepoOwner={setRepoOwner} repoName={repoName} setRepoName={setRepoName} events={events} setEvents={setEvents} channel={channel} setChannel={setChannel} match={match} setMatch={setMatch} keyword={keyword} setKeyword={setKeyword} />
         )}
         <label className="block text-[12px] text-ink-secondary">If runs are missed while VelarixBot is closed<select value={missedPolicy} onChange={(e) => setMissedPolicy(e.target.value as MissedPolicy)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink">{MISSED_POLICY_LABELS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="block text-[12px] text-ink-secondary">Then also start a turn on (optional)<select value={thenBotId} onChange={(e) => setThenBotId(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink"><option value="">None</option>{state.bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label>

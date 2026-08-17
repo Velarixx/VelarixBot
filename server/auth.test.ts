@@ -67,6 +67,8 @@ describe("requireApiAuth", () => {
   it("exempts only /api/health", () => {
     expect(isAuthExempt("/api/health")).toBe(true);
     expect(isAuthExempt("/api/bots")).toBe(false);
+    expect(isAuthExempt("/api/routines")).toBe(false);
+    expect(isAuthExempt("/api/webhooks")).toBe(false);
     expect(requireApiAuth({ path: "/api/health", method: "GET", headers: {} }, TOKEN, 8799)).toBeNull();
   });
 
@@ -136,6 +138,10 @@ describe("API auth e2e (real harness server)", () => {
     expect(good.status).toBe(200);
     const post = await fetch(`${h.base}/api/bots`, { method: "POST" });
     expect(post.status).toBe(401);
+    const routinesDenied = await fetch(`${h.base}/api/routines`);
+    expect(routinesDenied.status).toBe(401);
+    const routinesWrong = await h.api("GET", "/api/routines", undefined, { authorization: "Bearer wrong-token" });
+    expect(routinesWrong.status).toBe(401);
     const bot = (await h.api("GET", "/api/bots")).body.bots[0];
     for (const action of ["start", "stop", "save", "discard"]) {
       const denied = await fetch(`${h.base}/api/bots/${bot.id}/teach/${action}`, { method: "POST" });

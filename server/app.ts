@@ -29,6 +29,7 @@ import { createTurnsRoutes } from "./routes/turns.ts";
 import { createBotsService, type BotsService } from "./services/bots.ts";
 import { createDiagnosticsService } from "./services/diagnostics.ts";
 import { createSseHub, type SseHub } from "./services/events.ts";
+import { createListenerPoller } from "./listeners/index.ts";
 import { createRoutinesService, type RoutinesService } from "./services/routines.ts";
 import { createTeachService, type TeachService } from "./services/teach.ts";
 import { createTurnsService, type TurnsService } from "./services/turns.ts";
@@ -171,10 +172,14 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     repos,
     now: () => clock.now(),
     broadcast,
-    bot: (id) => bots.bot(id),
+    bot: (id) => {
+      const b = bots.bot(id);
+      return b ? { id: b.id, threadId: b.threadId, busy: b.busy, hidden: b.hidden === true } : null;
+    },
     startTurn: (botId, text, opts) => turns.startTurn(botId, text, opts),
     getSkill,
     skillPrompt,
+    pollListener: createListenerPoller({ cfg: () => cfg }),
   });
   routinesRef = routines;
 

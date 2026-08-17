@@ -12,6 +12,7 @@ import {
   normalizeRoutine,
   parseMissedPolicy,
   parseRoutineSchedule,
+  listenerFilterComplete,
   resolveIconShape,
   wouldEmptyWorkspace,
   type BotRecord,
@@ -95,12 +96,43 @@ describe("routine schedules", () => {
     expect(parseRoutineSchedule({ kind: "weekdays", time: "09:00" })).toEqual({ kind: "weekdays", time: "09:00" });
     expect(parseRoutineSchedule({ kind: "interval", everyMinutes: 15 })).toEqual({ kind: "interval", everyMinutes: 15 });
     expect(parseRoutineSchedule({ kind: "listener", source: "github" })).toEqual({ kind: "listener", source: "github", everyMinutes: 15 });
+    expect(
+      parseRoutineSchedule({
+        kind: "listener",
+        source: "github",
+        repo: "Velarixx/VelarixBot",
+        events: ["pull_request", "issues", "*", "push"],
+      }),
+    ).toEqual({
+      kind: "listener",
+      source: "github",
+      everyMinutes: 15,
+      repo: { owner: "Velarixx", name: "VelarixBot" },
+      events: ["pull_request", "issues", "push"],
+    });
+    expect(
+      parseRoutineSchedule({ kind: "listener", source: "slack", channel: "#eng", match: "keyword", keyword: "deploy" }),
+    ).toEqual({
+      kind: "listener",
+      source: "slack",
+      everyMinutes: 15,
+      channel: "#eng",
+      match: "keyword",
+      keyword: "deploy",
+    });
   });
 
   it("rejects invalid schedules", () => {
     expect(() => parseRoutineSchedule({ kind: "interval", everyMinutes: 0 })).toThrow();
     expect(() => parseRoutineSchedule({ kind: "daily", time: "25:00" })).toThrow();
     expect(() => parseRoutineSchedule({ kind: "listener", source: "discord" })).toThrow(/github or slack/);
+    expect(() => parseRoutineSchedule({ kind: "listener", source: "github" }, { strictListener: true })).toThrow(/owner\/name/);
+    expect(() =>
+      parseRoutineSchedule({ kind: "listener", source: "github", repo: "*/*", events: ["push"] }, { strictListener: true }),
+    ).toThrow(/owner\/name/);
+    expect(() =>
+      parseRoutineSchedule({ kind: "listener", source: "slack", channel: "*", match: "message" }, { strictListener: true }),
+    ).toThrow(/channel or DM/);
   });
 
   it("weekdays schedules skip the weekend", () => {
@@ -108,6 +140,15 @@ describe("routine schedules", () => {
     const next = nextRunAt({ kind: "weekdays", time: "09:00" }, saturday);
     expect(new Date(next).getDay()).toBe(1);
     expect(nextRunAt({ kind: "listener", source: "github", everyMinutes: 15 }, 1_000)).toBe(1_000 + 15 * 60_000);
+    expect(listenerFilterComplete({ kind: "listener", source: "github", everyMinutes: 15 })).toBe(false);
+    expect(
+      listenerFilterComplete({
+        kind: "listener",
+        source: "github",
+        repo: { owner: "Velarixx", name: "VelarixBot" },
+        events: ["push"],
+      }),
+    ).toBe(true);
   });
 
   it("normalizes legacy routine records and resets running", () => {

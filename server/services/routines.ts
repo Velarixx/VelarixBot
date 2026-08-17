@@ -14,7 +14,9 @@
 import type { Repositories } from "../repositories/index.ts";
 import type { RoutineRun } from "../repositories/routines.ts";
 import type { SkillRecord } from "../teach.ts";
+import type { ListenerPoller } from "../listeners/index.ts";
 import {
+  listenerFilterComplete,
   nextRunAt,
   parseMissedPolicy,
   parseRoutineSchedule,
@@ -62,7 +64,7 @@ export interface RoutinesService {
     id: string,
     patch: Pick<Partial<RoutineRecord>, "name" | "prompt" | "schedule" | "enabled" | "missedPolicy" | "thenStartTurn" | "skillId">,
   ): RoutineRecord | null;
-  markRoutine(id: string, patch: Pick<Partial<RoutineRecord>, "running" | "nextRunAt" | "lastRunAt" | "lastResult">): RoutineRecord | null;
+  markRoutine(id: string, patch: Pick<Partial<RoutineRecord>, "running" | "nextRunAt" | "lastRunAt" | "lastResult" | "listenerCursor">): RoutineRecord | null;
   deleteRoutine(id: string): boolean;
   /** Manual "Test run": runs now, never consumes a scheduled occurrence
    * (nextRunAt is untouched), and works on a paused routine. Optional
@@ -124,10 +126,11 @@ export function createRoutinesService(deps: {
   repos: Repositories;
   now: () => number;
   broadcast: Broadcast;
-  bot(id: string): { id: string; threadId: string; busy: boolean } | null;
+  bot(id: string): { id: string; threadId: string; busy: boolean; hidden?: boolean } | null;
   startTurn(botId: string, text: string, opts?: { extraSkillIds?: string[] }): Promise<void>;
   getSkill(id: string): SkillRecord | null;
   skillPrompt(skill: SkillRecord | null, prompt: string): string;
+  pollListener?: ListenerPoller;
 }): RoutinesService {
   const { repos, now, broadcast } = deps;
   const routineByThread = new Map<string, string>();
@@ -154,6 +157,20 @@ export function createRoutinesService(deps: {
       service.patchRoutine(routine.id, { enabled: false });
       service.markRoutine(routine.id, { running: false, lastRunAt: at, lastResult: "blocked: no such bot" });
       return { started: false, reason: "no such bot" };
+    }
+    if (bot.hidden) {
+      if (opts.kind === "scheduled") {
+        repos.routines.recordSkip({
+          routineId: routine.id,
+          botId: routine.botId,
+          at,
+          scheduledFor: opts.scheduledFor,
+          idempotencyKey: opts.scheduledFor !== undefined ? occurrenceKey(routine.id, opts.scheduledFor) : null,
+          reason: "skipped: bot hidden",
+        });
+        service.markRoutine(routine.id, { lastRunAt: at, lastResult: "skipped: bot hidden", ...nextPatch });
+      }
+      return { started: false, reason: "bot hidden" };
     }
     if (bot.busy) {
       if (opts.kind === "scheduled") {
@@ -264,13 +281,87 @@ export function createRoutinesService(deps: {
     });
   }
 
+  /** Listener due: poll, then startRun only on a new matching event.
+   * No match is not a turn. Missed-policy catch-up does not replay polls. */
+  async function pollAndMaybeRun(routine: RoutineRecord, at: number): Promise<void> {
+    const firstDue = routine.nextRunAt;
+    const next = nextRunAt(routine.schedule, firstDue);
+    const bot = deps.bot(routine.botId);
+    if (!bot) {
+      void startRun(routine, at, { kind: "scheduled", scheduledFor: firstDue, nextRunAt: next });
+      return;
+    }
+    if (bot.hidden) {
+      repos.routines.recordSkip({
+        routineId: routine.id,
+        botId: routine.botId,
+        at,
+        scheduledFor: firstDue,
+        idempotencyKey: occurrenceKey(routine.id, firstDue),
+        reason: "skipped: bot hidden",
+      });
+      service.markRoutine(routine.id, { lastRunAt: at, lastResult: "skipped: bot hidden", nextRunAt: next });
+      return;
+    }
+    if (!listenerFilterComplete(routine.schedule) || routine.schedule.kind !== "listener") {
+      const reason =
+        routine.schedule.kind === "listener" && routine.schedule.source === "slack"
+          ? "skipped: slack listener needs a channel or DM and a match (mention, keyword, or message)"
+          : "skipped: github listener needs one owner/name repo and an event list";
+      repos.routines.recordSkip({
+        routineId: routine.id,
+        botId: routine.botId,
+        at,
+        scheduledFor: firstDue,
+        idempotencyKey: occurrenceKey(routine.id, firstDue),
+        reason,
+      });
+      service.markRoutine(routine.id, { lastRunAt: at, lastResult: reason, nextRunAt: next });
+      return;
+    }
+    if (!deps.pollListener) {
+      const reason = "skipped: listener poll unavailable";
+      repos.routines.recordSkip({
+        routineId: routine.id,
+        botId: routine.botId,
+        at,
+        scheduledFor: firstDue,
+        idempotencyKey: occurrenceKey(routine.id, firstDue),
+        reason,
+      });
+      service.markRoutine(routine.id, { lastRunAt: at, lastResult: reason, nextRunAt: next });
+      return;
+    }
+    const result = await deps.pollListener(routine.schedule, routine.listenerCursor ?? null);
+    const cursorPatch = result.cursor ? { listenerCursor: result.cursor } : {};
+    if (result.status === "match") {
+      await startRun(routine, at, { kind: "scheduled", scheduledFor: firstDue, nextRunAt: next });
+      if (result.cursor) service.markRoutine(routine.id, cursorPatch);
+      return;
+    }
+    if (result.status === "skip") {
+      repos.routines.recordSkip({
+        routineId: routine.id,
+        botId: routine.botId,
+        at,
+        scheduledFor: firstDue,
+        idempotencyKey: occurrenceKey(routine.id, firstDue),
+        reason: result.reason,
+      });
+      service.markRoutine(routine.id, { lastRunAt: at, lastResult: result.reason, nextRunAt: next, ...cursorPatch });
+      return;
+    }
+    const lastResult = result.cursor && !routine.listenerCursor ? "polled: watching from now" : "polled: no matching event";
+    service.markRoutine(routine.id, { lastRunAt: at, lastResult, nextRunAt: next, ...cursorPatch });
+  }
+
   const service: RoutinesService = {
     routines: () => repos.routines.list(),
     routine: (id) => repos.routines.get(id),
     createRoutine(input) {
       if (!deps.bot(input.botId)) throw new Error("no such bot");
       if (!input.name.trim() || !input.prompt.trim()) throw new Error("name and prompt required");
-      const schedule = stampTimeZone(parseRoutineSchedule(input.schedule, { strictTimeZone: true }));
+      const schedule = stampTimeZone(parseRoutineSchedule(input.schedule, { strictTimeZone: true, strictListener: true }));
       if (input.missedPolicy !== undefined && !parseMissedPolicy(input.missedPolicy)) throw new Error("invalid missed policy");
       const thenStartTurn = validThenStartTurn(input.thenStartTurn);
       const skillId = typeof input.skillId === "string" && input.skillId.trim() ? input.skillId.trim() : undefined;
@@ -306,8 +397,9 @@ export function createRoutinesService(deps: {
         safe.prompt = patch.prompt.trim();
       }
       if (patch.schedule !== undefined) {
-        safe.schedule = stampTimeZone(parseRoutineSchedule(patch.schedule, { strictTimeZone: true }));
+        safe.schedule = stampTimeZone(parseRoutineSchedule(patch.schedule, { strictTimeZone: true, strictListener: true }));
         r.nextRunAt = nextRunAt(safe.schedule, now());
+        delete r.listenerCursor;
       }
       if (patch.enabled !== undefined) safe.enabled = patch.enabled === true;
       if (patch.missedPolicy !== undefined) {
@@ -333,6 +425,7 @@ export function createRoutinesService(deps: {
       const r = repos.routines.get(id);
       if (!r) return null;
       Object.assign(r, patch);
+      if (patch.listenerCursor === "") delete r.listenerCursor;
       repos.routines.update(r);
       broadcast({ kind: "routine", routine: r });
       return r;
@@ -382,9 +475,11 @@ export function createRoutinesService(deps: {
         const r = repos.routines.get(run.routine_id);
         if (r?.running) service.markRoutine(run.routine_id, { running: false, lastResult: reason });
       }
-      // 3. start whatever is due
+      // 3. start whatever is due. Listeners poll first — no event, no turn.
       for (const routine of repos.routines.list()) {
-        if (routine.enabled && !routine.running && routine.nextRunAt <= at) schedule(routine, at);
+        if (!routine.enabled || routine.running || routine.nextRunAt > at) continue;
+        if (routine.schedule.kind === "listener") void pollAndMaybeRun(routine, at);
+        else schedule(routine, at);
       }
     },
   };

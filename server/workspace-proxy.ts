@@ -60,7 +60,7 @@ const TOOLS = [
   {
     name: "create_routine",
     description:
-      "Schedule a prompt this bot will run later. Clock schedules are weekday-bounded (Mon–Fri) unless the user asks for every day. GitHub/Slack listeners require that connector to be connected.",
+      "Schedule a prompt this bot will run later. Clock schedules are weekday-bounded (Mon–Fri) unless the user asks for every day. A github listener polls one owner/name repo for an explicit event list (GitHub token in App Settings). A slack listener polls one channel or DM (Composio Slack must be connected).",
     inputSchema: {
       type: "object",
       properties: {
@@ -69,7 +69,16 @@ const TOOLS = [
         time: { type: "string", description: "HH:MM 24h clock, for daily or weekdays." },
         every_day: { type: "boolean", description: "true = every calendar day; default weekdays only." },
         every_minutes: { type: "number", description: "Interval instead of a clock time." },
-        listener: { type: "string", enum: ["github", "slack"], description: "Poll this connected app." },
+        listener: { type: "string", enum: ["github", "slack"], description: "Poll GitHub (token) or Slack (connected app) while VelarixBot is open." },
+        repo: { type: "string", description: "GitHub owner/name. One concrete repo — not all repos." },
+        events: {
+          type: "array",
+          items: { type: "string" },
+          description: "GitHub event allow-list: push, pull_request, issues, issue_comment, release, create, delete, fork, watch, pull_request_review, pull_request_review_comment. No wildcard.",
+        },
+        channel: { type: "string", description: "Slack channel or DM to poll (not the whole workspace)." },
+        match: { type: "string", enum: ["mention", "keyword", "message"], description: "How a slack listener matches." },
+        keyword: { type: "string", description: "Required when match is keyword." },
         skill_id: { type: "string" },
       },
       required: ["name", "prompt"],

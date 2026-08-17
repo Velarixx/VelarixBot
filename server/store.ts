@@ -88,11 +88,44 @@ export interface BotRecord {
   /** Bots sharing this thread's transcript (group mention / ask_bot). */
   threadParticipants?: string[];
 }
+/** Explicit GitHub Events API allow-list. No wildcard, no implied *. */
+export const GITHUB_LISTENER_EVENTS = [
+  "push",
+  "pull_request",
+  "issues",
+  "issue_comment",
+  "release",
+  "create",
+  "delete",
+  "fork",
+  "watch",
+  "pull_request_review",
+  "pull_request_review_comment",
+] as const;
+export type GithubListenerEvent = (typeof GITHUB_LISTENER_EVENTS)[number];
+export const SLACK_LISTENER_MATCHES = ["mention", "keyword", "message"] as const;
+export type SlackListenerMatch = (typeof SLACK_LISTENER_MATCHES)[number];
+export type GithubListenerSchedule = {
+  kind: "listener";
+  source: "github";
+  everyMinutes?: number;
+  repo?: { owner: string; name: string };
+  events?: GithubListenerEvent[];
+};
+export type SlackListenerSchedule = {
+  kind: "listener";
+  source: "slack";
+  everyMinutes?: number;
+  channel?: string;
+  match?: SlackListenerMatch;
+  keyword?: string;
+};
 export type RoutineSchedule =
   | { kind: "interval"; everyMinutes: number }
   | { kind: "daily"; time: string; timeZone?: string }
   | { kind: "weekdays"; time: string; timeZone?: string }
-  | { kind: "listener"; source: "github" | "slack"; everyMinutes?: number };
+  | GithubListenerSchedule
+  | SlackListenerSchedule;
 export interface ThenStartTurn { botId: string; prompt: string }
 /** What the scheduler does with occurrences that came due while VelarixBot
  * was closed or asleep: drop them (skip), coalesce them into one run
@@ -109,6 +142,8 @@ export interface RoutineRecord {
   missedPolicy: MissedPolicy;
   thenStartTurn?: ThenStartTurn;
   skillId?: string;
+  /** Last seen GitHub event id or Slack message ts. Per-routine poll cursor. */
+  listenerCursor?: string;
 }
 
 export const COLORS: MausColor[] = ["green", "blue", "red", "orange", "purple", "cyan", "pink", "yellow", "teal", "coral"];
@@ -198,19 +233,140 @@ export function nextRunAt(schedule: RoutineSchedule, from = Date.now()): number 
   throw new Error("invalid clock schedule");
 }
 
-export function parseRoutineSchedule(raw: unknown, opts: { strictTimeZone?: boolean } = {}): RoutineSchedule {
-  if (!raw || typeof raw !== "object") throw new Error("schedule required");
-  const s = raw as Record<string, unknown>;
-  if (s.kind === "listener") {
-    const source = s.source === "slack" ? "slack" : s.source === "github" ? "github" : "";
-    if (source !== "github" && source !== "slack") throw new Error("listener must be github or slack");
-    const everyMinutes = Number(s.everyMinutes);
+const GITHUB_EVENT_SET = new Set<string>(GITHUB_LISTENER_EVENTS);
+const SLACK_MATCH_SET = new Set<string>(SLACK_LISTENER_MATCHES);
+const GITHUB_NAME_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]{0,99}$/;
+const GITHUB_OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+
+export function parseGithubRepo(ownerRaw: unknown, nameRaw: unknown): { owner: string; name: string } | null {
+  const owner = String(ownerRaw ?? "").trim();
+  const name = String(nameRaw ?? "").trim();
+  if (!owner || !name) return null;
+  if (owner === "*" || name === "*" || owner.includes("/") || name.includes("/")) return null;
+  if (owner === "." || owner === ".." || name === "." || name === "..") return null;
+  if (!GITHUB_OWNER_RE.test(owner) || !GITHUB_NAME_RE.test(name)) return null;
+  return { owner, name };
+}
+
+/** Accept `owner/name` or `{ owner, name }`. One concrete repo, never a wildcard. */
+export function parseGithubRepoField(raw: unknown): { owner: string; name: string } | null {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    const slash = trimmed.indexOf("/");
+    if (slash <= 0 || slash !== trimmed.lastIndexOf("/")) return null;
+    return parseGithubRepo(trimmed.slice(0, slash), trimmed.slice(slash + 1));
+  }
+  if (raw && typeof raw === "object") {
+    const o = raw as { owner?: unknown; name?: unknown };
+    return parseGithubRepo(o.owner, o.name);
+  }
+  return null;
+}
+
+export function parseGithubListenerEvents(raw: unknown): GithubListenerEvent[] {
+  const list = Array.isArray(raw)
+    ? raw
+    : typeof raw === "string"
+      ? raw.split(/[,\s]+/)
+      : [];
+  const out: GithubListenerEvent[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    const key = String(item ?? "").trim().toLowerCase();
+    if (!GITHUB_EVENT_SET.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key as GithubListenerEvent);
+  }
+  return out;
+}
+
+export function parseSlackChannel(raw: unknown): string | null {
+  const channel = String(raw ?? "").trim();
+  if (!channel || channel === "*" || /^all$/i.test(channel)) return null;
+  if (channel.length > 80) return null;
+  return channel;
+}
+
+export function parseSlackMatch(raw: unknown): SlackListenerMatch | null {
+  const match = String(raw ?? "").trim().toLowerCase();
+  return SLACK_MATCH_SET.has(match) ? (match as SlackListenerMatch) : null;
+}
+
+/** MCP / form args → a complete listener schedule, or a reason it isn't. */
+export function listenerScheduleFromArgs(
+  source: "github" | "slack",
+  args: Record<string, unknown>,
+  everyMinutes: number,
+): { schedule: RoutineSchedule } | { error: string } {
+  try {
+    const schedule = parseRoutineSchedule(
+      {
+        kind: "listener",
+        source,
+        everyMinutes,
+        repo: args.repo ?? { owner: args.repo_owner, name: args.repo_name },
+        owner: args.repo_owner,
+        name: args.repo_name,
+        events: args.events,
+        channel: args.channel,
+        match: args.match,
+        keyword: args.keyword,
+      },
+      { strictListener: true },
+    );
+    return { schedule };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export function listenerFilterComplete(schedule: RoutineSchedule): boolean {
+  if (schedule.kind !== "listener") return true;
+  if (schedule.source === "github") {
+    return Boolean(schedule.repo?.owner && schedule.repo?.name && schedule.events?.length);
+  }
+  if (schedule.match === "keyword") return Boolean(schedule.channel && schedule.keyword?.trim());
+  return Boolean(schedule.channel && schedule.match);
+}
+
+function parseListenerSchedule(s: Record<string, unknown>, strict: boolean): RoutineSchedule {
+  const source = s.source === "slack" ? "slack" : s.source === "github" ? "github" : "";
+  if (source !== "github" && source !== "slack") throw new Error("listener must be github or slack");
+  const everyMinutes = Number(s.everyMinutes);
+  const every = Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15;
+  if (source === "github") {
+    const repo = parseGithubRepoField(s.repo) ?? parseGithubRepo(s.owner ?? (s.repo as { owner?: unknown } | undefined)?.owner, s.name ?? (s.repo as { name?: unknown } | undefined)?.name);
+    const events = parseGithubListenerEvents(s.events);
+    if (strict && !repo) throw new Error("github listener needs one owner/name repo");
+    if (strict && !events.length) throw new Error("github listener needs an explicit event allow-list");
     return {
       kind: "listener",
-      source,
-      everyMinutes: Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15,
+      source: "github",
+      everyMinutes: every,
+      ...(repo ? { repo } : {}),
+      ...(events.length ? { events } : {}),
     };
   }
+  const channel = parseSlackChannel(s.channel);
+  const match = parseSlackMatch(s.match);
+  const keyword = String(s.keyword ?? "").trim();
+  if (strict && !channel) throw new Error("slack listener needs a channel or DM");
+  if (strict && !match) throw new Error("slack listener needs match: mention, keyword, or message");
+  if (strict && match === "keyword" && !keyword) throw new Error("slack keyword match needs a keyword");
+  return {
+    kind: "listener",
+    source: "slack",
+    everyMinutes: every,
+    ...(channel ? { channel } : {}),
+    ...(match ? { match } : {}),
+    ...(match === "keyword" && keyword ? { keyword } : {}),
+  };
+}
+
+export function parseRoutineSchedule(raw: unknown, opts: { strictTimeZone?: boolean; strictListener?: boolean } = {}): RoutineSchedule {
+  if (!raw || typeof raw !== "object") throw new Error("schedule required");
+  const s = raw as Record<string, unknown>;
+  if (s.kind === "listener") return parseListenerSchedule(s, opts.strictListener === true);
   if (s.kind === "interval") {
     const everyMinutes = Number(s.everyMinutes);
     if (!Number.isFinite(everyMinutes) || everyMinutes <= 0) throw new Error("invalid interval");
@@ -290,6 +446,7 @@ export function normalizeRoutine(v: unknown): RoutineRecord | null {
     const schedule = parseRoutineSchedule(r.schedule);
     const next = Number.isFinite(r.nextRunAt) ? r.nextRunAt! : nextRunAt(schedule);
     const thenStartTurn = validThenStartTurn(r.thenStartTurn);
+    const listenerCursor = typeof r.listenerCursor === "string" && r.listenerCursor.trim() ? r.listenerCursor.trim() : undefined;
     return {
       id: r.id!, botId: r.botId!, name: r.name!, prompt: r.prompt!, schedule, enabled: r.enabled !== false,
       running: false, nextRunAt: next, lastRunAt: Number.isFinite(r.lastRunAt) ? r.lastRunAt! : null,
@@ -299,6 +456,7 @@ export function normalizeRoutine(v: unknown): RoutineRecord | null {
       missedPolicy: parseMissedPolicy(r.missedPolicy) ?? "run-once",
       ...(thenStartTurn ? { thenStartTurn } : {}),
       ...(typeof r.skillId === "string" && r.skillId.trim() ? { skillId: r.skillId.trim() } : {}),
+      ...(listenerCursor ? { listenerCursor } : {}),
     };
   } catch { return null; }
 }

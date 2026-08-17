@@ -13,6 +13,7 @@ import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { createRepositories, type Repositories } from "../repositories/index.ts";
 import { createBotsService, type BotsService } from "./bots.ts";
+import type { ListenerPoller } from "../listeners/index.ts";
 import { CATCH_UP_CAP, createRoutinesService, ROUTINE_LEASE_MS, type RoutinesService } from "./routines.ts";
 
 const selection = () => ({ instanceId: "claude", model: "claude-sonnet-5" });
@@ -341,6 +342,8 @@ describe("routines service (fake clock)", () => {
   let frames: unknown[];
   let busy: boolean;
 
+  let pollListener: ListenerPoller | undefined;
+
   const makeService = (): RoutinesService =>
     createRoutinesService({
       repos,
@@ -348,7 +351,7 @@ describe("routines service (fake clock)", () => {
       broadcast: (frame) => frames.push(frame),
       bot: (id) => {
         const b = bots.bot(id);
-        return b ? { id: b.id, threadId: b.threadId, busy } : null;
+        return b ? { id: b.id, threadId: b.threadId, busy, hidden: b.hidden === true } : null;
       },
       startTurn: async (botId, text, opts) => {
         started.push({
@@ -359,6 +362,7 @@ describe("routines service (fake clock)", () => {
       },
       getSkill: () => null,
       skillPrompt: (_skill, prompt) => prompt,
+      pollListener,
     });
 
   beforeEach(() => {
@@ -370,6 +374,7 @@ describe("routines service (fake clock)", () => {
     started = [];
     frames = [];
     busy = false;
+    pollListener = undefined;
     routines = makeService();
   });
   afterEach(() => {
@@ -615,6 +620,108 @@ describe("routines service (fake clock)", () => {
       /invalid time zone/,
     );
     expect(() => routines.createRoutine({ botId: routine.botId, name: "x", prompt: "y", schedule: { kind: "daily", time: "09:00" }, missedPolicy: "sometimes" })).toThrow(/invalid missed policy/);
+  });
+
+  it("listener: fake feed match fires startRun once; duplicate cursor does not", async () => {
+    let feed = [{ id: "10", type: "PullRequestEvent" }];
+    pollListener = async (_schedule, cursor) => {
+      const newest = feed[0]?.id ?? cursor;
+      if (!cursor) return { status: "no-match", cursor: newest ?? null };
+      const match = feed.find((e) => Number(e.id) > Number(cursor));
+      if (match) return { status: "match", cursor: match.id };
+      return { status: "no-match", cursor: newest ?? cursor };
+    };
+    routines = makeService();
+    const { bot, routine } = makeRoutine({
+      schedule: { kind: "listener", source: "github", repo: { owner: "Velarixx", name: "VelarixBot" }, events: ["pull_request"] },
+    });
+    now = routine.nextRunAt + 1;
+    routines.tick(now);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual([]);
+    expect(routines.routine(routine.id)?.listenerCursor).toBe("10");
+    expect(routines.routine(routine.id)?.lastResult).toMatch(/watching from now|no matching event/);
+    expect(repos.routines.runsFor(routine.id).filter((r) => r.status === "running" || r.status === "done")).toEqual([]);
+
+    feed = [{ id: "20", type: "PullRequestEvent" }, { id: "10", type: "PullRequestEvent" }];
+    now = routines.routine(routine.id)!.nextRunAt + 1;
+    routines.tick(now);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual([{ botId: bot.id, text: "Brief me" }]);
+    expect(routines.routine(routine.id)?.listenerCursor).toBe("20");
+    routines.settleTurn(bot.threadId, true);
+
+    started = [];
+    now = routines.routine(routine.id)!.nextRunAt + 1;
+    routines.tick(now);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual([]);
+    expect(routines.routine(routine.id)?.lastResult).toBe("polled: no matching event");
+  });
+
+  it("listener: hidden bot skips startRun; no-token and no-composio skip without a turn", async () => {
+    const hidden = bots.createBot();
+    bots.patchBot(hidden.id, { hidden: true });
+    pollListener = async () => ({ status: "match", cursor: "99" });
+    routines = makeService();
+    const hiddenRoutine = routines.createRoutine({
+      botId: hidden.id,
+      name: "Hidden",
+      prompt: "Should not run",
+      schedule: { kind: "listener", source: "github", repo: { owner: "Velarixx", name: "VelarixBot" }, events: ["push"] },
+    });
+    now = hiddenRoutine.nextRunAt + 1;
+    routines.tick(now);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual([]);
+    expect(routines.routine(hiddenRoutine.id)?.lastResult).toBe("skipped: bot hidden");
+
+    pollListener = async () => ({
+      status: "skip",
+      reason: "skipped: GitHub token is not configured. Add it in App Settings. Never ask the user to paste a token in chat.",
+      cursor: null,
+    });
+    routines = makeService();
+    const { routine: noToken } = makeRoutine({
+      schedule: { kind: "listener", source: "github", repo: { owner: "Velarixx", name: "VelarixBot" }, events: ["push"] },
+    });
+    now = noToken.nextRunAt + 1;
+    routines.tick(now);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual([]);
+    expect(routines.routine(noToken.id)?.lastResult).toMatch(/GitHub token is not configured/);
+    expect(JSON.stringify(frames)).not.toMatch(/ghp_|xoxb-|sk-/);
+
+    pollListener = async () => ({
+      status: "skip",
+      reason: "slack is not connected. Call connect_app with slug slack first. Never ask the user to paste a token in chat.",
+      cursor: null,
+    });
+    routines = makeService();
+    const { routine: noSlack } = makeRoutine({
+      schedule: { kind: "listener", source: "slack", channel: "#eng", match: "message" },
+    });
+    now = noSlack.nextRunAt + 1;
+    routines.tick(now);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual([]);
+    expect(routines.routine(noSlack.id)?.lastResult).toMatch(/connect_app/);
+  });
+
+  it("hidden bot interval routine also skips startRun", async () => {
+    const { bot, routine } = makeRoutine();
+    bots.patchBot(bot.id, { hidden: true });
+    now = routine.nextRunAt + 1;
+    routines.tick(now);
+    await Promise.resolve();
+    expect(started).toEqual([]);
+    expect(routines.routine(routine.id)?.lastResult).toBe("skipped: bot hidden");
   });
 
   it("disables a routine whose bot is gone", async () => {
