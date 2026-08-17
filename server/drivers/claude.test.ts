@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DATA_DIR, ensureDirs } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
-import { ClaudeDriver } from "./claude.ts";
+import { CLAUDE_EFFORT, ClaudeDriver } from "./claude.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-claude-cli.ts");
 const posixOnly = describe.skipIf(process.platform === "win32");
@@ -35,6 +35,19 @@ describe("ClaudeDriver.decodeConfig", () => {
 
   it("throws on an invalid permissionMode (registry downgrades this to a shadow)", () => {
     expect(() => ClaudeDriver.decodeConfig({ permissionMode: "yolo" })).toThrow(/permissionMode/);
+  });
+
+  it("advertises per-instance effort options (no ultracode)", async () => {
+    const inst = await ClaudeDriver.create({
+      instanceId: "claude",
+      displayName: "Claude",
+      environment: {},
+      enabled: true,
+      config: ClaudeDriver.decodeConfig({}),
+    });
+    expect(inst.effort).toEqual(CLAUDE_EFFORT);
+    expect(inst.effort?.options.map((o) => o.id)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    await inst.dispose();
   });
 });
 
@@ -131,6 +144,23 @@ posixOnly("ClaudeDriver turns (fake CLI)", () => {
     expect(seen.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(seen.env.CLAUDECODE).toBeUndefined();
     expect(seen.env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+  });
+
+  it("passes the bot's --effort when set and skips unknown values", async () => {
+    await create();
+    const dump = join(scratch, "dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await instance.adapter.sendTurn({ threadId: "t-effort", text: "hi", effort: "high" });
+    await recorder.until((e) => e.type === "turn.completed");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv).toContain("--effort");
+    expect(seen.argv[seen.argv.indexOf("--effort") + 1]).toBe("high");
+
+    recorder.events.length = 0;
+    await instance.adapter.sendTurn({ threadId: "t-effort-skip", text: "hi", effort: "ultracode" });
+    await recorder.until((e) => e.type === "turn.completed");
+    const skipped = JSON.parse(readFileSync(dump, "utf8"));
+    expect(skipped.argv).not.toContain("--effort");
   });
 
   it("puts image attachments on stdin JSON content blocks, not argv", async () => {

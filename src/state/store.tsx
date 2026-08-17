@@ -75,6 +75,7 @@ export interface Group {
 export interface ModelSelection {
   instanceId: string;
   model: string;
+  effort?: string;
 }
 
 export interface Bot {
@@ -206,6 +207,8 @@ export interface InstanceInfo {
     version?: string | null;
   };
   models: { default: string; options: Array<{ id: string; label: string }> };
+  effort?: { default: string; options: Array<{ id: string; label: string }> };
+  cli?: string;
 }
 
 interface AppState {

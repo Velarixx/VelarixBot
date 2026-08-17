@@ -37,9 +37,30 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
     };
   }, [open]);
 
-  const pick = (instance: InstanceInfo, model: string) => {
-    dispatch({ type: "setModel", botId: bot.id, selection: { instanceId: instance.instanceId, model } });
+  const pick = (instance: InstanceInfo, model: string, effort?: string) => {
+    const nextEffort =
+      effort ??
+      (instance.effort && selection.effort && instance.effort.options.some((o) => o.id === selection.effort)
+        ? selection.effort
+        : instance.effort?.default);
+    dispatch({
+      type: "setModel",
+      botId: bot.id,
+      selection: {
+        instanceId: instance.instanceId,
+        model,
+        ...(nextEffort ? { effort: nextEffort } : {}),
+      },
+    });
     setOpen(false);
+  };
+
+  const pickEffort = (instance: InstanceInfo, effort: string) => {
+    dispatch({
+      type: "setModel",
+      botId: bot.id,
+      selection: { instanceId: instance.instanceId, model: selection.model, effort },
+    });
   };
 
   return (
@@ -147,6 +168,30 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
                     </button>
                   );
                 })}
+                {railInstance.effort && railInstance.snapshot.state === "available" && (
+                  <div className="mt-2 border-t border-hairline/40 px-2 pt-2">
+                    <div className="pb-1 text-[11px] font-medium text-ink-secondary">Reasoning effort</div>
+                    {railInstance.effort.options.map((option) => {
+                      const current =
+                        selection.instanceId === railInstance.instanceId &&
+                        (selection.effort ?? railInstance.effort?.default) === option.id;
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => pickEffort(railInstance, option.id)}
+                          className={cn(
+                            "flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] text-ink hover:bg-raised/60",
+                            current && "bg-raised",
+                          )}
+                        >
+                          <span className="truncate">{option.label}</span>
+                          {current && <Check size={14} className="shrink-0 text-accent" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </>
             ) : (
               <div className="px-2 py-3 text-[13px] text-ink-secondary">

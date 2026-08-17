@@ -1042,6 +1042,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           threadId: bot.threadId,
           text,
           model: bot.modelSelection.model,
+          ...(bot.modelSelection.effort ? { effort: bot.modelSelection.effort } : {}),
           resumeCursor: bot.resumeCursors[bot.modelSelection.instanceId],
           transcript,
           attachments: opts?.attachments,

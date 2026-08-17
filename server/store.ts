@@ -193,7 +193,8 @@ export function validModelSelection(v: unknown): ModelSelection | null {
   const s = v as Partial<ModelSelection> | null;
   if (!s || typeof s !== "object") return null;
   if (typeof s.instanceId !== "string" || typeof s.model !== "string") return null;
-  return { instanceId: s.instanceId, model: s.model };
+  const effort = typeof s.effort === "string" && s.effort.trim() ? s.effort.trim() : undefined;
+  return { instanceId: s.instanceId, model: s.model, ...(effort ? { effort } : {}) };
 }
 
 /** Normalize any historical bot record into a valid current one; null ONLY

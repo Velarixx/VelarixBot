@@ -16,6 +16,8 @@ export type TurnId = string;
 export interface ModelSelection {
   instanceId: InstanceId;
   model: string;
+  /** Per-bot reasoning effort. Omitted when the instance has no effort channel. */
+  effort?: string;
 }
 
 // ── instance configuration envelope ────────────────────────────────────
@@ -103,6 +105,8 @@ export interface SendTurnInput {
   threadId: ThreadId;
   text: string;
   model?: string;
+  /** Per-bot reasoning effort. Drivers without an effort channel ignore it. */
+  effort?: string;
   resumeCursor?: unknown;
   /** Prior turns for transcript-replay providers (API-backed drivers). */
   transcript?: Array<{ role: "user" | "assistant"; text: string }>;
@@ -195,6 +199,11 @@ export interface ModelCatalog {
   options: Array<{ id: string; label: string }>;
 }
 
+export interface EffortCatalog {
+  default: string;
+  options: Array<{ id: string; label: string }>;
+}
+
 export interface DriverCreateInput<Config> {
   instanceId: InstanceId;
   displayName: string | undefined;
@@ -209,6 +218,10 @@ export interface ProviderInstance {
   readonly displayName: string | undefined;
   readonly enabled: boolean;
   readonly models: ModelCatalog;
+  /** Present only when the driver has a real effort channel (Claude --effort, Codex turn/start). */
+  readonly effort?: EffortCatalog;
+  /** Bound CLI path for this instance, when the driver is CLI-backed. */
+  readonly cli?: string;
   readonly adapter: ProviderAdapter;
   snapshot(): Promise<ProviderSnapshot>;
   /** Cheap one-shot text call (upstream TextGeneration) — titles, summaries. */

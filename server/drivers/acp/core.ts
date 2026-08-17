@@ -201,6 +201,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
     async create(input: DriverCreateInput<AcpConfig>): Promise<ProviderInstance> {
       const { instanceId, config } = input;
+      let models = support.models;
       const listeners = new Set<RuntimeEventListener>();
       interface Turn {
         stop: () => void;
@@ -699,7 +700,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         driverKind: DRIVER_KIND,
         displayName: input.displayName,
         enabled: input.enabled,
-        models: support.models,
+        // [VERIFY] 2026-08-17: ACP (Gemini/Grok/Hermes) has no effort channel
+        // on session/prompt or spawn argv. Skip — do not invent flags.
+        get models() {
+          return models;
+        },
+        cli: config.cli,
         snapshot,
         ...(support.generateText
           ? { generateText: (prompt: string) => support.generateText!(config, childEnv(), prompt) }

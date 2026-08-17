@@ -89,6 +89,20 @@ const MODELS = {
   ],
 };
 
+// [VERIFY] 2026-08-17: Claude Code CLI `--effort` accepts
+// low|medium|high|xhigh|max|ultracode. ultracode is a workflow mode — skip it.
+export const CLAUDE_EFFORT = {
+  default: "medium",
+  options: [
+    { id: "low", label: "Low" },
+    { id: "medium", label: "Medium" },
+    { id: "high", label: "High" },
+    { id: "xhigh", label: "Extra high" },
+    { id: "max", label: "Max" },
+  ],
+};
+const CLAUDE_EFFORT_IDS = new Set(CLAUDE_EFFORT.options.map((o) => o.id));
+
 // proxy entry files live next to this one as .ts in dev (node type
 // stripping) and .js in the compiled dist-server the packaged app ships
 const proxyPath = (basename: string) => {
@@ -301,6 +315,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (sessionId) args.push("--resume", sessionId);
       else args.push("--session-id", newSessionId!);
       if (turn.model) args.push("--model", turn.model);
+      if (turn.effort && CLAUDE_EFFORT_IDS.has(turn.effort)) args.push("--effort", turn.effort);
       if (turn.system) args.push("--append-system-prompt", turn.system);
 
       // integrations → MCP servers; pre-allow their tools (a headless
@@ -550,6 +565,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       displayName: input.displayName,
       enabled: input.enabled,
       models: MODELS,
+      effort: CLAUDE_EFFORT,
+      cli: config.cli,
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
