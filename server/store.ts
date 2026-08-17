@@ -42,11 +42,36 @@ export interface OptionCardData {
   /** PRO extract card. Accept writes via createRoutine / insertMemoryRow. */
   suggestion?: { botId: string; type: "preference" | "fact" | "workflow"; text: string };
 }
+export interface MessageFrom {
+  botId: string;
+  name: string;
+  color?: MausColor;
+}
+export interface MessageComm {
+  groupId: string;
+  withBotId: string;
+  withName: string;
+  withColor?: MausColor;
+}
 export interface Message {
   id: string; role: "bot" | "user"; kind: "text" | "options" | "activity" | "screen"; text?: string;
   card?: OptionCardData; tool?: { name: string; ok?: boolean }; png?: string; mime?: string; at: number; usage?: Usage;
   /** Paged hydration: a screen frame whose pixels live at the per-image fetch. */
   hasImage?: boolean;
+  /** Sender on a bot⇄bot DM transcript. */
+  from?: MessageFrom;
+  /** Chip link from a 1:1 thread to the A ⇄ B channel. */
+  comm?: MessageComm;
+}
+/** Sidebar DM (`Name ⇄ Name`) for ask_bot / delegate_bot visibility. Not a room/bulletin product. */
+export interface GroupRecord {
+  id: string;
+  threadId: ThreadId;
+  name: string;
+  memberIds: string[];
+  unread: boolean;
+  createdAt: number;
+  dm?: boolean;
 }
 export interface BotRecord {
   id: string; threadId: ThreadId; name: string; title: string; description: string; notifications: boolean; color: MausColor;
@@ -468,6 +493,23 @@ export function normalizeMessage(v: unknown): Message | null {
   const m = v as Partial<Message>;
   if (typeof m.id !== "string") return null;
   return { ...(m as Message), at: Number.isFinite(m.at) ? m.at! : Date.now() };
+}
+
+export function normalizeGroup(v: unknown): GroupRecord | null {
+  if (!v || typeof v !== "object") return null;
+  const g = v as Partial<GroupRecord>;
+  if (typeof g.id !== "string" || !g.id || typeof g.threadId !== "string" || !g.threadId) return null;
+  if (typeof g.name !== "string") return null;
+  const memberIds = validStringList(g.memberIds) ?? [];
+  return {
+    id: g.id,
+    threadId: g.threadId,
+    name: g.name,
+    memberIds,
+    unread: g.unread === true,
+    createdAt: Number.isFinite(g.createdAt) ? g.createdAt! : Date.now(),
+    ...(g.dm === true ? { dm: true } : {}),
+  };
 }
 
 export function mentionedBots<T extends { name: string; hidden?: boolean }>(text: string, peers: T[]): T[] {

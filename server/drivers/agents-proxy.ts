@@ -6,6 +6,7 @@
 //
 //   list_bots()            → the other bots in this workspace + their status
 //   ask_bot(bot_id, msg)   → send msg to that bot, wait, return its reply
+//   delegate_bot(bot_id, msg, reason?) → queue a handoff; returns immediately
 //   create_bot(...)        → create a real sidebar bot (name/title/description)
 //   delete_bot(bot_id)     → remove a sidebar bot (refuses the last bot)
 //   update_bot(bot_id, …)  → rename or change title/description (persona)
@@ -30,19 +31,33 @@ const TOOLS = [
   {
     name: "list_bots",
     description:
-      "List the other bots (agents) in this VelarixBot workspace you can message, with their model and whether they're busy. Call this before ask_bot to discover who's available.",
+      "List the other bots (agents) in this VelarixBot workspace you can message, with their model and whether they're busy. Call this before ask_bot or delegate_bot to discover who's available.",
     inputSchema: { type: "object", properties: {} },
     annotations: { readOnlyHint: true },
   },
   {
     name: "ask_bot",
     description:
-      "Send a message to another bot in this workspace and wait for its reply. Use it to delegate a subtask to a specialist bot or ask a peer a question. The other bot runs a full turn under its own model and permissions; the reply is returned to you as text and stays in this transcript — do not ask the user to relay it. If that bot is busy, the ask is queued until it finishes.",
+      "Send a message to another bot in this workspace and wait for its reply. Use it when you need the teammate's answer before you continue. The other bot runs a full turn under its own model and permissions; the reply is returned to you as text and stays in this transcript — do not ask the user to relay it. If that bot is busy, the ask is queued until it finishes. To hand work off without waiting, use delegate_bot.",
     inputSchema: {
       type: "object",
       properties: {
         bot_id: { type: "string", description: "The target bot's id (from list_bots)." },
         message: { type: "string", description: "What to say / ask the bot." },
+      },
+      required: ["bot_id", "message"],
+    },
+  },
+  {
+    name: "delegate_bot",
+    description:
+      "Hand a task to another bot asynchronously: returns immediately with \"Delegation queued.\" and the peer runs after your current turn finishes. Use this when you want to keep working or hand off work and do not wait. You do not receive the peer's reply inline — the user sees it on the A ⇄ B DM and the peer's own turn.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        bot_id: { type: "string", description: "The target bot's id (from list_bots)." },
+        message: { type: "string", description: "What the peer should do / answer." },
+        reason: { type: "string", description: "Optional one-line reason for the delegation (shown to the user as a chip)." },
       },
       required: ["bot_id", "message"],
     },
@@ -139,6 +154,22 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     if (r.busy) return { text: `That bot is busy — waiting in line, then I'll deliver the ask.` };
     if (r.error) return { text: `Couldn't reach that bot: ${r.error}`, isError: true };
     return { text: `${r.botName ?? "Bot"} replied:\n${r.text ?? "(no reply)"}` };
+  }
+  if (name === "delegate_bot") {
+    const toBotId = String(args.bot_id ?? "").trim();
+    const message = String(args.message ?? "").trim();
+    const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+    if (!toBotId || !message) return { text: "delegate_bot needs bot_id and message.", isError: true };
+    const body: Record<string, unknown> = {
+      fromBotId: BOT_ID,
+      toBotId,
+      message,
+      depth: DEPTH,
+    };
+    if (reason) body.reason = reason;
+    const r = await api(`/api/internal/delegate-bot`, { method: "POST", body: JSON.stringify(body) });
+    if (r.error) return { text: `Couldn't queue the delegation: ${r.error}`, isError: true };
+    return { text: typeof r.message === "string" ? r.message : "Delegation queued." };
   }
   if (name === "create_bot") {
     const botName = String(args.name ?? "").trim();

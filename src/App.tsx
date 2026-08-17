@@ -5,6 +5,7 @@ import { Onboarding } from "@/components/Onboarding";
 import { onboardingComplete } from "@/lib/product";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatView } from "@/components/ChatView";
+import { GroupView } from "@/components/GroupView";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { PluginsPanel } from "@/components/PluginsPanel";
 import { ComputerPanel } from "@/components/ComputerPanel";
@@ -15,6 +16,9 @@ import { SkillsPanel } from "@/components/SkillsPanel";
 
 function Shell() {
   const { state, dispatch } = useStore();
+  const group = state.selectedGroupId
+    ? state.groups.find((g) => g.id === state.selectedGroupId)
+    : undefined;
   const bot = state.bots.find((b) => b.id === state.selectedId) ?? state.bots[0];
   return (
     <div className="flex h-full flex-col">
@@ -22,7 +26,9 @@ function Shell() {
       <UpdateBanner />
       <div className="relative flex min-h-0 flex-1">
       <Sidebar />
-      {bot ? (
+      {group ? (
+        <GroupView group={group} />
+      ) : bot ? (
         <ChatView bot={bot} />
       ) : state.connected ? (
         <main className="flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-4 bg-app">

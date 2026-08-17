@@ -219,8 +219,12 @@ describe("comms e2e (fake ACP fleet)", () => {
       expect(nextStep).toBeUndefined();
 
       // visibility: A's thread shows the outbound ask as an activity note
-      const note = askerBot.messages.find((m: any) => m.kind === "activity" && m.tool?.name?.startsWith("asked @Helper"));
+      const note = askerBot.messages.find((m: any) => m.kind === "activity" && m.tool?.name === "Messaged @Helper");
       expect(note).toBeTruthy();
+      const snap = await api("GET", "/api/events/snapshot");
+      const dm = (snap.body.groups ?? []).find((g: { name?: string }) => g.name === "Asker ⇄ Helper");
+      expect(dm).toBeTruthy();
+      expect(dm.messages.some((m: { text?: string }) => m.text === "ping from fake")).toBe(true);
 
       // group thread: Helper's reply is on Asker's transcript (handoff does
       // not route through the user)

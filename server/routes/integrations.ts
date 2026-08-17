@@ -11,13 +11,16 @@ import {
   parseVisited,
   uniqueIds,
 } from "../comms.ts";
+import { bindCommsStore, getOrCreateChannel, mirrorExchange, mirrorReply } from "../comms-visibility.ts";
 import * as composio from "../composio.ts";
 import type { AppConfig } from "../config.ts";
 import { loadConfig, saveConfig } from "../config.ts";
+import { MAX_DELEGATION_DEPTH, queueDelegation } from "../delegations.ts";
 import type { ProviderRegistry } from "../harness/registry.ts";
 import { recallMemory, rememberNote } from "../memory.ts";
 import type { Broadcast } from "../services/events.ts";
 import type { BotsService } from "../services/bots.ts";
+import type { GroupsService } from "../services/groups.ts";
 import type { TurnsService } from "../services/turns.ts";
 import { json, readBody, type RouteHandler } from "./context.ts";
 
@@ -31,6 +34,7 @@ export interface IntegrationsRoutes {
 
 export function createIntegrationsRoutes(deps: {
   bots: BotsService;
+  groups: GroupsService;
   turns: TurnsService;
   registry: ProviderRegistry;
   cfg: AppConfig;
@@ -38,7 +42,8 @@ export function createIntegrationsRoutes(deps: {
   broadcast: Broadcast;
   reloadProviders(): Promise<void>;
 }): IntegrationsRoutes {
-  const { bots, turns, registry, cfg, commsToken, broadcast, reloadProviders } = deps;
+  const { bots, groups, turns, registry, cfg, commsToken, broadcast, reloadProviders } = deps;
+  const commsBus = { store: bindCommsStore(bots, groups), broadcast };
 
   function configStatus() {
     return {
@@ -105,13 +110,12 @@ export function createIntegrationsRoutes(deps: {
           bots.patchBot(from.id, {
             threadParticipants: uniqueIds([from.id, ...(from.threadParticipants ?? []), toBotId]),
           });
-          const note = bots.appendMessage(groupThreadId, {
-            role: "bot",
-            kind: "activity",
-            tool: { name: `asked @${target.name}: ${message.slice(0, 80)}` },
-          });
-          broadcast({ kind: "message", threadId: groupThreadId, message: note });
           broadcast({ kind: "bot", bot: bots.publicBot(from.id) });
+        }
+        const channel = from ? getOrCreateChannel(commsBus.store, from, target) : undefined;
+        if (from && channel) {
+          broadcast({ kind: "group", group: groups.publicGroup(channel.id) ?? channel });
+          mirrorExchange(commsBus, from, target, message, channel, from.threadId);
         }
         const prefixed = `[Message from @${fromName}, another bot in this VelarixBot workspace. Reply to them.]\n\n${message}`;
         const reply = await turns.askBotQueued(toBotId, prefixed, depth, {
@@ -119,7 +123,49 @@ export function createIntegrationsRoutes(deps: {
           groupThreadId,
           fromBotId,
         });
+        if (from && channel) mirrorReply(commsBus, target, reply, channel);
         json(res, 200, { botName: target.name, text: reply });
+        return true;
+      }
+      if (method === "POST" && path === "/api/internal/delegate-bot") {
+        const body = await readBody(req);
+        const fromBotId = String(body.fromBotId ?? "");
+        const toBotId = String(body.toBotId ?? "");
+        const message = String(body.message ?? "").trim();
+        const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+        const depth = Number(body.depth ?? 0) || 0;
+        if (!toBotId || !message) {
+          json(res, 400, { error: "toBotId and message required" });
+          return true;
+        }
+        const from = bots.bot(fromBotId);
+        if (!from) {
+          json(res, 404, { error: "no such bot" });
+          return true;
+        }
+        const result = queueDelegation(
+          commsBus,
+          from,
+          { toBotId, message, depth, ...(reason ? { reason } : {}) },
+          MAX_DELEGATION_DEPTH,
+        );
+        if (result === "self") {
+          json(res, 200, { error: "a bot cannot message itself" });
+          return true;
+        }
+        if (result === "too_deep") {
+          json(res, 200, { error: COMMS_DEPTH_ERROR });
+          return true;
+        }
+        if (result === "no_target") {
+          json(res, 404, { error: "no such bot" });
+          return true;
+        }
+        if (result === "too_many") {
+          json(res, 200, { error: "too many queued delegations" });
+          return true;
+        }
+        json(res, 200, { message: "Delegation queued." });
         return true;
       }
       if (method === "POST" && path === "/api/internal/create-bot") {

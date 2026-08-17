@@ -56,6 +56,20 @@ export interface Message {
   png?: string;
   mime?: string;
   at: number;
+  from?: { botId: string; name: string; color?: MausColor };
+  comm?: { groupId: string; withBotId: string; withName: string; withColor?: MausColor };
+}
+
+/** Sidebar A ⇄ B DM. Slim port — not a room/bulletin product. */
+export interface Group {
+  id: string;
+  threadId: string;
+  name: string;
+  memberIds: string[];
+  unread: boolean;
+  createdAt: number;
+  dm?: boolean;
+  messages: Message[];
 }
 
 export interface ModelSelection {
@@ -196,9 +210,11 @@ export interface InstanceInfo {
 
 interface AppState {
   bots: Bot[];
+  groups: Group[];
   instances: InstanceInfo[];
   config: ConfigStatus | null;
   selectedId: string;
+  selectedGroupId: string | null;
   settingsOpen: boolean;
   pluginsOpen: boolean;
   computerOpen: boolean;
@@ -229,7 +245,9 @@ interface AppState {
 }
 
 type Action =
-  | { type: "hydrate"; bots: Bot[] }
+  | { type: "hydrate"; bots: Bot[]; groups?: Group[] }
+  | { type: "selectGroup"; id: string }
+  | { type: "groupUpsert"; group: Omit<Group, "messages"> & { messages?: Message[] } }
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "select"; id: string }
@@ -338,7 +356,35 @@ export function reducer(state: AppState, action: Action): AppState {
         action.bots.some((b) => b.id === state.selectedId) && state.selectedId
           ? state.selectedId
           : (action.bots[0]?.id ?? "");
-      return { ...state, bots: action.bots, selectedId };
+      return { ...state, bots: action.bots, groups: action.groups ?? state.groups, selectedId };
+    }
+    case "selectGroup":
+      return {
+        ...state,
+        selectedGroupId: action.id,
+        groups: state.groups.map((g) => (g.id === action.id ? { ...g, unread: false } : g)),
+      };
+    case "groupUpsert": {
+      const incoming = action.group;
+      const existing = state.groups.find((g) => g.id === incoming.id);
+      const merged: Group = {
+        ...existing,
+        ...incoming,
+        id: incoming.id,
+        threadId: incoming.threadId ?? existing?.threadId ?? "",
+        name: incoming.name ?? existing?.name ?? "",
+        memberIds: incoming.memberIds ?? existing?.memberIds ?? [],
+        unread: incoming.unread ?? existing?.unread ?? false,
+        createdAt: incoming.createdAt ?? existing?.createdAt ?? 0,
+        messages:
+          incoming.messages && incoming.messages.length > 0
+            ? incoming.messages
+            : (existing?.messages ?? incoming.messages ?? []),
+      };
+      const groups = existing
+        ? state.groups.map((g) => (g.id === incoming.id ? merged : g))
+        : [merged, ...state.groups];
+      return { ...state, groups };
     }
     case "instances":
       return { ...state, instances: action.instances };
@@ -352,7 +398,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, routines: state.routines.filter((routine) => routine.id !== action.routineId) };
     case "select":
       return updateBot(
-        withMascotMotion({ ...state, selectedId: action.id }, action.id, "switch"),
+        withMascotMotion({ ...state, selectedId: action.id, selectedGroupId: null }, action.id, "switch"),
         action.id,
         (b) => ({ ...b, unread: false }),
       );
@@ -401,6 +447,16 @@ export function reducer(state: AppState, action: Action): AppState {
       return updateBot(next, action.bot.id, (b) => ({ ...b, ...action.bot, messages: b.messages }));
     }
     case "messageAdded": {
+      const group = state.groups.find((g) => g.threadId === action.threadId);
+      if (group) {
+        if (group.messages.some((m) => m.id === action.message.id)) return state;
+        return {
+          ...state,
+          groups: state.groups.map((g) =>
+            g.id === group.id ? { ...g, messages: [...g.messages, action.message] } : g,
+          ),
+        };
+      }
       const bot = state.bots.find((b) => b.threadId === action.threadId);
       if (!bot) return state;
       const next = updateBot(state, bot.id, (b) =>
@@ -429,6 +485,17 @@ export function reducer(state: AppState, action: Action): AppState {
       return animated;
     }
     case "messagePatched": {
+      const group = state.groups.find((g) => g.threadId === action.threadId);
+      if (group) {
+        return {
+          ...state,
+          groups: state.groups.map((g) =>
+            g.id === group.id
+              ? { ...g, messages: g.messages.map((m) => (m.id === action.message.id ? action.message : m)) }
+              : g,
+          ),
+        };
+      }
       const bot = state.bots.find((b) => b.threadId === action.threadId);
       if (!bot) return state;
       const motion =
@@ -600,9 +667,11 @@ export function reducer(state: AppState, action: Action): AppState {
 
 export const initialState: AppState = {
   bots: [],
+  groups: [],
   instances: [],
   config: null,
   selectedId: "",
+  selectedGroupId: null,
   settingsOpen: false,
   pluginsOpen: false,
   computerOpen: false,
@@ -868,7 +937,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return api("/api/events/snapshot")
         .then((snap) => {
           if (!alive) return;
-          rawDispatch({ type: "hydrate", bots: snap.bots });
+          rawDispatch({ type: "hydrate", bots: snap.bots, groups: snap.groups ?? [] });
           // SET (not advance): a resync is also the recovery from a
           // reset stream whose sequences restarted below our old cursor
           cursor = {
@@ -975,6 +1044,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "computer":
           rawDispatch({ type: "provisioning", botId: frame.botId, on: frame.state === "provisioning" });
+          break;
+        case "group":
+          rawDispatch({ type: "groupUpsert", group: frame.group });
           break;
         case "bot.deleted":
           rawDispatch({ type: "deleteBot", botId: frame.botId });

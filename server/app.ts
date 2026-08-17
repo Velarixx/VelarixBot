@@ -29,6 +29,7 @@ import { createIntegrationsRoutes } from "./routes/integrations.ts";
 import { createRoutinesRoutes } from "./routes/routines.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
 import { createBotsService, projectPublicBotFrame, type BotsService } from "./services/bots.ts";
+import { createGroupsService, type GroupsService } from "./services/groups.ts";
 import { createDiagnosticsService } from "./services/diagnostics.ts";
 import { createSseHub, type Broadcast, type SseHub } from "./services/events.ts";
 import { createListenerPoller } from "./listeners/index.ts";
@@ -79,6 +80,7 @@ export interface Application {
   hub: SseHub;
   services: {
     bots: BotsService;
+    groups: GroupsService;
     turns: TurnsService;
     routines: RoutinesService;
     teach: TeachService;
@@ -137,6 +139,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     computerBindings: () => computers.list().map((p) => p.id),
   });
   botsRef = bots;
+  const groups = createGroupsService({ repos });
 
   const teach = createTeachService({
     bus,
@@ -172,6 +175,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     bus,
     repos,
     bots,
+    groups,
     routines: () => routinesRef!,
     teach,
     proactive,
@@ -208,6 +212,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
 
   const integrations = createIntegrationsRoutes({
     bots,
+    groups,
     turns,
     registry,
     cfg,
@@ -219,7 +224,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // route order preserves the pre-refactor dispatch: internal comms first
   // (their own token), then the launch-token gate, then the public surface
   const gatedRoutes: RouteHandler[] = [
-    createEventsRoutes({ hub, bots }),
+    createEventsRoutes({ hub, bots, groups }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
     createBotsRoutes({
@@ -319,6 +324,6 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       proactive.tick(now);
     },
     hub,
-    services: { bots, turns, routines, teach, proactive },
+    services: { bots, groups, turns, routines, teach, proactive },
   };
 }

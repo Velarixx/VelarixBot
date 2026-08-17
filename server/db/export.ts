@@ -47,6 +47,7 @@ export const EXPORT_TABLES: Array<{ table: string; columns: string[] }> = [
   { table: "memory", columns: ["owner", "user_text", "distilled_text", "updated_at"] },
   { table: "memory_rows", columns: ["id", "bot_id", "type", "text", "pinned", "use_count", "created_at", "updated_at"] },
   { table: "computer_bindings", columns: ["bot_id", "box_id", "created_at", "updated_at"] },
+  { table: "groups", columns: ["seq", "id", "thread_id", "created_at", "data"] },
 ];
 
 function checksumOf(lines: string[]): string {

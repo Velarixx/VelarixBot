@@ -186,6 +186,24 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // A⇄B DMs for ask_bot / delegate_bot visibility. dm=1 is the only
+    // group kind this port creates — not rooms, bulletin, or voice.
+    version: 5,
+    name: "groups-dm",
+    up(db) {
+      db.exec(`
+        CREATE TABLE groups(
+          seq INTEGER PRIMARY KEY AUTOINCREMENT,
+          id TEXT NOT NULL UNIQUE,
+          thread_id TEXT NOT NULL UNIQUE,
+          created_at INTEGER NOT NULL,
+          data TEXT NOT NULL
+        );
+        CREATE INDEX groups_thread ON groups(thread_id);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

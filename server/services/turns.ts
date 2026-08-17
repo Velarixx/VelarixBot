@@ -42,6 +42,9 @@ import {
   memoryPrompt,
 } from "../memory.ts";
 import { suggestionCardsFor } from "../suggestions.ts";
+import { agentsCommsPrompt } from "../chief-of-staff.ts";
+import { bindCommsStore, mirrorReply } from "../comms-visibility.ts";
+import { discardDelegations, drainDelegations } from "../delegations.ts";
 import { createPeerQueue } from "../peer-queue.ts";
 import type { Proactive } from "../proactive.ts";
 import type { Repositories } from "../repositories/index.ts";
@@ -50,6 +53,7 @@ import { enabledSkillIds, LAST_BOT_ERROR, listenerScheduleFromArgs, mentionedBot
 import { deleteSkillsForBot, getSkill, saveSkill, skillSystemNote, skillsForTurn } from "../teach.ts";
 import type { Broadcast } from "./events.ts";
 import type { BotsService } from "./bots.ts";
+import { createGroupsService, type GroupsService } from "./groups.ts";
 import type { RoutinesService } from "./routines.ts";
 import type { TeachService } from "./teach.ts";
 
@@ -81,6 +85,7 @@ export interface TurnsServiceDeps {
   bus: EventBus;
   repos: Repositories;
   bots: BotsService;
+  groups?: GroupsService;
   routines(): RoutinesService;
   teach: TeachService;
   proactive: Proactive;
@@ -123,6 +128,8 @@ export interface TurnsService {
 export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   const { cfg, registry, computers, bus, repos, bots, teach, proactive, broadcast, port, commsToken } = deps;
   const store = bots; // message + bot accessors (repository-backed)
+  const groups = deps.groups ?? createGroupsService({ repos });
+  const commsBus = { store: bindCommsStore(bots, groups), broadcast };
   const now = deps.now ?? (() => Date.now());
   configureUnattended({
     now,
@@ -736,6 +743,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
         proactive.noteState(bot.id, "BLOCKED");
         notifyIdle(bot.id);
+        discardDelegations(commsBus, event.threadId);
         broadcastBot(bot.id);
         break;
       case "turn.completed": {
@@ -763,6 +771,31 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         bots.patchBot(bot.id, { busy: false, unread: true, state: event.ok ? "DONE" : "BLOCKED", stateDetail: event.stopReason ?? undefined });
         proactive.noteState(bot.id, event.ok ? "DONE" : "BLOCKED");
         notifyIdle(bot.id);
+        if (event.ok) {
+          drainDelegations(commsBus, event.threadId, (toBotId, message, commsDepth, _sourceThreadId, channel) => {
+            const target = store.bot(toBotId);
+            let unsub: (() => void) | undefined;
+            if (target && channel) {
+              let text = "";
+              unsub = bus.subscribe((e: RuntimeEvent) => {
+                if (e.threadId !== target.threadId) return;
+                if (e.type === "item.completed" && e.itemType === "assistant_text") {
+                  const reply = parseResponseOptions(e.text);
+                  if (reply.text) text += (text ? "\n" : "") + reply.text;
+                } else if (e.type === "turn.completed" || e.type === "runtime.error") {
+                  unsub?.();
+                  if (e.type === "turn.completed") mirrorReply(commsBus, target, text, channel);
+                }
+              });
+            }
+            void service.startTurn(toBotId, message, { commsDepth }).catch(() => {
+              unsub?.();
+              /* startTurn failures land on the peer thread */
+            });
+          });
+        } else {
+          discardDelegations(commsBus, event.threadId);
+        }
         const thenStartTurn = deps.routines().settleTurn(event.threadId, event.ok, event.stopReason);
         if (thenStartTurn) proactive.routineCompleted(thenStartTurn);
         if (event.ok) {
@@ -1021,9 +1054,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
             (integrations.computer && instance.driverKind !== "boxAgent" && computerProvider?.turnPrompt
               ? ` ${computerProvider.turnPrompt}`
               : "") +
-            (integrations.agents
-              ? " You can work with the user's VelarixBot sidebar bots through the agents tools. list_bots shows who exists. ask_bot messages one and returns its reply — the reply stays in this transcript, do not ask the user to relay it. create_bot creates a real sidebar bot (name, title, description, optional model) — use it when asked to create bots. update_bot renames a bot or changes its title/description. delete_bot removes a sidebar bot by id — never the last bot in the workspace. Never invent Codex or conversation-only sub-agents; they will not appear in the sidebar. Never create or delete bots with the shell, PowerShell, or by writing scripts — only create_bot, update_bot, and delete_bot."
-              : "") +
+            (integrations.agents ? agentsCommsPrompt() : "") +
             (integrations.memory
               ? " You have remember and recall tools. remember saves a lasting note for this bot (or the shared workspace). recall reads those notes. Prefer remember for durable facts instead of relying on chat history."
               : "") +
@@ -1056,6 +1087,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: message.slice(0, 160) });
         proactive.noteState(bot.id, "BLOCKED");
         notifyIdle(bot.id);
+        discardDelegations(commsBus, bot.threadId);
         broadcastBot(bot.id);
       }
     })();
@@ -1141,6 +1173,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
     proactive.noteState(bot.id, "BLOCKED");
     notifyIdle(bot.id);
+    discardDelegations(commsBus, bot.threadId);
     broadcastBot(bot.id);
     return { ok: true };
   }

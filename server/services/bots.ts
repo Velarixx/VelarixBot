@@ -169,13 +169,17 @@ export function createBotsService(opts: {
       return repos.bots.list().map((bot) => hydrateBot(repos, bot, hydrate));
     },
     pageMessages(threadId, opts) {
-      if (!repos.bots.getByThread(threadId)) return { ok: false, status: 404, error: "no such conversation" };
+      if (!repos.bots.getByThread(threadId) && !repos.groups.getByThread(threadId)) {
+        return { ok: false, status: 404, error: "no such conversation" };
+      }
       const page = repos.messages.pageForThread(threadId, { ...opts, slim: true });
       if (!page) return { ok: false, status: 404, error: "no such message" };
       return { ok: true, ...page };
     },
     readMessageImage(threadId, messageId) {
-      if (!repos.bots.getByThread(threadId)) return { ok: false, status: 404, error: "no such conversation" };
+      if (!repos.bots.getByThread(threadId) && !repos.groups.getByThread(threadId)) {
+        return { ok: false, status: 404, error: "no such conversation" };
+      }
       const image = repos.messages.readImage(threadId, messageId);
       if (!image) return { ok: false, status: 404, error: "no image on that message" };
       return { ok: true, ...image };

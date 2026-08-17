@@ -15,7 +15,7 @@ import {
   CalendarClock,
   BookOpen,
 } from "lucide-react";
-import { useStore, formatTime, type Bot } from "@/state/store";
+import { useStore, formatTime, type Bot, type Group } from "@/state/store";
 import { BotFace } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
@@ -133,9 +133,42 @@ function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => voi
   );
 }
 
+function DmListItem({ group }: { group: Group }) {
+  const { state, dispatch } = useStore();
+  const selected = state.selectedGroupId === group.id;
+  const last = group.messages[group.messages.length - 1];
+  const previewText =
+    last?.kind === "activity" && last.tool
+      ? last.tool.name
+      : last?.text ?? "";
+  return (
+    <button
+      onClick={() => dispatch({ type: "selectGroup", id: group.id })}
+      className={cn(
+        "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left",
+        selected ? "bg-raised" : "hover:bg-raised/50",
+      )}
+    >
+      <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-accent/10 text-[13px] font-semibold text-accent">
+        ⇄
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
+          {last && <span className="shrink-0 text-xs text-ink-secondary">{formatTime(last.at)}</span>}
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-[13px] text-ink-secondary">{previewText}</span>
+          {group.unread && <span className="size-2 shrink-0 rounded-full bg-accent" />}
+        </div>
+      </div>
+    </button>
+  );
+}
+
 function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => void }) {
   const { state, dispatch } = useStore();
-  const selected = state.selectedId === bot.id;
+  const selected = state.selectedGroupId == null && state.selectedId === bot.id;
   const mascotMotion = selected && state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const last = bot.messages[bot.messages.length - 1];
   return (
@@ -228,13 +261,30 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Bot list */}
+      {/* Bot list + A ⇄ B DMs */}
       <div className="flex-1 overflow-y-auto px-2">
         <div className="flex flex-col gap-0.5">
           {visibleBots.map((b) => (
             <BotListItem key={b.id} bot={b} onMenu={setMenu} />
           ))}
         </div>
+        {(() => {
+          const q = query.trim().toLowerCase();
+          const dms = state.groups.filter((g) => g.dm && (!q || g.name.toLowerCase().includes(q)));
+          if (!dms.length) return null;
+          return (
+            <div className="mt-3">
+              <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
+                Direct messages
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {dms.map((g) => (
+                  <DmListItem key={g.id} group={g} />
+                ))}
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Footer */}

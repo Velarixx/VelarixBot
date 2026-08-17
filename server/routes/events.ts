@@ -12,11 +12,12 @@
 //   GET /api/events/snapshot?messages=n — same, but newest n per thread
 //       (slim screens). Omitting the query is the original full transcript.
 import type { BotsService } from "../services/bots.ts";
+import type { GroupsService } from "../services/groups.ts";
 import type { SseHub } from "../services/events.ts";
 import { json, parsePageSize, type RouteHandler } from "./context.ts";
 
-export function createEventsRoutes(deps: { hub: SseHub; bots: BotsService }): RouteHandler {
-  const { hub, bots } = deps;
+export function createEventsRoutes(deps: { hub: SseHub; bots: BotsService; groups?: GroupsService }): RouteHandler {
+  const { hub, bots, groups } = deps;
   return ({ req, res, url, path, method }) => {
     if (method !== "GET") return false;
     if (path === "/api/events") {
@@ -35,6 +36,7 @@ export function createEventsRoutes(deps: { hub: SseHub; bots: BotsService }): Ro
       json(res, 200, {
         ...cursor,
         bots: bots.publicBots(limit === undefined ? undefined : { messages: limit }),
+        groups: groups?.publicGroups(limit === undefined ? undefined : { messages: limit }) ?? [],
       });
       return true;
     }

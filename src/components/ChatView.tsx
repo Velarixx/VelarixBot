@@ -54,15 +54,21 @@ function Bubble({ message }: { message: Message }) {
 
 /** A tool run: spinner while live, check/cross once settled. */
 function ActivityChip({ message }: { message: Message }) {
+  const { dispatch } = useStore();
   const tool = message.tool;
   if (!tool) return null;
   const failed = tool.ok === false;
+  const groupId = message.comm?.groupId;
   return (
     <div className="flex justify-start">
-      <div
+      <button
+        type="button"
+        disabled={!groupId}
+        onClick={() => groupId && dispatch({ type: "selectGroup", id: groupId })}
         className={cn(
           "flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px]",
           failed ? "text-danger" : "text-ink-secondary",
+          groupId && "hover:bg-raised",
         )}
       >
         {tool.ok === undefined ? (
@@ -73,7 +79,7 @@ function ActivityChip({ message }: { message: Message }) {
           <Check size={13} className="text-success" />
         )}
         <span className="max-w-[480px] truncate font-mono">{tool.name}</span>
-      </div>
+      </button>
     </div>
   );
 }
