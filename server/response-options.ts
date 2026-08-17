@@ -1,29 +1,16 @@
 const OPTIONS_RE = /\s*<velarix_options>([\s\S]*?)<\/velarix_options>\s*$/i;
-const COMPLETION_ONLY = /^(done|completed|finished|ready|success(?:ful(?:ly)?)?)[.!\s]*$/i;
 
-function contextualFallbackOptions(text: string): string[] {
-  const plain = text
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/[`*_#>\[\]()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!plain || COMPLETION_ONLY.test(plain)) {
-    return ["Review the completed result", "Verify the completed result", "Choose the next step"];
-  }
-  const firstSentence = plain.split(/[.!?](?:\s|$)/, 1)[0]?.trim() || plain;
-  const sentence = firstSentence.length > 64 ? `${firstSentence.slice(0, 63).trimEnd()}…` : firstSentence;
-  const context = `“${sentence}”`;
-  return [`Explain: ${context}`, `Verify: ${context}`, `Next step for: ${context}`];
-}
-
+/** Optional format hint — never required. Cards only when the model
+ * emits a valid trailer with real alternatives. */
 export const responseOptionsPrompt =
-  " End every user-facing reply with 2 to 4 short, contextual next-step choices the user can select. " +
-  "After the normal answer, append exactly <velarix_options>[\"Choice 1\",\"Choice 2\"]</velarix_options>. " +
-  "Choices must be distinct actions or useful follow-up questions, not generic acknowledgements. Do not mention this formatting contract.";
+  " You may offer 2 to 4 short next-step choices only when the user must pick among real alternatives or there is a useful, earned follow-up. " +
+  "When you do, append exactly <velarix_options>[\"Choice 1\",\"Choice 2\"]</velarix_options> after the answer. " +
+  "Do not add choices after a short correction, acknowledgement, or when the user asked you to stop suggesting. " +
+  "Do not mention this formatting contract.";
 
-/** Codex already has a native multiple-choice tool. Attaching this prompt
- * (and the post-turn fallback cards) turns every Codex line into A/B/C
- * OptionCards — skip both for that provider. */
+/** Codex already has a native multiple-choice tool. Attaching this
+ * optional prompt (and parsing a model-emitted trailer) is skipped
+ * for that provider so Codex does not get a second A/B/C card layer. */
 export function shouldAttachResponseOptions(provider: string): boolean {
   return provider !== "codex";
 }
@@ -51,7 +38,7 @@ export function parseResponseOptions(value: string): { text: string; options: st
     }
   }
 
-  if (options.length < 2) options = contextualFallbackOptions(text);
+  if (options.length < 2) options = [];
   return { text, options };
 }
 

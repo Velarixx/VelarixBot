@@ -27,47 +27,47 @@ describe("response options", () => {
     ).toEqual(["Continue", "Compare alternatives", "Show details", "Extra"]);
   });
 
-  it("derives contextual fallback choices when a provider omits the marker", () => {
+  it("shows no next-step cards when a reply has no trailer", () => {
     expect(parseResponseOptions("The migration reduced startup time by 40%.")).toEqual({
       text: "The migration reduced startup time by 40%.",
-      options: [
-        "Explain: “The migration reduced startup time by 40%”",
-        "Verify: “The migration reduced startup time by 40%”",
-        "Next step for: “The migration reduced startup time by 40%”",
-      ],
+      options: [],
     });
   });
 
-  it("does not expose a malformed transport trailer", () => {
+  it("does not invent fallback cards for a short correction or acknowledgement", () => {
+    expect(parseResponseOptions("You're right.")).toEqual({ text: "You're right.", options: [] });
+    expect(parseResponseOptions("Done.")).toEqual({ text: "Done.", options: [] });
+  });
+
+  it("does not invent fallback cards when the user asked to stop suggesting", () => {
+    expect(parseResponseOptions("I'll stop suggesting next steps.")).toEqual({
+      text: "I'll stop suggesting next steps.",
+      options: [],
+    });
+  });
+
+  it("does not invent fallback cards from a malformed or singleton trailer", () => {
     expect(parseResponseOptions("The migration is ready.\n<velarix_options>not-json</velarix_options>")).toEqual({
       text: "The migration is ready.",
-      options: [
-        "Explain: “The migration is ready”",
-        "Verify: “The migration is ready”",
-        "Next step for: “The migration is ready”",
-      ],
+      options: [],
+    });
+    expect(parseResponseOptions('Ready.\n<velarix_options>["Only one"]</velarix_options>')).toEqual({
+      text: "Ready.",
+      options: [],
     });
   });
 
-  it("keeps even minimal completion fallbacks tied to the completed result", () => {
-    expect(parseResponseOptions("Done.").options).toEqual([
-      "Review the completed result",
-      "Verify the completed result",
-      "Choose the next step",
-    ]);
+  it("does not treat an ordinary sentence as Explain/Verify/Next-step labels", () => {
+    const text =
+      "The deployment completed with database migrations, cache warming, health checks, and traffic validation all successful.";
+    expect(parseResponseOptions(text)).toEqual({ text, options: [] });
   });
 
-  it("keeps long fallback labels bounded without losing response context", () => {
-    const text = "The deployment completed with database migrations, cache warming, health checks, and traffic validation all successful.";
-    const options = parseResponseOptions(text).options;
-    expect(options[0]).toContain("The deployment completed with database migrations");
-    expect(options.every((option) => option.length <= 92)).toBe(true);
-    expect(options.some((option) => option.includes("the response"))).toBe(false);
-  });
-
-  it("instructs providers to return a few user-selectable choices", () => {
-    expect(responseOptionsPrompt).toContain("2 to 4");
+  it("keeps the option format optional — never required every turn", () => {
+    expect(responseOptionsPrompt.toLowerCase()).toContain("you may offer");
     expect(responseOptionsPrompt).toContain("<velarix_options>");
+    expect(responseOptionsPrompt.toLowerCase()).not.toContain("end every");
+    expect(responseOptionsPrompt.toLowerCase()).not.toMatch(/every user-facing reply/);
   });
 
   it("does not attach post-turn A/B/C cards for Codex", () => {
