@@ -567,7 +567,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (event.itemType === "assistant_text") {
           const reply = parseResponseOptions(event.text);
           if (reply.text) pushMessage({ role: "bot", kind: "text", text: reply.text });
-          if (event.turnId && shouldAttachResponseOptions(event.provider)) {
+          if (event.turnId && shouldAttachResponseOptions(event.provider) && reply.options.length >= 2) {
             responseOptionsByTurn.set(event.turnId, reply.options);
           }
         } else if (event.itemType === "tool" && event.itemId) {

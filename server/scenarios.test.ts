@@ -140,7 +140,7 @@ afterAll(async () => {
 });
 
 describe("harness HTTP/SSE scenarios (fake CLIs)", () => {
-  it("claude turn: completed, states, option cards, usage, memory file", async () => {
+  it("claude turn: completed, states, no unsolicited next-step cards, usage, memory file", async () => {
     const bot = await addBot("Claude Scout", claudeSel);
     await send(bot.id, "remember I like short answers");
 
@@ -157,8 +157,11 @@ describe("harness HTTP/SSE scenarios (fake CLIs)", () => {
     expect(after.usage.cost).toBe(0.01);
     const reply = after.messages.findLast((m: { kind: string; role: string }) => m.kind === "text" && m.role === "bot");
     expect(reply.text).toContain("hello from fake claude");
-    const card = after.messages.findLast((m: { kind: string; card?: { requestId?: string } }) => m.kind === "options" && !m.card?.requestId);
-    expect(card?.card?.options?.length).toBeGreaterThanOrEqual(2);
+    const nextStep = after.messages.findLast(
+      (m: { kind: string; card?: { title?: string } }) =>
+        m.kind === "options" && m.card?.title === "What would you like to do?",
+    );
+    expect(nextStep).toBeUndefined();
 
     const memory = await untilFile(join(h.home, ".velarixbot", "memory", `${bot.id}.md`), (text) =>
       text.includes(DISTILL_MARKER) && /concise replies/i.test(text),
