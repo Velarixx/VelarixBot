@@ -253,7 +253,7 @@ export function Sidebar() {
           className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50"
         >
           <Puzzle size={20} className="text-ink-secondary" />
-          <span className="text-[14px] text-ink">Plugins</span>
+          <span className="text-[14px] text-ink">Apps</span>
         </button>
         <button
           onClick={() => dispatch({ type: "toggleAppSettings" })}

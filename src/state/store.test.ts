@@ -93,3 +93,23 @@ describe("composer prompt queue (store path)", () => {
     expect(two.bots.map((b) => b.id)).toEqual(["bot-2"]);
   });
 });
+
+describe("per-bot enabledApps (hub enable)", () => {
+  it("PATCHes only the selected bot — a second bot's list is unchanged", () => {
+    let state = reducer(initialState, {
+      type: "hydrate",
+      bots: [
+        bot({ id: "bot-a", name: "Scout", enabledApps: [] }),
+        bot({ id: "bot-b", name: "Helper", enabledApps: ["gmail"] }),
+      ],
+    });
+    state = reducer(state, { type: "select", id: "bot-a" });
+    state = reducer(state, {
+      type: "updateBot",
+      botId: state.selectedId,
+      patch: { enabledApps: ["slack"] },
+    });
+    expect(state.bots.find((b) => b.id === "bot-a")?.enabledApps).toEqual(["slack"]);
+    expect(state.bots.find((b) => b.id === "bot-b")?.enabledApps).toEqual(["gmail"]);
+  });
+});

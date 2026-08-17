@@ -1,21 +1,14 @@
-// Connected apps marketplace, backed by Composio Connect. Catalog comes
-// from /api/connectors/catalog — the full toolkit list with logos when a
-// Composio API key is configured, a curated set otherwise. Icons resolve
-// logo → favicon → monogram.
+// Apps hub — one place to see the Composio catalog, connection status,
+// Connect/Disconnect, and per-bot enable for the selected bot. Connections
+// stay workspace-wide; enabledApps is the per-bot mount gate (empty = none).
+// Built-in harness MCP is not inventory. No user-authored stdio/HTTP MCP.
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, RefreshCw, X } from "lucide-react";
 import { api, useStore } from "@/state/store";
+import { CONNECTOR_PATHS, enabledAppSlugs, filterCatalogCards, hubUnconfiguredCopy, toggleEnabledApp, type CatalogCard } from "@/lib/apps";
 import { cn } from "@/lib/cn";
 
-interface ToolkitCard {
-  slug: string;
-  label: string;
-  blurb: string;
-  logo: string | null;
-  domain: string | null;
-}
-
-function ServiceIcon({ card }: { card: ToolkitCard }) {
+function ServiceIcon({ card }: { card: CatalogCard }) {
   // 0 = official logo, 1 = favicon by domain, 2 = monogram
   const [stage, setStage] = useState(card.logo ? 0 : card.domain ? 1 : 2);
   if (stage === 0 && card.logo) {
@@ -39,8 +32,9 @@ function ServiceIcon({ card }: { card: ToolkitCard }) {
 }
 
 export function PluginsPanel() {
-  const { dispatch } = useStore();
-  const [cards, setCards] = useState<ToolkitCard[] | null>(null);
+  const { state, dispatch } = useStore();
+  const bot = state.bots.find((b) => b.id === state.selectedId) ?? state.bots[0];
+  const [cards, setCards] = useState<CatalogCard[] | null>(null);
   const [source, setSource] = useState<"api" | "curated">("curated");
   const [configured, setConfigured] = useState(true);
   const [status, setStatus] = useState<Record<string, { connected: boolean }>>({});
@@ -48,11 +42,12 @@ export function PluginsPanel() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const unconfigured = hubUnconfiguredCopy();
 
   const refreshStatus = useCallback((slugs: string[]) => {
     if (!slugs.length) return Promise.resolve();
     setRefreshing(true);
-    return api(`/api/connectors?services=${slugs.join(",")}`)
+    return api(CONNECTOR_PATHS.status(slugs))
       .then((r) => setStatus(r.services ?? {}))
       .catch(() => {})
       .finally(() => setRefreshing(false));
@@ -60,13 +55,13 @@ export function PluginsPanel() {
 
   useEffect(() => {
     let alive = true;
-    api("/api/connectors/catalog")
+    api(CONNECTOR_PATHS.catalog)
       .then((r) => {
         if (!alive) return;
         setCards(r.cards ?? []);
         setSource(r.source ?? "curated");
         setConfigured(Boolean(r.configured));
-        if (r.configured) void refreshStatus((r.cards ?? []).map((c: ToolkitCard) => c.slug).slice(0, 40));
+        if (r.configured) void refreshStatus((r.cards ?? []).map((c: CatalogCard) => c.slug).slice(0, 40));
       })
       .catch((e) => alive && setError(e.message));
     return () => {
@@ -77,14 +72,14 @@ export function PluginsPanel() {
   const connect = (slug: string) => {
     setBusySlug(slug);
     setError(null);
-    api(`/api/connectors/${slug}/authorize`, { method: "POST" })
+    api(CONNECTOR_PATHS.authorize(slug), { method: "POST" })
       .then(({ url }) => {
         window.open(url);
         // the user finishes OAuth in the browser; poll a few times to catch it
         let tries = 0;
         const timer = setInterval(() => {
           void refreshStatus([slug]);
-          if (++tries >= 6 || status[slug]?.connected) clearInterval(timer);
+          if (++tries >= 6) clearInterval(timer);
         }, 5000);
       })
       .catch((e) => setError(e.message))
@@ -93,15 +88,22 @@ export function PluginsPanel() {
 
   const disconnect = (slug: string) => {
     setBusySlug(slug);
-    api(`/api/connectors/${slug}`, { method: "DELETE" })
+    api(CONNECTOR_PATHS.disconnect(slug), { method: "DELETE" })
       .then(() => refreshStatus([slug]))
       .catch((e) => setError(e.message))
       .finally(() => setBusySlug(null));
   };
 
-  const visible = (cards ?? []).filter(
-    (c) => !search || `${c.label} ${c.slug} ${c.blurb}`.toLowerCase().includes(search.toLowerCase()),
-  );
+  const toggleEnable = (slug: string) => {
+    if (!bot) return;
+    dispatch({
+      type: "updateBot",
+      botId: bot.id,
+      patch: { enabledApps: toggleEnabledApp(enabledAppSlugs(bot), slug) },
+    });
+  };
+
+  const visible = filterCatalogCards(cards ?? [], search);
 
   return (
     <div
@@ -109,11 +111,11 @@ export function PluginsPanel() {
       onClick={() => dispatch({ type: "togglePlugins", open: false })}
     >
       <div
-        className="animate-pop-in flex max-h-[80%] w-[560px] flex-col rounded-2xl border border-hairline/50 bg-panel p-5 shadow-2xl"
+        className="animate-pop-in flex max-h-[80%] w-[640px] flex-col rounded-2xl border border-hairline/50 bg-panel p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
-          <div className="text-[17px] font-semibold text-ink">Connected apps</div>
+          <div className="text-[17px] font-semibold text-ink">Apps</div>
           <div className="flex items-center gap-1">
             <button
               onClick={() => refreshStatus(visible.map((c) => c.slug).slice(0, 40))}
@@ -125,18 +127,27 @@ export function PluginsPanel() {
             <button
               onClick={() => dispatch({ type: "togglePlugins", open: false })}
               className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
+              aria-label="Close apps"
             >
               <X size={18} />
             </button>
           </div>
         </div>
         <div className="mt-1 text-[13px] text-ink-secondary">
-          Apps your bots can use through Composio Connect.
+          Connect apps through Composio Connect. Connections are workspace-wide.
+          {bot ? (
+            <>
+              {" "}
+              Enable is per bot — currently <span className="text-ink">{bot.name}</span>.
+            </>
+          ) : (
+            " Enable is per bot."
+          )}
         </div>
 
         {!configured && (
           <div className="mt-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[13px] text-warning">
-            No Composio Connect key yet —{" "}
+            {unconfigured.title}{" "}
             <button
               className="underline"
               onClick={() => {
@@ -144,7 +155,7 @@ export function PluginsPanel() {
                 dispatch({ type: "toggleAppSettings", open: true });
               }}
             >
-              add one in App Settings
+              {unconfigured.action}
             </button>{" "}
             to connect apps.
           </div>
@@ -182,6 +193,7 @@ export function PluginsPanel() {
             visible.map((card, i) => {
               const connected = status[card.slug]?.connected;
               const busy = busySlug === card.slug;
+              const enabled = bot ? enabledAppSlugs(bot).includes(card.slug) : false;
               return (
                 <div
                   key={card.slug}
@@ -194,15 +206,34 @@ export function PluginsPanel() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 text-[14px] font-medium text-ink">
                       {card.label}
-                      {connected && <span className="size-1.5 rounded-full bg-success" />}
+                      {connected && <span className="size-1.5 rounded-full bg-success" title="Connected" />}
                     </div>
                     <div className="truncate text-[12px] text-ink-secondary">{card.blurb}</div>
                   </div>
                   <button
+                    type="button"
+                    role="switch"
+                    disabled={!bot}
+                    aria-checked={enabled}
+                    aria-label={`${enabled ? "Disable" : "Enable"} ${card.label}${bot ? ` for ${bot.name}` : ""}`}
+                    onClick={() => toggleEnable(card.slug)}
+                    className={cn(
+                      "relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors disabled:opacity-50",
+                      enabled ? "bg-accent" : "bg-raised",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "absolute top-[3px] size-4 rounded-full bg-white transition-all",
+                        enabled ? "left-[17px]" : "left-[3px]",
+                      )}
+                    />
+                  </button>
+                  <button
                     disabled={!configured || busy}
                     onClick={() => (connected ? disconnect(card.slug) : connect(card.slug))}
                     className={cn(
-                      "w-[92px] rounded-lg py-1.5 text-[13px] disabled:opacity-50",
+                      "w-[92px] shrink-0 rounded-lg py-1.5 text-[13px] disabled:opacity-50",
                       connected
                         ? "bg-raised text-ink-secondary hover:text-danger"
                         : "bg-raised text-ink hover:bg-raised-hover",
@@ -221,7 +252,9 @@ export function PluginsPanel() {
             })
           )}
           {cards !== null && visible.length === 0 && (
-            <div className="py-8 text-center text-[13px] text-ink-secondary">No apps match.</div>
+            <div className="py-8 text-center text-[13px] text-ink-secondary">
+              {cards.length === 0 ? "No apps in the catalog." : "No apps match."}
+            </div>
           )}
         </div>
       </div>
