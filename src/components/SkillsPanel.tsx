@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { BookOpen, Loader2, Trash2, X } from "lucide-react";
 import { api, useStore, type Skill } from "@/state/store";
+import { enabledSkillIds, toggleSkillId } from "@/lib/skills";
+import { cn } from "@/lib/cn";
 
 interface TeachSession {
   id: string;
@@ -56,15 +58,19 @@ export function SkillsPanel() {
       await api(`/api/skills/${skill.id}`, { method: "DELETE" });
       setSkills((list) => list.filter((item) => item.id !== skill.id));
       for (const bot of state.bots) {
-        if (bot.skillId === skill.id) dispatch({ type: "updateBot", botId: bot.id, patch: { skillId: "" } });
+        const ids = enabledSkillIds(bot);
+        if (!ids.includes(skill.id)) continue;
+        dispatch({ type: "updateBot", botId: bot.id, patch: { enabledSkills: ids.filter((id) => id !== skill.id) } });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   };
 
-  const attachToBot = async (botId: string, skillId: string) => {
-    dispatch({ type: "updateBot", botId, patch: { skillId } });
+  const toggleOnBot = (botId: string, skillId: string) => {
+    const bot = state.bots.find((item) => item.id === botId);
+    if (!bot) return;
+    dispatch({ type: "updateBot", botId, patch: { enabledSkills: toggleSkillId(enabledSkillIds(bot), skillId) } });
   };
 
   return (
@@ -78,7 +84,7 @@ export function SkillsPanel() {
       </div>
       <div className="flex-1 overflow-y-auto px-4 pb-4">
         <p className="text-[13px] leading-relaxed text-ink-secondary">
-          Review taught skills, attach one to a bot or a routine, and keep recordings after a harness restart. Frames are counted, not replayed.
+          Review taught skills and enable them on any bot. A bot can use more than one skill. Frames are counted, not replayed.
         </p>
         {error && <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 p-2 text-[12px] text-danger">{error}</div>}
 
@@ -140,25 +146,40 @@ export function SkillsPanel() {
                       rows={6}
                       className="mt-2 w-full resize-y rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12px] text-ink"
                     />
-                    <label className="mt-2 block text-[11px] text-ink-secondary">
-                      Attach to bot
-                      <select
-                        value={state.bots.find((item) => item.skillId === skill.id)?.id ?? ""}
-                        onChange={(e) => {
-                          const previous = state.bots.find((item) => item.skillId === skill.id);
-                          if (previous) dispatch({ type: "updateBot", botId: previous.id, patch: { skillId: "" } });
-                          if (e.target.value) void attachToBot(e.target.value, skill.id);
-                        }}
-                        className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink"
-                      >
-                        <option value="">None</option>
-                        {state.bots.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <div className="mt-2">
+                      <div className="text-[11px] text-ink-secondary">Enable on bots</div>
+                      <div className="mt-1 overflow-hidden rounded-lg border border-hairline/40">
+                        {state.bots.map((item, i) => {
+                          const on = enabledSkillIds(item).includes(skill.id);
+                          return (
+                            <div
+                              key={item.id}
+                              className={cn("flex items-center justify-between gap-3 px-2 py-1.5", i > 0 && "border-t border-hairline/40")}
+                            >
+                              <span className="truncate text-[12px] text-ink">{item.name}</span>
+                              <button
+                                type="button"
+                                role="switch"
+                                aria-checked={on}
+                                aria-label={`${on ? "Disable" : "Enable"} ${skill.name} on ${item.name}`}
+                                onClick={() => toggleOnBot(item.id, skill.id)}
+                                className={cn(
+                                  "relative h-[20px] w-[34px] shrink-0 rounded-full transition-colors",
+                                  on ? "bg-accent" : "bg-raised",
+                                )}
+                              >
+                                <span
+                                  className={cn(
+                                    "absolute top-[2px] size-4 rounded-full bg-white transition-all",
+                                    on ? "left-[14px]" : "left-[2px]",
+                                  )}
+                                />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 );
               })}

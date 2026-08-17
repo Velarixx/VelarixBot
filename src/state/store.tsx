@@ -103,7 +103,9 @@ export interface Bot {
   alwaysAllow?: boolean;
   /** Connected-app slugs this bot may use. Empty/missing = none. */
   enabledApps?: string[];
-  /** Taught skill attached to every turn this bot runs. */
+  /** Taught skills this bot injects on every turn (library enable set). */
+  enabledSkills?: string[];
+  /** Legacy single attach. Empty enabledSkills + skillId set → [skillId]. */
   skillId?: string;
   /** Other bots sharing this transcript (group mention / ask_bot). */
   threadParticipants?: string[];
@@ -203,7 +205,7 @@ type Action =
   | { type: "instances"; instances: InstanceInfo[] }
   | { type: "configStatus"; config: ConfigStatus }
   | { type: "select"; id: string }
-  | { type: "send"; botId: string; text: string; attachments?: Array<{ path: string; mime?: string }> }
+  | { type: "send"; botId: string; text: string; attachments?: Array<{ path: string; mime?: string }>; mentionSkillIds?: string[] }
   | { type: "enqueue"; botId: string; item: QueuedPrompt }
   | { type: "cancelQueued"; botId: string; id: string }
   | { type: "flushQueue"; botId: string }
@@ -267,6 +269,7 @@ type Action =
           | "requireApproval"
           | "alwaysAllow"
           | "enabledApps"
+          | "enabledSkills"
           | "skillId"
         >
       >;
@@ -630,11 +633,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
     let queueSeq = 0;
     const posting = new Set<string>();
-    const postMessage = (botId: string, text: string, attachments?: Array<{ path: string; mime?: string }>) => {
+    const postMessage = (
+      botId: string,
+      text: string,
+      attachments?: Array<{ path: string; mime?: string }>,
+      mentionSkillIds?: string[],
+    ) => {
       posting.add(botId);
       api(`/api/bots/${botId}/messages`, {
         method: "POST",
-        body: JSON.stringify({ text, attachments: attachments ?? [] }),
+        body: JSON.stringify({ text, attachments: attachments ?? [], mentionSkillIds: mentionSkillIds ?? [] }),
       })
         .catch((e) => {
           rawDispatch({ type: "botPatched", bot: { id: botId, busy: false } });
@@ -654,12 +662,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               id: `q-${++queueSeq}`,
               text: action.text,
               attachments: action.attachments ?? [],
+              mentionSkillIds: action.mentionSkillIds ?? [],
             },
           });
           return;
         }
         rawDispatch(action);
-        postMessage(action.botId, action.text, action.attachments);
+        postMessage(action.botId, action.text, action.attachments, action.mentionSkillIds);
         return;
       }
       if (action.type === "flushQueue") {
@@ -667,7 +676,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const { next } = takeNext(stateRef.current.queued[action.botId] ?? []);
         if (!bot || bot.busy || posting.has(action.botId) || !next) return;
         rawDispatch(action);
-        postMessage(action.botId, next.text, next.attachments);
+        postMessage(action.botId, next.text, next.attachments, next.mentionSkillIds);
         return;
       }
       rawDispatch(action);

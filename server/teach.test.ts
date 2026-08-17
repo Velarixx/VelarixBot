@@ -7,6 +7,7 @@ import {
   appendTeachFrame,
   completeTeachSession,
   deleteSkill,
+  deleteSkillsForBot,
   distillSkill,
   distillSkillMarkdown,
   getRecordingSession,
@@ -17,6 +18,7 @@ import {
   saveSkill,
   skillPrompt,
   skillSystemNote,
+  skillsForTurn,
   startPersistedTeachSession,
 } from "./teach.ts";
 
@@ -85,6 +87,31 @@ describe("teach-a-task distill", () => {
     expect(getSkill(skill.id)).toBeNull();
     expect(skillSystemNote(skill)).toContain("1. Open Chrome");
     expect(skillSystemNote(null)).toBe("");
+  });
+
+  it("injects every enabled skill in stable order and keeps extras", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    const a = saveSkill({ name: "A", botId: "bot-1", markdown: "# Skill A\n\n1. Alpha\n" });
+    const b = saveSkill({ name: "B", botId: "bot-1", markdown: "# Skill B\n\n1. Bravo\n" });
+    const c = saveSkill({ name: "C", botId: "bot-2", markdown: "# Skill C\n\n1. Charlie\n" });
+    const note = skillSystemNote(skillsForTurn({ enabledSkills: [a.id, b.id] }, [c.id]));
+    expect(note).toContain("Skill A");
+    expect(note).toContain("Skill B");
+    expect(note).toContain("Skill C");
+    expect(note.indexOf("Skill A")).toBeLessThan(note.indexOf("Skill B"));
+    expect(note.indexOf("Skill B")).toBeLessThan(note.indexOf("Skill C"));
+    const afterDisable = skillSystemNote(skillsForTurn({ enabledSkills: [b.id] }, []));
+    expect(afterDisable).toContain("Skill B");
+    expect(afterDisable).not.toContain("Skill A");
+  });
+
+  it("keeps markdown when another bot still enables a deleted bot's skill", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    const skill = saveSkill({ name: "Shared", botId: "bot-x", markdown: "# Shared\n\n1. Keep me\n" });
+    deleteSkillsForBot("bot-x", [skill.id]);
+    expect(getSkill(skill.id)?.markdown).toContain("Keep me");
+    deleteSkillsForBot("bot-x", []);
+    expect(getSkill(skill.id)).toBeNull();
   });
 
   it("persists an in-progress teach session and reloads it without a live box", () => {

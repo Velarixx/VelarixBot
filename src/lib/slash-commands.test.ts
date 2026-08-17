@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterSlashCommands,
   moveHighlight,
+  slashMenuItems,
   slashQueryAt,
   SLASH_COMMANDS,
 } from "./slash-commands";
@@ -43,6 +44,26 @@ describe("filterSlashCommands", () => {
     expect(idle).toEqual([{ command: SLASH_COMMANDS.find((c) => c.id === "stop"), enabled: false }]);
     const busy = filterSlashCommands("stop", { busy: true });
     expect(busy).toEqual([{ command: SLASH_COMMANDS.find((c) => c.id === "stop"), enabled: true }]);
+  });
+});
+
+describe("slashMenuItems", () => {
+  it("keeps the existing app commands and lists this bot's enabled skills", () => {
+    const items = slashMenuItems("", { busy: false }, [
+      { id: "s1", name: "File a report" },
+      { id: "s2", name: "Inbox sweep" },
+    ]);
+    expect(items.filter((i) => i.kind === "command").map((i) => i.kind === "command" && i.hit.command.name)).toEqual(
+      SLASH_COMMANDS.map((c) => c.name),
+    );
+    expect(items.filter((i) => i.kind === "skill").map((i) => i.kind === "skill" && i.hit.skill.name)).toEqual([
+      "File a report",
+      "Inbox sweep",
+    ]);
+  });
+
+  it("does not invent new app commands", () => {
+    expect(SLASH_COMMANDS.map((c) => c.name)).toEqual(["new", "model", "computer", "attach", "stop", "help"]);
   });
 });
 

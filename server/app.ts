@@ -167,7 +167,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     now: () => clock.now(),
     broadcast,
     bot: (id) => bots.bot(id),
-    startTurn: (botId, text) => turns.startTurn(botId, text),
+    startTurn: (botId, text, opts) => turns.startTurn(botId, text, opts),
     getSkill,
     skillPrompt,
   });

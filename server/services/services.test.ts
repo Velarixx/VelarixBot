@@ -303,7 +303,22 @@ describe("bots service", () => {
     });
     bots.clearSkillRefs("skill-1");
     expect(bots.bot(bot.id)?.skillId).toBeUndefined();
+    expect(bots.bot(bot.id)?.enabledSkills ?? []).toEqual([]);
     expect(repos.routines.get("r1")?.skillId).toBeUndefined();
+  });
+
+  it("enabledSkills is a library set: attach B does not clear A", () => {
+    const bot1 = bots.createBot();
+    const bot2 = bots.createBot();
+    bots.patchBot(bot1.id, { enabledSkills: ["a"] });
+    bots.patchBot(bot2.id, { enabledSkills: ["b"] });
+    expect(bots.bot(bot1.id)?.enabledSkills).toEqual(["a"]);
+    expect(bots.bot(bot2.id)?.enabledSkills).toEqual(["b"]);
+    bots.patchBot(bot1.id, { enabledSkills: ["a", "b"] });
+    expect(bots.bot(bot1.id)?.enabledSkills).toEqual(["a", "b"]);
+    expect(bots.bot(bot2.id)?.enabledSkills).toEqual(["b"]);
+    bots.patchBot(bot1.id, { enabledSkills: ["b"] });
+    expect(bots.bot(bot1.id)?.enabledSkills).toEqual(["b"]);
   });
 
   it("deleteBot removes transcript rows and the workspace dir", () => {
@@ -322,7 +337,7 @@ describe("routines service (fake clock)", () => {
   let bots: BotsService;
   let routines: RoutinesService;
   let now: number;
-  let started: Array<{ botId: string; text: string }>;
+  let started: Array<{ botId: string; text: string; extraSkillIds?: string[] }>;
   let frames: unknown[];
   let busy: boolean;
 
@@ -335,8 +350,12 @@ describe("routines service (fake clock)", () => {
         const b = bots.bot(id);
         return b ? { id: b.id, threadId: b.threadId, busy } : null;
       },
-      startTurn: async (botId, text) => {
-        started.push({ botId, text });
+      startTurn: async (botId, text, opts) => {
+        started.push({
+          botId,
+          text,
+          ...(opts?.extraSkillIds?.length ? { extraSkillIds: opts.extraSkillIds } : {}),
+        });
       },
       getSkill: () => null,
       skillPrompt: (_skill, prompt) => prompt,
@@ -570,6 +589,17 @@ describe("routines service (fake clock)", () => {
     busy = true;
     expect(await routines.runRoutine(routine.id)).toEqual({ started: false, reason: "bot busy" });
     expect(await routines.runRoutine("nope")).toEqual({ started: false, reason: "no such routine" });
+  });
+
+  it("routine fire passes the attached skill as an extra without rewriting the stored prompt", async () => {
+    const { bot, routine } = makeRoutine({ skillId: "skill-c", prompt: "Stored prompt" });
+    expect((await routines.runRoutine(routine.id)).started).toBe(true);
+    expect(started).toEqual([{ botId: bot.id, text: "Stored prompt", extraSkillIds: ["skill-c"] }]);
+    routines.settleTurn(bot.threadId, true);
+    started = [];
+    expect((await routines.runRoutine(routine.id, { prompt: "This run only" })).started).toBe(true);
+    expect(started).toEqual([{ botId: bot.id, text: "This run only", extraSkillIds: ["skill-c"] }]);
+    expect(routines.routine(routine.id)?.prompt).toBe("Stored prompt");
   });
 
   it("stamps clock schedules with the host time zone at create and edit", () => {

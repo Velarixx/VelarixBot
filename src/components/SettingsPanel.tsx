@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, Trash2, X } from "lucide-react";
 import { api, useStore, type Bot, type Skill } from "@/state/store";
+import { enabledSkillIds, toggleSkillId } from "@/lib/skills";
 import { BotFace, MausAvatar } from "./Avatar";
 import {
   PICKABLE_STATES,
@@ -35,7 +36,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const patch = (
     p: Partial<
-      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "mascotPinned" | "iconShape" | "avatarNonce" | "avatarImageHash" | "requireApproval" | "alwaysAllow" | "enabledApps" | "skillId">
+      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "mascotPinned" | "iconShape" | "avatarNonce" | "avatarImageHash" | "requireApproval" | "alwaysAllow" | "enabledApps" | "enabledSkills" | "skillId">
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   // Zero-key seeded re-roll: bump the persisted nonce and let the server
@@ -136,6 +137,10 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const toggleApp = (slug: string) => {
     const current = bot.enabledApps ?? [];
     patch({ enabledApps: current.includes(slug) ? current.filter((s) => s !== slug) : [...current, slug] });
+  };
+
+  const toggleSkill = (skillId: string) => {
+    patch({ enabledSkills: toggleSkillId(enabledSkillIds(bot), skillId) });
   };
 
   const persistMemory = (next: { user: string; distilled: string; workspace: string }) => {
@@ -363,20 +368,47 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             />
           </Field>
 
-          <Field label="Taught skill">
-            <select
-              className={inputCls}
-              value={bot.skillId ?? ""}
-              onChange={(e) => patch({ skillId: e.target.value || "" })}
-            >
-              <option value="">None</option>
-              {skills.map((skill) => (
-                <option key={skill.id} value={skill.id}>
-                  {skill.name}
-                </option>
-              ))}
-            </select>
-          </Field>
+          <div className="rounded-xl bg-card p-4">
+            <div className="text-[15px] font-medium text-ink">Skills this bot may use</div>
+            <div className="mt-0.5 text-[13px] text-ink-secondary">
+              Skills are a workspace library. Only toggled skills are injected on every turn for this bot.
+            </div>
+            {skills.length === 0 ? (
+              <div className="mt-3 text-[12px] text-ink-secondary">No skills yet — teach one from a computer session or save a recipe.</div>
+            ) : (
+              <div className="mt-3 max-h-56 overflow-y-auto rounded-lg border border-hairline/40">
+                {skills.map((skill, i) => {
+                  const on = enabledSkillIds(bot).includes(skill.id);
+                  return (
+                    <div
+                      key={skill.id}
+                      className={cn("flex items-center justify-between gap-3 px-3 py-2", i > 0 && "border-t border-hairline/40")}
+                    >
+                      <span className="truncate text-[13px] text-ink">{skill.name}</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={on}
+                        aria-label={`${on ? "Disable" : "Enable"} ${skill.name}`}
+                        onClick={() => toggleSkill(skill.id)}
+                        className={cn(
+                          "relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors",
+                          on ? "bg-accent" : "bg-raised",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "absolute top-[3px] size-4 rounded-full bg-white transition-all",
+                            on ? "left-[17px]" : "left-[3px]",
+                          )}
+                        />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           <div className="rounded-xl bg-card p-4">
             <div className="text-[15px] font-medium text-ink">Memory</div>
