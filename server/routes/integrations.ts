@@ -19,7 +19,6 @@ import {
   createSession,
   publicSessions,
   revokeSession,
-  sessionUserId,
 } from "../composio-sessions.ts";
 import type { AppConfig } from "../config.ts";
 import { loadConfig, persistableFleet, saveConfig } from "../config.ts";

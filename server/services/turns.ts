@@ -197,7 +197,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     };
   }
 
-  function composioIntegration(allowedApps: string[], sessionEnv: Record<string, string>) {
+  function composioIntegration(sessionEnv: Record<string, string>) {
     return {
       command: process.execPath,
       args: [composioProxyPath],
@@ -956,7 +956,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (bot.enabledApps?.length && composioSessionKey(cfg)) {
           const session = await ensureBotSession(cfg, bot.id, bot.enabledApps);
           if (session) {
-            integrations.composio = composioIntegration(bot.enabledApps, sessionProxyEnv(session, bot.enabledApps));
+            integrations.composio = composioIntegration(sessionProxyEnv(session, bot.enabledApps));
           }
         }
         // The bot's computer BINDING resolves to a provider; only drivers
