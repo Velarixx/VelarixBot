@@ -44,7 +44,13 @@ export function createIntegrationsRoutes(deps: {
     return {
       xai: { configured: Boolean(cfg.xai?.key) },
       composio: { configured: Boolean(cfg.composio?.key), apiKeyConfigured: Boolean(cfg.composio?.apiKey) },
-      box: { configured: Boolean(cfg.box?.token) },
+      // shared/namePrefix are settings, not secrets — echoed only when set
+      // so the default shape (and its consumers) stays byte-identical
+      box: {
+        configured: Boolean(cfg.box?.token),
+        ...(cfg.box?.shared === true ? { shared: true } : {}),
+        ...(typeof cfg.box?.namePrefix === "string" && cfg.box.namePrefix ? { namePrefix: cfg.box.namePrefix } : {}),
+      },
       github: { configured: Boolean(cfg.github?.token) },
       openai: { configured: Boolean(cfg.openai?.key) },
       openrouter: { configured: Boolean(cfg.openrouter?.key) },
@@ -297,6 +303,21 @@ export function createIntegrationsRoutes(deps: {
       if (!Object.keys(patch).length) {
         json(res, 400, { error: "nothing to save" });
         return true;
+      }
+      // shared-box knobs are strict-decoded at provider create; reject bad
+      // types at the door so a Settings save cannot shadow the provider
+      if (patch.box) {
+        const b = patch.box as Record<string, unknown>;
+        const bad =
+          (b.shared !== undefined && typeof b.shared !== "boolean" && "box.shared must be a boolean") ||
+          (b.namePrefix !== undefined && typeof b.namePrefix !== "string" && "box.namePrefix must be a string") ||
+          (b.leaseWaitMs !== undefined &&
+            (typeof b.leaseWaitMs !== "number" || !Number.isFinite(b.leaseWaitMs) || b.leaseWaitMs <= 0) &&
+            "box.leaseWaitMs must be a positive number of milliseconds");
+        if (bad) {
+          json(res, 400, { error: bad });
+          return true;
+        }
       }
       await saveConfig(patch);
       Object.assign(cfg, loadConfig());

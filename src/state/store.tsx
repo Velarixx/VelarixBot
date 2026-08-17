@@ -118,7 +118,7 @@ export interface Bot {
 export interface ConfigStatus {
   xai?: { configured: boolean };
   composio: { configured: boolean; apiKeyConfigured?: boolean };
-  box: { configured: boolean };
+  box: { configured: boolean; shared?: boolean; namePrefix?: string };
   github?: { configured: boolean };
   openai?: { configured: boolean };
   openrouter?: { configured: boolean };
