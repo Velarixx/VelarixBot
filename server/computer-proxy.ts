@@ -16,6 +16,17 @@
 const BOX_API = (process.env.OGB_BOX_URL ?? "").replace(/\/$/, "");
 const boxId = process.env.OGB_BOX_ID ?? "";
 const token = process.env.OGB_BOX_TOKEN ?? "";
+// Shared-box mode: the bot's own working dir on the box (set by the box
+// provider's spawn contract, sanitized there — [a-zA-Z0-9_-] under
+// ~/workspaces/). tmux does not persist across the REST commands endpoint,
+// so computer_exec re-establishes the cwd on every call. This proxy stays
+// dependency-free (packaged rule: node:*/relative only, and it imports
+// nothing), so the wrap mirrors wrapCommandInCwd in server/box.ts.
+const BOX_CWD = /^~\/workspaces\/[a-zA-Z0-9_-]+$/.test(process.env.OGB_BOX_CWD ?? "")
+  ? (process.env.OGB_BOX_CWD as string)
+  : "";
+const inBotCwd = (command: string) =>
+  BOX_CWD ? `mkdir -p ${BOX_CWD} && cd ${BOX_CWD} && {\n${command}\n}` : command;
 
 async function runOnBox(command: string, timeoutMs = 60_000) {
   if (!BOX_API || !boxId || !token) {
@@ -221,7 +232,7 @@ async function call(id: unknown, name: string, args: any) {
     return text(id, `scrolled ${args.direction} ${clicks}`);
   }
   if (name === "computer_exec") {
-    const out = await runOnBox(String(args.command ?? "").slice(0, 4000), 120_000);
+    const out = await runOnBox(inBotCwd(String(args.command ?? "").slice(0, 4000)), 120_000);
     return text(
       id,
       `exit ${out.exitCode}\n${out.stdout.slice(-6000)}${out.stderr ? `\n[stderr]\n${out.stderr.slice(-2000)}` : ""}`,

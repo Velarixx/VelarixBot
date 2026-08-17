@@ -51,11 +51,19 @@ export const BoxComputerProviderFactory: ComputerProviderFactory<BoxProviderConf
   decodeConfig,
 
   async create({ id, config, appConfig }): Promise<ComputerProvider> {
-    // Effective vendor config for the box client: the write-only token
-    // always comes from the live app config (cfg.box.token); the URL can be
+    // Strict decode of the shared-box knobs (cfg.box.shared / namePrefix /
+    // leaseWaitMs): an invalid type rejects create, and the registry
+    // downgrades this provider to an unavailable shadow — a bad config value
+    // must never crash boot.
+    box.decodeBoxSharing(appConfig);
+
+    // Effective vendor config for the box client: the write-only token and
+    // the shared-box knobs always come from the LIVE app config (the
+    // composition root mutates it in place on save, so a Settings toggle
+    // applies to the next operation without a restart); the URL can be
     // pinned per provider instance.
     const boxCfg = (): AppConfig => ({
-      box: { token: appConfig.box?.token, url: config.url ?? appConfig.box?.url },
+      box: { ...appConfig.box, url: config.url ?? appConfig.box?.url },
     });
     const token = () => appConfig.box?.token;
 
@@ -158,6 +166,11 @@ export const BoxComputerProviderFactory: ComputerProviderFactory<BoxProviderConf
             OGB_BOX_URL: box.boxApiBase(boxCfg()),
             OGB_BOX_ID: machineId,
             OGB_BOX_TOKEN: t,
+            // 2026-08-17 [VERIFY]: the computer-proxy MCP hits the Box REST
+            // commands endpoint DIRECTLY (computer-proxy.ts runOnBox), never
+            // execOnBox — so the shared-mode per-bot cwd must ride the spawn
+            // contract and be re-applied by the proxy's computer_exec tool.
+            ...(box.decodeBoxSharing(boxCfg()).shared ? { OGB_BOX_CWD: box.botBoxCwd(botId) } : {}),
           },
         };
       },

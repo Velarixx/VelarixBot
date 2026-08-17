@@ -43,14 +43,84 @@ async function boxJson(cfg: AppConfig, path: string, opts: RequestInit = {}) {
   return { ok: res.ok && body?.ok !== false, status: res.status, body };
 }
 
-/** Shared-name leftover from the single-VM era. New boxes are named per
- * bot; leftover shared VMs ("openmausbot-workspace") are not reused. */
+/** Base box name. Per-bot boxes are `<prefix>velarixbot-workspace-<botId>`;
+ * shared mode (cfg.box.shared, 3.2.4/D4) uses `<prefix>velarixbot-workspace`
+ * itself — one cloud computer for every bot in this install, Grok Bot-style.
+ * A stale same-name box from an earlier shared session IS reused: the disk
+ * persists and that is the point. (The pre-rename leftover was
+ * "openmausbot-workspace" — a different name, so it never collides.) */
 export const WORKSPACE_BOX_NAME = "velarixbot-workspace";
 
-/** Convenience isolation — same Box account/token, not a security boundary. */
-export function boxNameForBot(botId: string): string {
-  const safe = String(botId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48) || "bot";
-  return `${WORKSPACE_BOX_NAME}-${safe}`;
+/** 3.4/D3: how long a turn waits for the shared box before failing loud. */
+export const DEFAULT_LEASE_WAIT_MS = 10 * 60_000;
+
+/** Same sanitizer for bot ids and the install's name prefix (3.2.4/D4). */
+function sanitizeNamePart(value: string): string {
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48);
+}
+
+export interface BoxSharing {
+  shared: boolean;
+  namePrefix: string;
+  leaseWaitMs: number;
+}
+
+/** Strict decode of the shared-box knobs on cfg.box. Invalid types THROW a
+ * config error (like the box provider's url field) — the computer registry
+ * downgrades the provider to an unavailable shadow instead of crashing boot.
+ * namePrefix is sanitized like botIds; the default "" leaves today's names
+ * untouched. */
+export function decodeBoxSharing(cfg: AppConfig): BoxSharing {
+  const b = (cfg.box ?? {}) as NonNullable<AppConfig["box"]>;
+  if (b.shared !== undefined && typeof b.shared !== "boolean") {
+    throw new Error("box.shared must be a boolean");
+  }
+  if (b.namePrefix !== undefined && typeof b.namePrefix !== "string") {
+    throw new Error("box.namePrefix must be a string");
+  }
+  if (
+    b.leaseWaitMs !== undefined &&
+    (typeof b.leaseWaitMs !== "number" || !Number.isFinite(b.leaseWaitMs) || b.leaseWaitMs <= 0)
+  ) {
+    throw new Error("box.leaseWaitMs must be a positive number of milliseconds");
+  }
+  return {
+    shared: b.shared === true,
+    namePrefix: sanitizeNamePart(b.namePrefix ?? ""),
+    leaseWaitMs: b.leaseWaitMs ?? DEFAULT_LEASE_WAIT_MS,
+  };
+}
+
+/** The one shared box name for this install: `<prefix>velarixbot-workspace`. */
+export function sharedBoxName(cfg: AppConfig): string {
+  return `${decodeBoxSharing(cfg).namePrefix}${WORKSPACE_BOX_NAME}`;
+}
+
+/** Convenience isolation — same Box account/token, not a security boundary.
+ * Shared mode collapses every bot onto the exact prefixed shared name; the
+ * prefix (per install, D4) is what keeps two co-workers on one Box account
+ * from silently landing on the SAME box. */
+export function boxNameForBot(cfg: AppConfig, botId: string): string {
+  const { shared, namePrefix } = decodeBoxSharing(cfg);
+  if (shared) return `${namePrefix}${WORKSPACE_BOX_NAME}`;
+  const safe = sanitizeNamePart(botId) || "bot";
+  return `${namePrefix}${WORKSPACE_BOX_NAME}-${safe}`;
+}
+
+/** Per-bot working directory ON the shared box (mirrors the local
+ * ~/.velarixbot/workspaces/<botId> layout). runCommand has no cwd parameter
+ * and tmux does not persist across the REST commands endpoint, so the cwd
+ * is re-established by wrapping each command. */
+export function botBoxCwd(botId: string): string {
+  return `~/workspaces/${sanitizeNamePart(botId) || "bot"}`;
+}
+
+/** Wrap a (possibly multi-line) command so it runs in the bot's own
+ * workspace dir. Brace-group with newlines keeps multi-line commands and
+ * trailing comments intact; `cwd` is sanitizer-output only (no quoting
+ * needed, and the unquoted ~ must expand). */
+export function wrapCommandInCwd(cwd: string, command: string): string {
+  return `mkdir -p ${cwd} && cd ${cwd} && {\n${command}\n}`;
 }
 
 export async function runCommand(cfg: AppConfig, boxId: string, command: string, { timeoutMs = 120_000 } = {}) {
@@ -102,8 +172,54 @@ async function waitReady(cfg: AppConfig, boxId: string, budgetMs = 90_000) {
 
 export async function findBox(cfg: AppConfig, botId: string) {
   const { body } = await boxJson(cfg, "/boxes");
-  const named = boxNameForBot(botId);
+  // exact match on the resolved name — in shared mode that is the prefixed
+  // shared name, and a stale (archived) same-name box is reused on purpose:
+  // the disk persists across archive/resume
+  const named = boxNameForBot(cfg, botId);
   return (body?.boxes ?? []).find((b: any) => b.name === named && b.state !== "error") ?? null;
+}
+
+/** Migration helper (3.8): the old per-bot boxes this install strands when
+ * shared mode is toggled on. Lists ONLY boxes under this install's prefix
+ * (`<prefix>velarixbot-workspace-*`), never the exact shared name and never
+ * another install's prefix — anchored startsWith keeps "dyon-…" and
+ * unprefixed names disjoint in both directions. */
+export async function listStaleBotBoxes(cfg: AppConfig) {
+  const base = sharedBoxName(cfg);
+  const { body } = await boxJson(cfg, "/boxes");
+  return ((body?.boxes ?? []) as Array<{ id: string; name?: unknown; state?: string }>)
+    .filter((b) => typeof b.name === "string" && b.name.startsWith(`${base}-`))
+    .map((b) => ({ id: String(b.id), name: String(b.name), state: b.state ?? null }));
+}
+
+/** Confirm-gated destroy for the cleanup flow. Only ids that are CURRENTLY
+ * in this install's stale per-bot list are deleted — the shared box and
+ * other installs' boxes can never be named here.
+ *
+ * 2026-08-17 probe note: DELETE /boxes/{id} is the one vendor call agentcal
+ * never probed live, and no Box token exists in this build environment to
+ * probe it now. It is therefore treated as fallible end to end: a non-2xx
+ * (or missing) delete endpoint surfaces as a per-box error in the result,
+ * never a silent success. */
+export async function destroyStaleBotBoxes(cfg: AppConfig, boxIds: string[]) {
+  const stale = new Map((await listStaleBotBoxes(cfg)).map((b) => [b.id, b]));
+  const destroyed: Array<{ id: string; name: string }> = [];
+  const failed: Array<{ id: string; error: string }> = [];
+  for (const id of [...new Set(boxIds.map(String))]) {
+    const box = stale.get(id);
+    if (!box) {
+      failed.push({ id, error: "not one of this install's stale per-bot boxes" });
+      continue;
+    }
+    try {
+      const res = await boxJson(cfg, `/boxes/${id}`, { method: "DELETE" });
+      if (res.ok) destroyed.push({ id, name: box.name });
+      else failed.push({ id, error: `box delete failed (${res.status})` });
+    } catch (e) {
+      failed.push({ id, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { destroyed, failed };
 }
 
 function boxConfigured(cfg: AppConfig) {
@@ -119,7 +235,7 @@ export async function provisionBox(cfg: AppConfig, botId: string, botName: strin
   if (!boxConfigured(cfg)) {
     throw new Error('box provider not enabled — add {"box":{"token":"…"}} to ~/.velarixbot/config.json');
   }
-  const vmName = boxNameForBot(botId);
+  const vmName = boxNameForBot(cfg, botId);
   let box = await findBox(cfg, botId);
   let created = false;
   if (!box) {
@@ -194,13 +310,17 @@ export async function sleepBox(cfg: AppConfig, botId: string) {
   return { ok: true };
 }
 
-/** Owner-scoped shell for the Computer panel's console. */
+/** Owner-scoped shell for the Computer panel's console. On a shared box the
+ * command runs inside the bot's own ~/workspaces/<botId> so bots don't trip
+ * over each other's files by default (D2 still allows reading others'). */
 export async function execOnBox(cfg: AppConfig, botId: string, command: string) {
   const box = await findBox(cfg, botId);
   if (!box) throw new Error("no computer for this bot yet");
   const ready = await waitReady(cfg, box.id, 60_000);
   if (!ready) throw new Error("box did not wake");
-  const out = await runCommand(cfg, box.id, String(command ?? "").slice(0, 4000));
+  const trimmed = String(command ?? "").slice(0, 4000);
+  const wrapped = decodeBoxSharing(cfg).shared ? wrapCommandInCwd(botBoxCwd(botId), trimmed) : trimmed;
+  const out = await runCommand(cfg, box.id, wrapped);
   return { exitCode: out.exitCode, stdout: out.stdout.slice(-4000), stderr: out.stderr.slice(-2000) };
 }
 

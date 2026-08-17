@@ -10,6 +10,8 @@ export interface FakeBoxRecord {
   id: string;
   name: string | null;
   state: string;
+  /** Every shell command POSTed to this box, in order (cwd-wrap asserts). */
+  commands: string[];
 }
 
 export interface FakeBoxVendor {
@@ -56,7 +58,7 @@ export function startFakeBoxVendor(opts: { token: string }): Promise<FakeBoxVend
         return json(200, { ok: true, boxes: [...boxes.values()] });
       }
       if (path === "/boxes" && req.method === "POST") {
-        const box: FakeBoxRecord = { id: `box-${++seq}`, name: null, state: "idle" };
+        const box: FakeBoxRecord = { id: `box-${++seq}`, name: null, state: "idle", commands: [] };
         boxes.set(box.id, box);
         return json(200, { ok: true, box });
       }
@@ -69,8 +71,14 @@ export function startFakeBoxVendor(opts: { token: string }): Promise<FakeBoxVend
         if (typeof body.name === "string") box.name = body.name;
         return json(200, { ok: true, box });
       }
+      if (!m[2] && req.method === "DELETE") {
+        boxes.delete(box.id);
+        return json(200, { ok: true });
+      }
       if (m[2] === "commands" && req.method === "POST") {
-        return json(200, { ok: true, exitCode: 0, stdout: commandOutput(String(body.command ?? "")), stderr: "" });
+        const command = String(body.command ?? "");
+        box.commands.push(command);
+        return json(200, { ok: true, exitCode: 0, stdout: commandOutput(command), stderr: "" });
       }
       if (m[2] === "files" && req.method === "GET") {
         const filePath = url.searchParams.get("path") ?? "";
