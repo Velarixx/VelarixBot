@@ -22,7 +22,7 @@ import {
   sessionUserId,
 } from "../composio-sessions.ts";
 import type { AppConfig } from "../config.ts";
-import { loadConfig, saveConfig } from "../config.ts";
+import { loadConfig, persistableFleet, saveConfig } from "../config.ts";
 import { MAX_DELEGATION_DEPTH, queueDelegation } from "../delegations.ts";
 import type { ProviderRegistry } from "../harness/registry.ts";
 import { recallMemory, rememberNote } from "../memory.ts";
@@ -343,6 +343,38 @@ export function createIntegrationsRoutes(deps: {
   const api: RouteHandler = async ({ req, res, url, path, method }) => {
     // ── provider instances (model picker) ──
     if (method === "GET" && path === "/api/instances") {
+      json(res, 200, { instances: await registry.describe() });
+      return true;
+    }
+    // Per-engine CLI path. Instance-level only — never a per-bot override.
+    // Materialize the full persistable fleet so a single { cli } cannot
+    // replace the default map (instanceConfigs treats a non-empty authored
+    // map as a full replacement).
+    const instancePatch = method === "PATCH" && path.match(/^\/api\/instances\/([^/]+)$/);
+    if (instancePatch) {
+      const id = decodeURIComponent(instancePatch[1] ?? "");
+      const body = await readBody(req);
+      if (typeof body.cli !== "string") {
+        json(res, 400, { error: "cli must be a string" });
+        return true;
+      }
+      const fleet = persistableFleet(cfg);
+      if (!fleet[id]) {
+        json(res, 404, { error: "no such instance" });
+        return true;
+      }
+      const prev = fleet[id];
+      const prevConfig =
+        prev.config && typeof prev.config === "object" && !Array.isArray(prev.config)
+          ? { ...(prev.config as Record<string, unknown>) }
+          : {};
+      const cli = body.cli.trim();
+      if (cli) prevConfig.cli = cli;
+      else delete prevConfig.cli;
+      fleet[id] = { ...prev, config: prevConfig };
+      await saveConfig({ instances: fleet });
+      Object.assign(cfg, loadConfig());
+      await reloadProviders();
       json(res, 200, { instances: await registry.describe() });
       return true;
     }

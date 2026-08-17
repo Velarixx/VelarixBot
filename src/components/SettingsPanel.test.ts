@@ -27,6 +27,14 @@ describe("Settings Apps card stays on the same hub model", () => {
     expect(settings).toContain("patch({ alwaysAllow: !bot.alwaysAllow })");
   });
 
+  it("App Settings exposes per-engine CLI path via PATCH /api/instances/:id", () => {
+    expect(appSettings).toContain("Engine CLIs");
+    expect(appSettings).toContain("/api/instances/");
+    expect(appSettings).toContain('method: "PATCH"');
+    expect(appSettings).toContain("encodeURIComponent(instance.instanceId)");
+    expect(appSettings).not.toContain("bot.cli");
+  });
+
   it("App Settings only links to the hub and keeps keys write-only", () => {
     expect(appSettings).toContain("togglePlugins");
     expect(appSettings).toContain("Manage apps");

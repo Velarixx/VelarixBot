@@ -171,6 +171,14 @@ export async function saveConfig(patch: Partial<AppConfig>): Promise<void> {
       disk[key] = { ...(disk[key] as object), ...patch[key] };
     }
   }
+  // [VERIFY] 2026-08-17: file-only decodeConfig({ cli }) already worked;
+  // saveConfig dropped instances (CONFIG_SECTIONS only). Persisting the
+  // full map is required so PATCH /api/instances/:id cannot wipe the fleet.
+  // Callers that write this field must send the full persistable map —
+  // a non-empty instances object replaces the default fleet.
+  if (patch.instances && typeof patch.instances === "object") {
+    disk.instances = persistableInstanceMap(patch.instances);
+  }
   // every save also re-seals any plaintext still sitting in other sections
   await sealSecretFields(disk);
   ensurePrivateDir(DATA_DIR);
@@ -201,6 +209,40 @@ export async function migrateConfigSecrets(): Promise<boolean> {
 // defaultInstanceIdForDriver — instanceId defaults to the driver kind).
 // Config-file keys are injected as per-instance environment so drivers
 // see them without needing real process env vars.
+/** Drop subprocess `environment` (secrets) before writing instances to disk. */
+export function persistableInstanceMap(map: InstanceConfigMap): InstanceConfigMap {
+  const out: InstanceConfigMap = {};
+  for (const [id, entry] of Object.entries(map)) {
+    if (!entry || typeof entry !== "object") continue;
+    const { environment: _env, ...rest } = entry;
+    out[id] = { ...rest };
+  }
+  return out;
+}
+
+/** Default fleet literal — instanceConfigs uses this when the user has not
+ * authored a non-empty instances map. */
+export function defaultInstanceMap(): InstanceConfigMap {
+  return {
+    grok: { driver: "grokAgent" },
+    gemini: { driver: "geminiAgent" },
+    claude: { driver: "claudeAgent" },
+    codex: { driver: "codex" },
+    hermes: { driver: "hermesAgent" },
+    computer: { driver: "boxAgent" },
+    openrouter: { driver: "openrouter" },
+    omnirouter: { driver: "omnirouter" },
+  };
+}
+
+/** Current fleet as a persistable map (no env secrets). Used when Settings
+ * sets one CLI path so we do not replace the fleet with a single instance. */
+export function persistableFleet(cfg: AppConfig): InstanceConfigMap {
+  const source =
+    cfg.instances && Object.keys(cfg.instances).length ? { ...cfg.instances } : defaultInstanceMap();
+  return persistableInstanceMap(source);
+}
+
 export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // The default `grok` instance rides the `grokAgent` driver, not the API-key
   // one: like claude and codex it needs no credential from us, just the CLI
@@ -211,21 +253,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   const map: InstanceConfigMap =
     cfg.instances && Object.keys(cfg.instances).length
       ? { ...cfg.instances }
-      : {
-          grok: { driver: "grokAgent" },
-          gemini: { driver: "geminiAgent" },
-          claude: { driver: "claudeAgent" },
-          codex: { driver: "codex" },
-          // Hermes rides the CLI's own ChatGPT login (like claude/codex):
-          // shows up unavailable until `hermes` is installed + signed in.
-          // Default fleet only — a user-authored non-empty instances map
-          // replaces this literal, and hermes is intentionally NOT on the
-          // force-re-add list below (that stays openrouter/omnirouter only).
-          hermes: { driver: "hermesAgent" },
-          computer: { driver: "boxAgent" },
-          openrouter: { driver: "openrouter" },
-          omnirouter: { driver: "omnirouter" },
-        };
+      : defaultInstanceMap();
   if (!map.openrouter) map.openrouter = { driver: "openrouter" };
   if (!map.omnirouter) map.omnirouter = { driver: "omnirouter" };
   map.openrouter = withOptionalUrl(map.openrouter, cfg.openrouter?.url);
