@@ -24,7 +24,7 @@ export interface AppConfig {
    * catalog with official logos in the plugins marketplace. */
   composio?: { key?: string; apiKey?: string; url?: string };
   box?: { token?: string; url?: string };
-  /** Personal GitHub token for private VelarixBot Releases (updater). Write-only. */
+  /** Personal GitHub token. Write-only. Updater + GitHub listener polls. */
   github?: { token?: string };
   /** OpenAI BYO key (sk-…). Write-only. Used by A2 avatar generate. */
   openai?: { key?: string; url?: string };

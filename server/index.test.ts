@@ -616,6 +616,43 @@ describe("harness HTTP API", () => {
     expect((await api("POST", "/api/routines/nope/run")).status).toBe(404);
   });
 
+  it("round-trips a github listener create and rejects a wildcard repo", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const created = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "PR watch",
+      prompt: "Summarize new PRs",
+      schedule: { kind: "listener", source: "github", repo: "Velarixx/VelarixBot", events: ["pull_request", "issues"] },
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.routine.schedule).toMatchObject({
+      kind: "listener",
+      source: "github",
+      repo: { owner: "Velarixx", name: "VelarixBot" },
+      events: ["pull_request", "issues"],
+    });
+    const patched = await api("PATCH", `/api/routines/${created.body.routine.id}`, {
+      schedule: { kind: "listener", source: "slack", channel: "#eng", match: "keyword", keyword: "deploy" },
+    });
+    expect(patched.status).toBe(200);
+    expect(patched.body.routine.schedule).toMatchObject({
+      kind: "listener",
+      source: "slack",
+      channel: "#eng",
+      match: "keyword",
+      keyword: "deploy",
+    });
+    const wildcard = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "All repos",
+      prompt: "Watch everything",
+      schedule: { kind: "listener", source: "github", repo: "*/*", events: ["push"] },
+    });
+    expect(wildcard.status).toBe(500);
+    expect(wildcard.body.error).toMatch(/owner\/name/);
+  });
+
   it("round-trips a routine thenStartTurn trigger", async () => {
     const { body } = await api("GET", "/api/bots");
     const bot = body.bots[0];
@@ -994,14 +1031,45 @@ describe("harness HTTP API", () => {
     expect(connect.body.error).toMatch(/Composio|App Settings/i);
     expect(connect.body.error).toMatch(/paste a token/i);
 
-    const listener = await api(
+    const slack = await api(
+      "POST",
+      "/api/internal/workspace",
+      { fromBotId: bot.id, tool: "create_routine", args: { name: "Mentions", prompt: "Ping me", listener: "slack", channel: "#eng", match: "mention" } },
+      auth,
+    );
+    expect(slack.body.error).toMatch(/connect_app/);
+    expect(slack.body.error).not.toMatch(/ghp_|xoxb-|sk-/);
+
+    const incompleteGithub = await api(
       "POST",
       "/api/internal/workspace",
       { fromBotId: bot.id, tool: "create_routine", args: { name: "PRs", prompt: "Check PRs", listener: "github" } },
       auth,
     );
-    expect(listener.body.error).toMatch(/connect_app/);
-    expect(listener.body.error).not.toMatch(/ghp_|xoxb-|sk-/);
+    expect(incompleteGithub.body.error).toMatch(/owner\/name|event/i);
+    expect(incompleteGithub.body.error).not.toMatch(/ghp_|xoxb-|sk-/);
+
+    const github = await api(
+      "POST",
+      "/api/internal/workspace",
+      {
+        fromBotId: bot.id,
+        tool: "create_routine",
+        args: { name: "PRs", prompt: "Check PRs", listener: "github", repo: "Velarixx/VelarixBot", events: ["pull_request"] },
+      },
+      auth,
+    );
+    expect(github.status).toBe(200);
+    expect(github.body.text).toMatch(/listener github/);
+    expect(github.body.text).toMatch(/runs while VelarixBot is open/);
+    const listedListeners = await api("GET", "/api/routines");
+    const prs = listedListeners.body.routines.find((r: { name: string }) => r.name === "PRs");
+    expect(prs.schedule).toMatchObject({
+      kind: "listener",
+      source: "github",
+      repo: { owner: "Velarixx", name: "VelarixBot" },
+      events: ["pull_request"],
+    });
 
     const routine = await api(
       "POST",

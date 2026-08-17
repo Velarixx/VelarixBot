@@ -100,6 +100,10 @@ describe("workspace-proxy MCP surface", () => {
       "attach_to_chat",
       "connect_app",
     ]);
+    const create = list.result.tools.find((t: { name: string }) => t.name === "create_routine");
+    expect(Object.keys(create.inputSchema.properties)).toEqual(
+      expect.arrayContaining(["listener", "repo", "events", "channel", "match", "keyword"]),
+    );
   });
 
   it("forwards web_search with the boot token in the Authorization header, not the body", async () => {

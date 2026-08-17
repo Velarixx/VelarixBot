@@ -44,7 +44,7 @@ import { createPeerQueue } from "../peer-queue.ts";
 import type { Proactive } from "../proactive.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "../response-options.ts";
-import { enabledSkillIds, LAST_BOT_ERROR, mentionedBots, uniqueSkillIds, wouldEmptyWorkspace, type Message, type Usage } from "../store.ts";
+import { enabledSkillIds, LAST_BOT_ERROR, listenerScheduleFromArgs, mentionedBots, uniqueSkillIds, wouldEmptyWorkspace, type Message, type Usage } from "../store.ts";
 import { deleteSkillsForBot, getSkill, saveSkill, skillSystemNote, skillsForTurn } from "../teach.ts";
 import type { Broadcast } from "./events.ts";
 import type { BotsService } from "./bots.ts";
@@ -425,15 +425,20 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         const time = String(args.time ?? "").trim().slice(0, 5);
         let schedule: Parameters<RoutinesService["createRoutine"]>[0]["schedule"];
         if (listener === "github" || listener === "slack") {
-          const status = cfg.composio?.key
-            ? await composio.connectionStatus(cfg, [listener]).catch(() => ({ [listener]: { connected: false } }))
-            : { [listener]: { connected: false } };
-          if (!status[listener]?.connected) {
-            return {
-              error: `${listener} is not connected. Call connect_app with slug ${listener} first. Never ask the user to paste a token in chat.`,
-            };
+          const every = Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15;
+          if (listener === "slack") {
+            const status = cfg.composio?.key
+              ? await composio.connectionStatus(cfg, ["slack"]).catch(() => ({ slack: { connected: false } }))
+              : { slack: { connected: false } };
+            if (!status.slack?.connected) {
+              return {
+                error: "slack is not connected. Call connect_app with slug slack first. Never ask the user to paste a token in chat.",
+              };
+            }
           }
-          schedule = { kind: "listener", source: listener, everyMinutes: Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15 };
+          const parsed = listenerScheduleFromArgs(listener, args, every);
+          if ("error" in parsed) return { error: `create_routine ${parsed.error}` };
+          schedule = parsed.schedule;
         } else if (Number.isFinite(everyMinutes) && everyMinutes > 0) {
           schedule = { kind: "interval", everyMinutes };
         } else if (time) {
@@ -937,7 +942,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
               ? " You have remember and recall tools. remember saves a lasting note for this bot (or the shared workspace). recall reads those notes. Prefer remember for durable facts instead of relying on chat history."
               : "") +
             (integrations.workspace
-              ? " Workspace tools: web_search and fetch_page look things up (you have no in-app browser). ask_choice asks the user a multiple-choice question. ask_secret asks for a password/code — the value never appears in chat; never ask them to paste a token in the transcript. create_routine schedules work (weekdays by default; GitHub/Slack listeners need connect_app first). save_skill / run_skill store and follow step recipes. attach_to_chat puts a computer screenshot or file into this thread. connect_app starts installing a catalog app (github, slack, …) via a user connect card."
+              ? " Workspace tools: web_search and fetch_page look things up (you have no in-app browser). ask_choice asks the user a multiple-choice question. ask_secret asks for a password/code — the value never appears in chat; never ask them to paste a token in the transcript. create_routine schedules work (weekdays by default). A github listener needs one owner/name repo and an event list (token lives in App Settings). A slack listener needs a channel or DM plus mention|keyword|message, and connect_app first. save_skill / run_skill store and follow step recipes. attach_to_chat puts a computer screenshot or file into this thread. connect_app starts installing a catalog app (github, slack, …) via a user connect card."
               : "") +
             (tagged.length
               ? ` The user tagged ${tagged

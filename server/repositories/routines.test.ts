@@ -60,7 +60,16 @@ describe("routines repository", () => {
   it("round-trips schedules and metadata across reopen", () => {
     const routines = createRoutinesRepository(db);
     const daily = makeRoutine({ schedule: { kind: "daily", time: "09:30" } });
-    const listener = makeRoutine({ schedule: { kind: "listener", source: "github", everyMinutes: 15 } });
+    const listener = makeRoutine({
+      schedule: {
+        kind: "listener",
+        source: "github",
+        everyMinutes: 15,
+        repo: { owner: "Velarixx", name: "VelarixBot" },
+        events: ["pull_request"],
+      },
+      listenerCursor: "42",
+    });
     routines.insert(daily);
     routines.insert(listener);
     routines.update({ ...daily, enabled: false, lastRunAt: 123, lastResult: "done" });
@@ -68,7 +77,14 @@ describe("routines repository", () => {
     db = openDatabase(defaultDbPath());
     const reloaded = createRoutinesRepository(db);
     expect(reloaded.get(daily.id)).toMatchObject({ schedule: { kind: "daily", time: "09:30" }, enabled: false, lastRunAt: 123, lastResult: "done" });
-    expect(reloaded.get(listener.id)?.schedule).toEqual({ kind: "listener", source: "github", everyMinutes: 15 });
+    expect(reloaded.get(listener.id)?.schedule).toEqual({
+      kind: "listener",
+      source: "github",
+      everyMinutes: 15,
+      repo: { owner: "Velarixx", name: "VelarixBot" },
+      events: ["pull_request"],
+    });
+    expect(reloaded.get(listener.id)?.listenerCursor).toBe("42");
     expect(reloaded.list().map((r) => r.id)).toEqual([daily.id, listener.id]);
     expect(reloaded.delete(daily.id)).toBe(true);
     expect(reloaded.delete(daily.id)).toBe(false);

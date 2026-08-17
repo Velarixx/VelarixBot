@@ -125,11 +125,38 @@ export interface ConfigStatus {
   omnirouter?: { configured: boolean };
 }
 
+export type GithubListenerEvent =
+  | "push"
+  | "pull_request"
+  | "issues"
+  | "issue_comment"
+  | "release"
+  | "create"
+  | "delete"
+  | "fork"
+  | "watch"
+  | "pull_request_review"
+  | "pull_request_review_comment";
+export type SlackListenerMatch = "mention" | "keyword" | "message";
 export type RoutineSchedule =
   | { kind: "interval"; everyMinutes: number }
   | { kind: "daily"; time: string; timeZone?: string }
   | { kind: "weekdays"; time: string; timeZone?: string }
-  | { kind: "listener"; source: "github" | "slack"; everyMinutes?: number };
+  | {
+      kind: "listener";
+      source: "github";
+      everyMinutes?: number;
+      repo?: { owner: string; name: string };
+      events?: GithubListenerEvent[];
+    }
+  | {
+      kind: "listener";
+      source: "slack";
+      everyMinutes?: number;
+      channel?: string;
+      match?: SlackListenerMatch;
+      keyword?: string;
+    };
 export type MissedPolicy = "skip" | "run-once" | "catch-up";
 export interface RoutineRun {
   seq: number; startedAt: number; finishedAt: number | null; scheduledFor: number | null;
@@ -142,6 +169,7 @@ export interface Routine {
   lastResult: string | null; createdAt: number; missedPolicy: MissedPolicy;
   thenStartTurn?: { botId: string; prompt: string };
   skillId?: string;
+  listenerCursor?: string;
 }
 
 export interface Skill {
