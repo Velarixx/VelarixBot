@@ -162,7 +162,7 @@ describe("packaged server entry", () => {
     expect(win).toContain("package:win"); // package:win already runs stage:sqlite (pinned above)
     expect(mac).toContain("--arm64");
     expect(mac).not.toMatch(/--x64/);
-    expect(workflow).toMatch(/needs:\s*\[mac, windows\]/);
+    expect(workflow).toMatch(/needs:\s*\[validate, mac, windows\]/);
   });
 
   it("keeps eval/canary off pull_request and portable dispatch-only", () => {

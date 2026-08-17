@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release candidate version (for example 0.2.0-rc.1)"
+        description: "Release version: 0.x.x full release or 0.x.x-rc.N prerelease (for example 0.2.0 or 0.2.0-rc.18)"
         required: true
         type: string
 
@@ -19,6 +19,9 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      notes: ${{ steps.version.outputs.notes }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -26,12 +29,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - name: Validate version
+        id: version
+        run: node scripts/release-version.mjs --github-output "${{ inputs.version }}"
       - run: pnpm install --frozen-lockfile
-      - name: Validate RC version
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "${{ inputs.version }}" =~ ^0\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || { echo "Invalid 0.x RC version"; exit 1; }
       - run: pnpm typecheck
       - run: pnpm test
 
@@ -140,7 +141,7 @@ jobs:
           retention-days: 30
 
   release:
-    needs: [mac, windows]
+    needs: [validate, mac, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -156,14 +157,21 @@ jobs:
         run: |
           sha256sum *.dmg *.exe > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
-      - name: Create draft private prerelease
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          RELEASE_NOTES: ${{ needs.validate.outputs.notes }}
         run: |
+          set -euo pipefail
+          extra=()
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then
+            extra+=(--prerelease)
+          fi
           gh release create "v${{ inputs.version }}" release-assets/* \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --title "VelarixBot v${{ inputs.version }}" \
-            --prerelease \
+            "${extra[@]}" \
             --generate-notes \
-            --notes "Internal unsigned release candidate. Download only from this private repository and follow INTERNAL_INSTALL.md to trust this specific app."
+            --notes "$RELEASE_NOTES"

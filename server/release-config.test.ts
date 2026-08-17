@@ -28,7 +28,7 @@ describe("internal desktop releases", () => {
     expect(builder).toContain("sign: false");
   });
 
-  it("publishes RC assets from native GitHub runners", () => {
+  it("publishes desktop assets from native GitHub runners", () => {
     const workflow = read(".github/workflows/release.yml");
     expect(workflow).toContain("macos-latest");
     expect(workflow).not.toContain("macos-15-intel");
@@ -36,6 +36,8 @@ describe("internal desktop releases", () => {
     expect(workflow).toContain("windows-latest");
     expect(workflow).toContain("--prerelease");
     expect(workflow).toContain("SHA256SUMS.txt");
+    expect(workflow).toContain("scripts/release-version.mjs");
+    expect(workflow).toContain('CSC_IDENTITY_AUTO_DISCOVERY: "false"');
   });
 
   it("checks GitHub Releases from the packaged updater without baking a token", () => {
