@@ -9,7 +9,19 @@
 // renders as the blocked banner. Snapshot.reason already names the CLI
 // (`\`claude\` CLI not found`). Zero available engines must not spawn.
 
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
+
 import { COLORS, type MausColor, type OptionCardData } from "./store.ts";
+
+/** Sync pre-spawn check: an absolute CLI path that is not on disk must
+ * never be spawned (ENOENT hang / spawn_error). Bare names (`claude`)
+ * and API/fake instances (no cli) are left to the driver — #98 drain
+ * tests fire-and-forget startTurn and cannot absorb an extra await. */
+export function absoluteCliMissing(cli: string | undefined | null): boolean {
+  if (!cli) return false;
+  return isAbsolute(cli) && !existsSync(cli);
+}
 
 /** Machine-readable turn stop / block codes. Never copy these into
  * user-facing stateDetail. */

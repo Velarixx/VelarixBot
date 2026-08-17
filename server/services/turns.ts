@@ -50,7 +50,7 @@ import { createPeerQueue } from "../peer-queue.ts";
 import type { Proactive } from "../proactive.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "../response-options.ts";
-import { engineSetupCard, isSpawnFailure, normalizeBotColor, normalizeBotName, userFacingBlock } from "../engine-setup.ts";
+import { absoluteCliMissing, engineSetupCard, isSpawnFailure, normalizeBotColor, normalizeBotName, userFacingBlock } from "../engine-setup.ts";
 import { enabledSkillIds, LAST_BOT_ERROR, listenerScheduleFromArgs, mentionedBots, uniqueSkillIds, wouldEmptyWorkspace, type Message, type Usage } from "../store.ts";
 import { deleteSkillsForBot, getSkill, saveSkill, skillSystemNote, skillsForTurn } from "../teach.ts";
 import type { Broadcast } from "./events.ts";
@@ -1005,24 +1005,6 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const userMessage = store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
     broadcast({ kind: "message", threadId: bot.threadId, message: userMessage });
 
-    // [VERIFY] 2026-08-18: a missing CLI used to sendTurn anyway, settle
-    // spawn_error, and paint that code as stateDetail. Probe first: zero
-    // available engines never spawn; an unspawnable selected engine settles
-    // with the snapshot reason + a setup/switch-model card.
-    {
-      const described = await registry.describe();
-      const available = described.filter((d) => d.snapshot.state === "available");
-      const selected = described.find((d) => d.instanceId === bot.modelSelection.instanceId);
-      const selectedUnavailable = !selected || selected.snapshot.state !== "available";
-      if (available.length === 0 || selectedUnavailable) {
-        return settleUnavailableTurn(bot, userMessage.id, {
-          zeroEngines: available.length === 0,
-          snapshotReason: selected?.snapshot.reason ?? `provider instance "${bot.modelSelection.instanceId}" is unavailable`,
-          offerSwitch: available.length > 0,
-        });
-      }
-    }
-
     // transcript for API-backed drivers: settled text turns only
     const transcript = store
       .messagesFor(bot.threadId)
@@ -1049,6 +1031,26 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
 
     void (async () => {
       try {
+        // [VERIFY] 2026-08-18: skip spawn synchronously when the selected
+        // (or every) instance points at an absolute CLI path that is not
+        // on disk. Must not await describe() here — #98 drain/ask_bot and
+        // unattended listener tests fire-and-forget startTurn and expect
+        // sendTurn on the same tick as a 2–3 microtask flush.
+        {
+          const live = registry.instances();
+          const spawnable = live.filter((inst) => !absoluteCliMissing(inst.cli));
+          const selectedMissing = absoluteCliMissing(instance.cli);
+          if (spawnable.length === 0 || selectedMissing) {
+            await settleUnavailableTurn(bot, userMessage.id, {
+              zeroEngines: spawnable.length === 0,
+              snapshotReason: selectedMissing
+                ? `\`${instance.cli}\` CLI not found`
+                : `provider instance "${bot.modelSelection.instanceId}" is unavailable`,
+              offerSwitch: spawnable.length > 0,
+            });
+            return;
+          }
+        }
         const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
         if (bot.enabledApps?.length && composioSessionKey(cfg)) {
           const session = await ensureBotSession(cfg, bot.id, bot.enabledApps);

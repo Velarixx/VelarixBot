@@ -69,7 +69,7 @@ describe("mentionedBots", () => {
     { id: "5", name: "Scout" },
   ];
   it("matches a tag at a word start, case-insensitively", () => {
-    expect(mentionedBots("hey @milind, look", peers).map((b) => b.id)).toEqual(["3"]);
+    expect(mentionedBots("hey @ada, look", peers).map((b) => b.id)).toEqual(["3"]);
     expect(mentionedBots("@Ada first thing", peers).map((b) => b.id)).toEqual(["3"]);
   });
   it("prefers the longest name so prefixes never half-match", () => {

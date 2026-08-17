@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   SETUP_ENGINE_OPTIONS,
   SWITCH_MODEL_OPTION,
+  absoluteCliMissing,
   engineSetupCard,
   isMachineStateCode,
   isSpawnFailure,
@@ -10,6 +11,15 @@ import {
   normalizeBotName,
   userFacingBlock,
 } from "./engine-setup.ts";
+
+describe("absoluteCliMissing", () => {
+  it("is true only for an absolute path that is not on disk", () => {
+    expect(absoluteCliMissing("/definitely-not-a-velarix-engine")).toBe(true);
+    expect(absoluteCliMissing("claude")).toBe(false);
+    expect(absoluteCliMissing(undefined)).toBe(false);
+    expect(absoluteCliMissing(process.execPath)).toBe(false);
+  });
+});
 
 describe("normalizeBotName", () => {
   it("trims a usable name and rejects whitespace-only", () => {
