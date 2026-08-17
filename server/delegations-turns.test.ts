@@ -42,7 +42,10 @@ describe("delegate_bot drain through turns", () => {
     const registry = new ProviderRegistry([fake.driver]);
     await registry.load({ fake: { driver: "fake", displayName: "Fake" } });
     const live = fake.created.get("fake")!;
-    live.instance.adapter.capabilities = { sessionModelSwitch: "unsupported", agentsMcp: true };
+    (live.instance.adapter as { capabilities: typeof live.instance.adapter.capabilities }).capabilities = {
+      sessionModelSwitch: "unsupported",
+      agentsMcp: true,
+    };
     live.instance.adapter.sendTurn = async (turn) => {
       sendTurns.push({ threadId: turn.threadId, text: turn.text, system: turn.system });
       return { turnId: "fake-turn" };
