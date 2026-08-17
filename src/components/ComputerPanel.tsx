@@ -1,9 +1,9 @@
 // The bot's computer, in the right-side slot. Where it runs decides the
 // whole flow: cloud → provision the box on open (idempotent) and preview
-// via SSE frames or a ~4s screenshot poll; local ("This Mac") → frames
-// come from the Electron main process (desktopCapturer over the preload
-// bridge — box endpoints are never touched); off → parked. Auto (unset)
-// prefers the cloud box when one exists, else local inside the app.
+// via SSE frames or a ~4s screenshot poll; local ("This Mac" / "This PC")
+// → frames come from the Electron main process (desktopCapturer over the
+// preload bridge — box endpoints are never touched); off → parked. Auto
+// (unset) prefers the cloud box when one exists, else local inside the app.
 import { useEffect, useRef, useState } from "react";
 import {
   CalendarClock,
@@ -18,6 +18,13 @@ import {
 } from "lucide-react";
 import { useStore, type Bot, type Skill } from "@/state/store";
 import { teachCardPhase, teachPrimaryLabel, teachShowsEditor, teachShowsSaveDiscard } from "@/lib/teach-card";
+import {
+  localAutoHint,
+  localComputerModes,
+  localComputerNoun,
+  localComputerSupported,
+  localUnavailableCopy,
+} from "@/lib/local-computer";
 import { ApiKeyRow } from "./ApiKeys";
 import { cn } from "@/lib/cn";
 
@@ -57,7 +64,9 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [teachBusy, setTeachBusy] = useState(false);
   const [teachDraft, setTeachDraft] = useState<{ name: string; markdown: string; sessionId?: string } | null>(null);
   const [taught, setTaught] = useState<Skill | null>(null);
-  const localSupported = window.ogb?.platform !== "win32";
+  const platform = window.ogb?.platform;
+  const localSupported = localComputerSupported(platform);
+  const localNoun = localComputerNoun(platform);
   const teachPhase = teachCardPhase({ recording: teaching, hasDraft: Boolean(teachDraft), hasSaved: Boolean(taught) && !teachDraft });
   const teachLabel = teachPrimaryLabel(teachPhase);
 
@@ -214,7 +223,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     checking: "Checking…",
     starting: "Starting your bot's computer…",
     unconfigured: "No cloud computer configured",
-    "local-unavailable": localSupported ? "Local preview needs the desktop app — run pnpm dev:desktop" : "Local computer control is unavailable on Windows — choose Cloud box or Off",
+    "local-unavailable": localUnavailableCopy(platform, Boolean(window.ogb)),
     off: "This bot's computer is off",
     error: "Couldn't reach the computer",
   };
@@ -243,7 +252,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         {/* Screen preview */}
         <div className="mb-1.5 mt-2 flex items-center justify-between text-[13px] text-ink-secondary">
           <span>{bot.name}'s screen</span>
-          {phase === "local" && <span className="text-[11px]">this Mac</span>}
+          {phase === "local" && <span className="text-[11px]">{localNoun}</span>}
         </div>
         <div className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-xl bg-card">
           {frameSrc ? (
@@ -262,11 +271,13 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
                   ? "Waiting for the first frame…"
                   : phase === "local"
                     ? localMisses >= 3
-                      ? "No frames yet — the preview needs Screen Recording permission. After granting, relaunch the app (macOS applies it on next launch)."
-                      : "Capturing this Mac's screen…"
+                      ? platform === "darwin"
+                        ? "No frames yet — the preview needs Screen Recording permission. After granting, relaunch the app (macOS applies it on next launch)."
+                        : `No frames yet — the preview could not capture ${localNoun}'s screen.`
+                      : `Capturing ${localNoun}'s screen…`
                     : emptyState[phase]}
               </span>
-              {phase === "local" && localMisses >= 3 && (
+              {phase === "local" && localMisses >= 3 && platform === "darwin" && (
                 <button
                   onClick={() => window.ogb?.permOpenSettings?.("screen")}
                   className="mt-1 rounded-lg bg-raised px-3 py-1.5 text-[12px] text-ink hover:bg-raised-hover"
@@ -326,7 +337,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
         <div className="mt-4 rounded-xl bg-card p-4">
           <div className="text-[15px] font-medium text-ink">Runs on</div>
           <div className="mt-0.5 text-[13px] text-ink-secondary">
-            {bot.computer ? "" : localSupported ? "Auto: the cloud box when one exists, else this Mac. " : "Auto: the cloud box when one exists, else Off. "}Pick where this bot's
+            {bot.computer ? "" : localAutoHint(platform)}Pick where this bot's
             computer lives.
           </div>
           <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
@@ -334,7 +345,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
               // "cloud" is the legacy alias the server resolves to the
               // configured remote provider binding (the bundled "box")
               ["cloud", "Cloud box"] as const,
-              ...(localSupported ? [["local", "This Mac"] as const] : []),
+              ...localComputerModes(platform),
               ["off", "Off"] as const,
             ]).map(([mode, label], i) => (
               <button

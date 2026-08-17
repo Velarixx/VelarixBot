@@ -66,9 +66,12 @@ bundled `cua-driver` binary. Alternatives evaluated and rejected:
 
 ### Packaging
 
-- Ship the binary at `VelarixBot.app/Contents/Resources/cua-driver`,
+- Ship the binary at `VelarixBot.app/Contents/Resources/cua-driver`
+  (Windows: `resources/cua-driver.exe`),
   **outside the ASAR**, executable bit preserved (electron-builder
-  `extraResources`).
+  `extraResources`). Same `EmbeddedCuaDriverHost` + official
+  `cua-driver mcp` proxy on both platforms — Windows uses the driver's
+  named-pipe host, not a second input stack. Linux is not packaged.
 - **Re-sign it with our Team ID** before signing + notarizing the app (the
   installed copy is signed by trycua `YCK386LBJ7`). Biggest new build step.
 - Info.plist: `NSAccessibilityUsageDescription`,
