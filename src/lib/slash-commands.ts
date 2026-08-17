@@ -88,6 +88,37 @@ export function filterSlashCommands(query: string, ctx: SlashContext, catalog = 
     .map((command) => ({ command, enabled: command.enabled(ctx) }));
 }
 
+export interface SlashSkill {
+  id: string;
+  name: string;
+}
+
+export interface SlashSkillHit {
+  skill: SlashSkill;
+}
+
+/** This bot's enabled skills in the `/` menu. Pick is this-turn only. */
+export function filterSlashSkills(query: string, skills: SlashSkill[]): SlashSkillHit[] {
+  const q = query.trim().toLowerCase();
+  if (query.endsWith(" ")) return [];
+  return skills
+    .filter((skill) => {
+      if (!q) return true;
+      return skill.name.toLowerCase().includes(q);
+    })
+    .map((skill) => ({ skill }));
+}
+
+export type SlashMenuItem =
+  | { kind: "command"; hit: SlashHit }
+  | { kind: "skill"; hit: SlashSkillHit };
+
+export function slashMenuItems(query: string, ctx: SlashContext, skills: SlashSkill[] = []): SlashMenuItem[] {
+  const commands = filterSlashCommands(query, ctx).map((hit) => ({ kind: "command" as const, hit }));
+  const skillHits = filterSlashSkills(query, skills).map((hit) => ({ kind: "skill" as const, hit }));
+  return [...commands, ...skillHits];
+}
+
 export function moveHighlight(index: number, delta: number, length: number): number {
   if (length <= 0) return 0;
   return (index + delta + length) % length;

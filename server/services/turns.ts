@@ -44,8 +44,8 @@ import { createPeerQueue } from "../peer-queue.ts";
 import type { Proactive } from "../proactive.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "../response-options.ts";
-import { LAST_BOT_ERROR, mentionedBots, wouldEmptyWorkspace, type Message, type Usage } from "../store.ts";
-import { appendTeachFrame, deleteSkillsForBot, getSkill, saveSkill, skillSystemNote } from "../teach.ts";
+import { enabledSkillIds, LAST_BOT_ERROR, mentionedBots, uniqueSkillIds, wouldEmptyWorkspace, type Message, type Usage } from "../store.ts";
+import { appendTeachFrame, deleteSkillsForBot, getSkill, saveSkill, skillSystemNote, skillsForTurn } from "../teach.ts";
 import type { Broadcast } from "./events.ts";
 import type { BotsService } from "./bots.ts";
 import type { RoutinesService } from "./routines.ts";
@@ -64,6 +64,8 @@ export interface StartTurnOpts {
   attachments?: Array<{ path: string; mime?: string }>;
   visited?: string[];
   groupThreadId?: string;
+  /** Extra skill ids for this turn only (routine attach, `/` mention). */
+  extraSkillIds?: string[];
 }
 
 export interface TurnsServiceDeps {
@@ -358,7 +360,17 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     stopScreenPoller(bot.id);
     teach.release(bot.id);
     deleteBotMemory(bot.id);
-    deleteSkillsForBot(bot.id);
+    const remaining = bots.bots().filter((b) => b.id !== bot.id);
+    const remainingIds = new Set(remaining.map((b) => b.id));
+    const stillReferenced = new Set<string>();
+    for (const other of remaining) {
+      for (const id of enabledSkillIds(other)) stillReferenced.add(id);
+    }
+    for (const routine of deps.routines().routines()) {
+      if (!remainingIds.has(routine.botId)) continue;
+      if (routine.skillId) stillReferenced.add(routine.skillId);
+    }
+    deleteSkillsForBot(bot.id, stillReferenced);
     bots.deleteBot(bot.id);
     for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
       try {
@@ -445,7 +457,8 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         const steps = String(args.steps ?? "").trim();
         if (!name || !steps) return { error: "save_skill needs name and steps." };
         const skill = saveSkill({ name, botId: fromBotId, markdown: steps });
-        bots.patchBot(fromBotId, { skillId: skill.id });
+        const current = enabledSkillIds(bot);
+        bots.patchBot(fromBotId, { enabledSkills: uniqueSkillIds([...current, skill.id]) });
         broadcast({ kind: "bot", bot: store.bot(fromBotId) });
         return { text: `Saved skill ${skill.name} (id: ${skill.id}). Run it with run_skill using that id.` };
       }
@@ -812,7 +825,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       .slice(-40)
       .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: m.text! }));
 
-    const attachedSkill = bot.skillId ? getSkill(bot.skillId) : null;
+    const attachedSkills = skillsForTurn(bot, opts?.extraSkillIds ?? []);
     const persona = [
       `You are ${bot.name}, a personal bot in VelarixBot.`,
       bot.title && `Role: ${bot.title}.`,
@@ -820,7 +833,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       "Stay in that character. Coordinate in this VelarixBot workspace; do not implement the user's repo or run a coding audit unless they explicitly ask for code. Do not dump a feature tour or A/B/C onboarding.",
     ]
       .filter(Boolean)
-      .join(" ") + skillSystemNote(attachedSkill);
+      .join(" ") + skillSystemNote(attachedSkills);
 
     // busy flips immediately so the composer locks; the dispatch itself runs
     // in the background — box provisioning can take ~90s and must never

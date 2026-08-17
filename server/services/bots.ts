@@ -24,6 +24,8 @@ import {
   onboardingCard,
   resolveIconShape,
   validModelSelection,
+  enabledSkillIds,
+  uniqueSkillIds,
   validNotifyEvents,
   validUsage,
   zeroUsage,
@@ -176,11 +178,30 @@ export function createBotsService(opts: {
         if (events) next.notifyEvents = events;
         else delete next.notifyEvents;
       }
-      if (Object.prototype.hasOwnProperty.call(next, "skillId")) {
+      if (Object.prototype.hasOwnProperty.call(next, "enabledSkills")) {
+        const ids = uniqueSkillIds(Array.isArray(next.enabledSkills) ? next.enabledSkills.map(String) : []);
+        delete next.enabledSkills;
+        b.enabledSkills = ids;
+        if (ids.length) b.skillId = ids[0];
+        else delete b.skillId;
+      } else if (Object.prototype.hasOwnProperty.call(next, "skillId")) {
         const skillId = typeof next.skillId === "string" ? next.skillId.trim() : "";
         delete next.skillId;
-        if (skillId) b.skillId = skillId;
-        else delete b.skillId;
+        const hasSet = (b.enabledSkills?.length ?? 0) > 0;
+        if (!hasSet) {
+          if (skillId) {
+            b.enabledSkills = [skillId];
+            b.skillId = skillId;
+          } else {
+            delete b.skillId;
+            delete b.enabledSkills;
+          }
+        } else if (skillId) {
+          b.enabledSkills = uniqueSkillIds([...enabledSkillIds(b), skillId]);
+          b.skillId = skillId;
+        } else {
+          delete b.skillId;
+        }
       }
       Object.assign(b, next);
       if (Object.prototype.hasOwnProperty.call(patch, "avatarImageHash") && (patch.avatarImageHash == null || patch.avatarImageHash === "")) {
@@ -228,8 +249,14 @@ export function createBotsService(opts: {
     },
     clearSkillRefs(skillId) {
       for (const bot of repos.bots.list()) {
-        if (bot.skillId !== skillId) continue;
-        delete bot.skillId;
+        const current = enabledSkillIds(bot);
+        if (!current.includes(skillId) && bot.skillId !== skillId) continue;
+        const nextIds = current.filter((id) => id !== skillId);
+        bot.enabledSkills = nextIds;
+        if (bot.skillId === skillId) {
+          if (nextIds.length) bot.skillId = nextIds[0];
+          else delete bot.skillId;
+        }
         repos.bots.update(bot);
       }
       for (const routine of repos.routines.list()) {

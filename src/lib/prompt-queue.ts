@@ -6,6 +6,7 @@ export interface QueuedPrompt {
   id: string;
   text: string;
   attachments: Array<{ path: string; mime?: string }>;
+  mentionSkillIds?: string[];
 }
 
 /** Wrapper: a send while the bot is busy (or a POST is already in flight)

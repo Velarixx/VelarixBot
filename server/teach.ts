@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 import { DATA_DIR } from "./config.ts";
 import { newId } from "./contracts.ts";
+import { enabledSkillIds, uniqueSkillIds } from "./store.ts";
 
 export interface SkillRecord {
   id: string;
@@ -127,8 +128,11 @@ export function deleteSkill(id: string): boolean {
   return true;
 }
 
-export function deleteSkillsForBot(botId: string): void {
-  saveSkills(loadSkills().filter((s) => s.botId !== botId));
+/** Drop teach sessions for a deleted bot. Keep a SkillRecord when another
+ * bot or routine still references it — the library is cross-bot. */
+export function deleteSkillsForBot(botId: string, stillReferenced: Iterable<string> = []): void {
+  const keep = new Set([...stillReferenced].map((id) => String(id).trim()).filter(Boolean));
+  saveSkills(loadSkills().filter((s) => s.botId !== botId || keep.has(s.id)));
   saveTeachSessions(loadTeachSessions().filter((s) => s.botId !== botId));
 }
 
@@ -268,7 +272,24 @@ export function skillPrompt(skill: SkillRecord | null, routinePrompt: string): s
   return `${skill.markdown.trim()}\n\n${routinePrompt.trim()}`.trim();
 }
 
-export function skillSystemNote(skill: SkillRecord | null): string {
-  if (!skill?.markdown.trim()) return "";
-  return `\n\nFollow this attached skill:\n${skill.markdown.trim()}`;
+export function skillSystemNote(skill: SkillRecord | SkillRecord[] | null): string {
+  const list = (Array.isArray(skill) ? skill : skill ? [skill] : []).filter((s) => s.markdown.trim());
+  if (!list.length) return "";
+  if (list.length === 1) return `\n\nFollow this attached skill:\n${list[0].markdown.trim()}`;
+  return `\n\nFollow these attached skills:\n${list.map((s) => `\n### ${s.name}\n${s.markdown.trim()}`).join("\n")}`;
+}
+
+/** Enabled skills first (stable), then extras (routine / this-turn), no silent drop. */
+export function skillsForTurn(
+  bot: { skillId?: string; enabledSkills?: string[] },
+  extraIds: Iterable<string> = [],
+  get: (id: string) => SkillRecord | null = getSkill,
+): SkillRecord[] {
+  const ids = uniqueSkillIds([...enabledSkillIds(bot), ...extraIds]);
+  const out: SkillRecord[] = [];
+  for (const id of ids) {
+    const skill = get(id);
+    if (skill) out.push(skill);
+  }
+  return out;
 }

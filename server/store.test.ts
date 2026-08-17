@@ -7,6 +7,7 @@ import {
   LAST_BOT_ERROR,
   mentionedBots,
   nextRunAt,
+  enabledSkillIds,
   normalizeBot,
   normalizeRoutine,
   parseMissedPolicy,
@@ -65,11 +66,21 @@ describe("bot record normalization", () => {
       ...baseBot,
       notifyEvents: { "peer.reply": false, bogus: true, "turn.completed": "yes" },
       enabledApps: ["googledrive", "", 42],
+      enabledSkills: ["skill-a", "", "skill-b"],
       threadParticipants: ["a", "b"],
     } as unknown as Partial<BotRecord>);
     expect(bot?.notifyEvents).toEqual({ "peer.reply": false });
     expect(bot?.enabledApps).toEqual(["googledrive", "42"]);
+    expect(bot?.enabledSkills).toEqual(["skill-a", "skill-b"]);
     expect(bot?.threadParticipants).toEqual(["a", "b"]);
+  });
+
+  it("legacy skillId becomes the enabled set when enabledSkills is empty", () => {
+    expect(enabledSkillIds({ skillId: "a" })).toEqual(["a"]);
+    expect(enabledSkillIds({ skillId: "a", enabledSkills: [] })).toEqual(["a"]);
+    expect(enabledSkillIds({ skillId: "a", enabledSkills: ["b", "c"] })).toEqual(["b", "c"]);
+    expect(enabledSkillIds({ enabledSkills: ["x", "x", "y"] })).toEqual(["x", "y"]);
+    expect(enabledSkillIds({})).toEqual([]);
   });
 
   it("resolves icon shapes with a cursor fallback", () => {

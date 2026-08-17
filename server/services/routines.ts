@@ -65,8 +65,9 @@ export interface RoutinesService {
   markRoutine(id: string, patch: Pick<Partial<RoutineRecord>, "running" | "nextRunAt" | "lastRunAt" | "lastResult">): RoutineRecord | null;
   deleteRoutine(id: string): boolean;
   /** Manual "Test run": runs now, never consumes a scheduled occurrence
-   * (nextRunAt is untouched), and works on a paused routine. */
-  runRoutine(id: string): Promise<RunOutcome>;
+   * (nextRunAt is untouched), and works on a paused routine. Optional
+   * `prompt` is this run only — the stored routine is not rewritten. */
+  runRoutine(id: string, opts?: { prompt?: string }): Promise<RunOutcome>;
   /** Newest-first run history (capped at 20 per routine). */
   runs(id: string): RoutineRun[];
   /** Turn folding calls this on turn.completed for the routine's thread. */
@@ -124,7 +125,7 @@ export function createRoutinesService(deps: {
   now: () => number;
   broadcast: Broadcast;
   bot(id: string): { id: string; threadId: string; busy: boolean } | null;
-  startTurn(botId: string, text: string): Promise<void>;
+  startTurn(botId: string, text: string, opts?: { extraSkillIds?: string[] }): Promise<void>;
   getSkill(id: string): SkillRecord | null;
   skillPrompt(skill: SkillRecord | null, prompt: string): string;
 }): RoutinesService {
@@ -145,7 +146,7 @@ export function createRoutinesService(deps: {
   async function startRun(
     routine: RoutineRecord,
     at: number,
-    opts: { kind: "scheduled" | "manual"; scheduledFor?: number; nextRunAt?: number },
+    opts: { kind: "scheduled" | "manual"; scheduledFor?: number; nextRunAt?: number; prompt?: string },
   ): Promise<RunOutcome> {
     const nextPatch = opts.nextRunAt !== undefined ? { nextRunAt: opts.nextRunAt } : {};
     const bot = deps.bot(routine.botId);
@@ -189,8 +190,9 @@ export function createRoutinesService(deps: {
     activeRuns.set(routine.id, { seq: claim.seq, threadId: bot.threadId });
     routineByThread.set(bot.threadId, routine.id);
     try {
-      const skill = routine.skillId ? deps.getSkill(routine.skillId) : null;
-      await deps.startTurn(routine.botId, deps.skillPrompt(skill, routine.prompt));
+      const prompt = typeof opts.prompt === "string" && opts.prompt.trim() ? opts.prompt.trim() : routine.prompt;
+      const extraSkillIds = routine.skillId ? [routine.skillId] : [];
+      await deps.startTurn(routine.botId, prompt, { extraSkillIds });
     } catch (e) {
       const reason = `blocked: ${e instanceof Error ? e.message : String(e)}`;
       routineByThread.delete(bot.threadId);
@@ -341,11 +343,12 @@ export function createRoutinesService(deps: {
       broadcast({ kind: "routine.deleted", routineId: id });
       return true;
     },
-    async runRoutine(id) {
+    async runRoutine(id, opts) {
       const routine = repos.routines.get(id);
       if (!routine) return { started: false, reason: "no such routine" };
       if (routine.running) return { started: false, reason: "already running" };
-      return startRun(routine, now(), { kind: "manual" });
+      const prompt = typeof opts?.prompt === "string" && opts.prompt.trim() ? opts.prompt.trim() : undefined;
+      return startRun(routine, now(), { kind: "manual", ...(prompt ? { prompt } : {}) });
     },
     runs(id) {
       return repos.routines.runsFor(id);

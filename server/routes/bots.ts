@@ -237,7 +237,7 @@ export function createBotsRoutes(deps: {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: Record<string, unknown> = {};
-      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "mascotPinned", "iconShape", "avatarNonce", "avatarImageHash", "pinned", "hidden", "requireApproval", "alwaysAllow", "enabledApps", "skillId", "threadParticipants"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "mascotPinned", "iconShape", "avatarNonce", "avatarImageHash", "pinned", "hidden", "requireApproval", "alwaysAllow", "enabledApps", "enabledSkills", "skillId", "threadParticipants"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (body.avatarImageHash === null) patch.avatarImageHash = null;

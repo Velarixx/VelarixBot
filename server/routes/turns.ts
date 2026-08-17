@@ -24,7 +24,10 @@ export function createTurnsRoutes(deps: { turns: TurnsService }): RouteHandler {
         return true;
       }
       const attachments = paths.map((path) => ({ path, mime: mimeByPath.get(path) }));
-      await turns.startTurn(m[1], text, { attachments });
+      const extraSkillIds = Array.isArray(body.mentionSkillIds)
+        ? body.mentionSkillIds.map((id: unknown) => String(id).trim()).filter(Boolean)
+        : [];
+      await turns.startTurn(m[1], text, { attachments, extraSkillIds });
       json(res, 202, { ok: true });
       return true;
     }

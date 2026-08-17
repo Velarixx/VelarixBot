@@ -78,7 +78,10 @@ export interface BotRecord {
   alwaysAllow?: boolean;
   /** Connected-app slugs this bot may use (Composio). Empty/missing = none. */
   enabledApps?: string[];
-  /** Taught skill attached to every turn this bot runs. */
+  /** Taught skills this bot injects on every turn. Library is cross-bot;
+   * this list is the per-bot enable set (same shape as enabledApps). */
+  enabledSkills?: string[];
+  /** Legacy single attach. Empty enabledSkills + skillId set → [skillId]. */
   skillId?: string;
   /** Per-event notification overrides. Missing keys default on when `notifications` is on. */
   notifyEvents?: Partial<Record<"request.opened" | "turn.completed" | "stall.nudge" | "peer.reply", boolean>>;
@@ -161,6 +164,7 @@ export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } 
     ...(b.requireApproval === true ? { requireApproval: true } : {}),
     ...(b.alwaysAllow === true ? { alwaysAllow: true } : {}),
     ...(validStringList(b.enabledApps) ? { enabledApps: validStringList(b.enabledApps) } : {}),
+    ...(validStringList(b.enabledSkills) ? { enabledSkills: validStringList(b.enabledSkills) } : {}),
     ...(typeof b.skillId === "string" && b.skillId.trim() ? { skillId: b.skillId.trim() } : {}),
     ...(validNotifyEvents(b.notifyEvents) ? { notifyEvents: validNotifyEvents(b.notifyEvents) } : {}),
     ...(validStringList(b.threadParticipants) ? { threadParticipants: validStringList(b.threadParticipants) } : {}),
@@ -234,9 +238,40 @@ export function validNotifyEvents(v: unknown): BotRecord["notifyEvents"] | undef
   }
   return Object.keys(out).length ? out : undefined;
 }
-function validStringList(v: unknown): string[] | undefined {
+export function validStringList(v: unknown): string[] | undefined {
   if (!Array.isArray(v)) return undefined;
   const out = v.map((x) => String(x).trim()).filter(Boolean);
+  return out;
+}
+
+/** Per-bot enabled skill ids. A non-empty `enabledSkills` list wins.
+ * Legacy: empty/missing array + `skillId` set → `[skillId]`. */
+export function enabledSkillIds(bot: { skillId?: string; enabledSkills?: string[] } | null | undefined): string[] {
+  const listed = validStringList(bot?.enabledSkills) ?? [];
+  if (listed.length) {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const id of listed) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  }
+  const legacy = typeof bot?.skillId === "string" ? bot.skillId.trim() : "";
+  return legacy ? [legacy] : [];
+}
+
+/** Stable unique ids: first-seen order, no silent drop. */
+export function uniqueSkillIds(ids: Iterable<string>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of ids) {
+    const id = String(raw).trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
   return out;
 }
 export function validThenStartTurn(v: unknown): ThenStartTurn | undefined {

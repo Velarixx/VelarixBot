@@ -67,7 +67,9 @@ export function createRoutinesRoutes(deps: { routines: RoutinesService }): Route
     }
     match = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
     if (match && method === "POST") {
-      const outcome = await routines.runRoutine(match[1]);
+      const body = await readBody(req).catch(() => ({}));
+      const prompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt.trim() : undefined;
+      const outcome = await routines.runRoutine(match[1], prompt ? { prompt } : undefined);
       if (outcome.started) json(res, 202, { ok: true });
       else if (outcome.reason === "no such routine") json(res, 404, { error: outcome.reason });
       else json(res, 409, { error: outcome.reason ?? "not started" });

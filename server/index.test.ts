@@ -694,6 +694,45 @@ describe("harness HTTP API", () => {
     expect(found.iconShape).toBe("hexagon");
   });
 
+  it("treats skills as a per-bot enable set and keeps markdown while another bot still enables it", async () => {
+    const bot1 = (await api("POST", "/api/bots")).body.bot;
+    const bot2 = (await api("POST", "/api/bots")).body.bot;
+    const skillA = await api("POST", "/api/skills", { botId: bot1.id, name: "A", markdown: "# A\n\n1. Alpha\n" });
+    const skillB = await api("POST", "/api/skills", { botId: bot1.id, name: "B", markdown: "# B\n\n1. Bravo\n" });
+    expect(skillA.status).toBe(201);
+    const enabled = await api("PATCH", `/api/bots/${bot1.id}`, { enabledSkills: [skillA.body.skill.id, skillB.body.skill.id] });
+    expect(enabled.body.bot.enabledSkills).toEqual([skillA.body.skill.id, skillB.body.skill.id]);
+    const onBot2 = await api("PATCH", `/api/bots/${bot2.id}`, { enabledSkills: [skillB.body.skill.id] });
+    expect(onBot2.body.bot.enabledSkills).toEqual([skillB.body.skill.id]);
+    const stillBot1 = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === bot1.id);
+    expect(stillBot1.enabledSkills).toEqual([skillA.body.skill.id, skillB.body.skill.id]);
+
+    const auth = { authorization: `Bearer ${COMMS_TOKEN}` };
+    const saved = await api(
+      "POST",
+      "/api/internal/workspace",
+      { fromBotId: bot1.id, tool: "save_skill", args: { name: "C", steps: "1. Charlie" } },
+      auth,
+    );
+    expect(saved.body.text).toMatch(/Saved skill/);
+    const afterSave = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === bot1.id);
+    expect(afterSave.enabledSkills).toHaveLength(3);
+    expect(afterSave.enabledSkills.slice(0, 2)).toEqual([skillA.body.skill.id, skillB.body.skill.id]);
+
+    const deleted = await api("DELETE", `/api/bots/${bot1.id}`);
+    expect(deleted.status).toBe(200);
+    const stillB = await api("GET", `/api/skills/${skillB.body.skill.id}`);
+    expect(stillB.status).toBe(200);
+    expect(stillB.body.skill.markdown).toContain("Bravo");
+    const goneA = await api("GET", `/api/skills/${skillA.body.skill.id}`);
+    expect(goneA.status).toBe(404);
+
+    const cleared = await api("DELETE", `/api/skills/${skillB.body.skill.id}`);
+    expect(cleared.status).toBe(200);
+    const bot2After = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === bot2.id);
+    expect(bot2After.enabledSkills ?? []).not.toContain(skillB.body.skill.id);
+  });
+
   it("round-trips bot memory and writes workspace.md", async () => {
     const created = await api("POST", "/api/bots");
     const bot = created.body.bot;

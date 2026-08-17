@@ -1,28 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Mic, Square, Paperclip, X } from "lucide-react";
-import { useStore, type Bot } from "@/state/store";
+import { api, useStore, type Bot, type Skill } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { BotFace } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
 import { chipFromDroppedFile, sendPayload, type AttachmentChip } from "@/lib/attachments";
+import { enabledSkillIds } from "@/lib/skills";
 import {
-  filterSlashCommands,
+  filterMentionCandidates,
+  insertMention,
+  mentionableBots,
+  mentionableRoutines,
+  mentionQueryAt,
+  routineSendFromText,
+  type MentionCandidate,
+} from "@/lib/mentions";
+import {
   moveHighlight,
+  slashMenuItems,
   slashQueryAt,
-  type SlashHit,
+  type SlashMenuItem,
 } from "@/lib/slash-commands";
-
-/** The active @mention query at the caret: the text between an `@` that
- * starts a word and the caret. null = no mention being typed. */
-function mentionQueryAt(text: string, caret: number): { start: number; query: string } | null {
-  const upto = text.slice(0, caret);
-  const at = upto.lastIndexOf("@");
-  if (at === -1) return null;
-  if (at > 0 && !/\s/.test(upto[at - 1])) return null; // user@host, not a tag
-  const query = upto.slice(at + 1);
-  if (query.length > 24 || query.includes("@") || query.includes("\n")) return null;
-  return { start: at, query };
-}
 
 export function Composer({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
@@ -34,6 +32,8 @@ export function Composer({ bot }: { bot: Bot }) {
   const [highlight, setHighlight] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null); // Esc'd this @
   const [chips, setChips] = useState<AttachmentChip[]>([]);
+  const [skillChips, setSkillChips] = useState<Array<{ id: string; name: string }>>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const chipSeq = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   // what was typed before the mic went on — partials append after it
@@ -41,41 +41,52 @@ export function Composer({ bot }: { bot: Bot }) {
 
   const queued = state.queued[bot.id] ?? [];
 
+  useEffect(() => {
+    api("/api/skills")
+      .then(({ skills: list }) => setSkills(list ?? []))
+      .catch(() => {});
+  }, []);
+
+  const enabledSkills = useMemo(() => {
+    const ids = new Set(enabledSkillIds(bot));
+    return skills.filter((skill) => ids.has(skill.id));
+  }, [skills, bot]);
+
   // ── slash-command menu (typing `/` at a word start) ──
   const slash = slashQueryAt(text, caret);
-  const slashHits = useMemo(() => {
+  const slashItems = useMemo(() => {
     if (!slash || slash.start === dismissedAt) return [];
-    return filterSlashCommands(slash.query, { busy: Boolean(bot.busy) });
-  }, [slash, dismissedAt, bot.busy]);
-  const slashOpen = slashHits.length > 0;
+    return slashMenuItems(
+      slash.query,
+      { busy: Boolean(bot.busy) },
+      enabledSkills.map((skill) => ({ id: skill.id, name: skill.name })),
+    );
+  }, [slash, dismissedAt, bot.busy, enabledSkills]);
+  const slashOpen = slashItems.length > 0;
 
-  // ── @mention picker (tag another bot; the agent reaches it via ask_bot) ──
+  // ── @mention picker (bots via ask_bot; routines via startRun) ──
   const mention = mentionQueryAt(text, caret);
   const candidates = useMemo(() => {
     if (slashOpen || !mention || mention.start === dismissedAt) return [];
-    const peers = state.bots.filter((b) => b.id !== bot.id && !b.hidden);
-    const q = mention.query.trim().toLowerCase();
-    // "@Scout " — the full name plus a space — is a COMPLETED tag, not a
-    // search: keep the picker closed so Enter sends instead of re-picking
-    if (mention.query.endsWith(" ") && peers.some((b) => b.name.toLowerCase() === q)) return [];
-    return peers.filter((b) => !q || b.name.toLowerCase().includes(q)).slice(0, 6);
-  }, [slashOpen, mention, dismissedAt, state.bots, bot.id]);
+    return filterMentionCandidates(
+      mention.query,
+      mentionableBots(state.bots, bot.id),
+      mentionableRoutines(state.routines, state.bots),
+    );
+  }, [slashOpen, mention, dismissedAt, state.bots, state.routines, bot.id]);
   const pickerOpen = candidates.length > 0;
 
   useEffect(() => setHighlight(0), [slash?.start, slash?.query, mention?.start, mention?.query]);
 
-  const pickMention = (peer: Bot) => {
+  const pickMention = (candidate: MentionCandidate) => {
     if (!mention) return;
-    const after = text.slice(caret);
-    const next = `${text.slice(0, mention.start)}@${peer.name} ${after}`;
-    setText(next);
-    const newCaret = mention.start + peer.name.length + 2;
-    setCaret(newCaret);
-    // picking completes this tag — close the popup so the next Enter sends
+    const next = insertMention(text, caret, mention, candidate.name);
+    setText(next.text);
+    setCaret(next.caret);
     setDismissedAt(mention.start);
     requestAnimationFrame(() => {
       inputRef.current?.focus();
-      inputRef.current?.setSelectionRange(newCaret, newCaret);
+      inputRef.current?.setSelectionRange(next.caret, next.caret);
     });
   };
 
@@ -94,10 +105,29 @@ export function Composer({ bot }: { bot: Bot }) {
 
   const send = () => {
     const payload = sendPayload(text, chips);
-    if (!payload.text && !payload.attachments.length) return;
-    dispatch({ type: "send", botId: bot.id, text: payload.text, attachments: payload.attachments });
+    const mentionSkills = skillChips.map((chip) => chip.id);
+    const routineSend = routineSendFromText(payload.text, state.routines, state.bots);
+    if (routineSend) {
+      void api(`/api/routines/${routineSend.routineId}/run`, {
+        method: "POST",
+        body: JSON.stringify(routineSend.prompt ? { prompt: routineSend.prompt } : {}),
+      }).catch(() => {});
+      setText("");
+      setChips([]);
+      setSkillChips([]);
+      return;
+    }
+    if (!payload.text && !payload.attachments.length && !mentionSkills.length) return;
+    dispatch({
+      type: "send",
+      botId: bot.id,
+      text: payload.text || (mentionSkills.length ? "Follow the mentioned skill." : ""),
+      attachments: payload.attachments,
+      mentionSkillIds: mentionSkills,
+    });
     setText("");
     setChips([]);
+    setSkillChips([]);
   };
 
   // native dictation: partials stream into the input while the Swift
@@ -165,7 +195,27 @@ export function Composer({ bot }: { bot: Bot }) {
     input.click();
   };
 
-  const runSlash = (hit: SlashHit) => {
+  const pickSlashSkill = (skill: { id: string; name: string }) => {
+    setSkillChips((current) => (current.some((chip) => chip.id === skill.id) ? current : [...current, skill]));
+    if (slash) {
+      const after = text.slice(caret);
+      const next = `${text.slice(0, slash.start)}${after}`.replace(/^\s+/, "");
+      setText(next);
+      setCaret(0);
+    } else {
+      setText("");
+      setCaret(0);
+    }
+    setDismissedAt(null);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const runSlash = (item: SlashMenuItem) => {
+    if (item.kind === "skill") {
+      pickSlashSkill(item.hit.skill);
+      return;
+    }
+    const hit = item.hit;
     if (!hit.enabled) return;
     if (hit.command.id === "help") {
       setText("/");
@@ -236,42 +286,67 @@ export function Composer({ bot }: { bot: Bot }) {
             data-slash-menu
             className="absolute bottom-full left-10 z-20 mb-2 w-80 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg"
           >
-            {slashHits.map((hit, i) => (
-              <button
-                key={hit.command.id}
-                type="button"
-                disabled={!hit.enabled}
-                onClick={() => runSlash(hit)}
-                onMouseEnter={() => setHighlight(i)}
-                className={cn(
-                  "flex w-full flex-col gap-0.5 px-3 py-2 text-left",
-                  i === highlight ? "bg-raised-hover" : "",
-                  hit.enabled ? "text-ink" : "cursor-not-allowed text-ink-secondary/50",
-                )}
-              >
-                <span className="text-[14px] font-medium">/{hit.command.name}</span>
-                <span className="text-[12px] text-ink-secondary">{hit.command.description}</span>
-              </button>
-            ))}
+            {slashItems.map((item, i) =>
+              item.kind === "command" ? (
+                <button
+                  key={item.hit.command.id}
+                  type="button"
+                  disabled={!item.hit.enabled}
+                  onClick={() => runSlash(item)}
+                  onMouseEnter={() => setHighlight(i)}
+                  className={cn(
+                    "flex w-full flex-col gap-0.5 px-3 py-2 text-left",
+                    i === highlight ? "bg-raised-hover" : "",
+                    item.hit.enabled ? "text-ink" : "cursor-not-allowed text-ink-secondary/50",
+                  )}
+                >
+                  <span className="text-[14px] font-medium">/{item.hit.command.name}</span>
+                  <span className="text-[12px] text-ink-secondary">{item.hit.command.description}</span>
+                </button>
+              ) : (
+                <button
+                  key={`skill-${item.hit.skill.id}`}
+                  type="button"
+                  onClick={() => runSlash(item)}
+                  onMouseEnter={() => setHighlight(i)}
+                  className={cn(
+                    "flex w-full items-center justify-between gap-2 px-3 py-2 text-left",
+                    i === highlight ? "bg-raised-hover" : "",
+                  )}
+                >
+                  <span className="min-w-0 truncate text-[14px] font-medium text-ink">/{item.hit.skill.name}</span>
+                  <span className="shrink-0 text-xs text-ink-secondary">This turn</span>
+                </button>
+              ),
+            )}
           </div>
         )}
         {pickerOpen && (
           <div className="absolute bottom-full left-10 z-20 mb-2 w-72 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg">
-            {candidates.map((peer, i) => (
-              <button
-                key={peer.id}
-                onClick={() => pickMention(peer)}
-                onMouseEnter={() => setHighlight(i)}
-                className={cn(
-                  "flex w-full items-center gap-2.5 px-3 py-2 text-left",
-                  i === highlight ? "bg-raised-hover" : "",
-                )}
-              >
-                <BotFace bot={peer} state={normalizeState(peer.mascotExpression) ?? "happy"} size={24} />
-                <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink">{peer.name}</span>
-                <span className="shrink-0 text-xs text-ink-secondary">Agent</span>
-              </button>
-            ))}
+            {candidates.map((candidate, i) => {
+              const peer = candidate.kind === "bot" ? state.bots.find((b) => b.id === candidate.id) : null;
+              return (
+                <button
+                  key={`${candidate.kind}-${candidate.id}`}
+                  onClick={() => pickMention(candidate)}
+                  onMouseEnter={() => setHighlight(i)}
+                  className={cn(
+                    "flex w-full items-center gap-2.5 px-3 py-2 text-left",
+                    i === highlight ? "bg-raised-hover" : "",
+                  )}
+                >
+                  {peer ? (
+                    <BotFace bot={peer} state={normalizeState(peer.mascotExpression) ?? "happy"} size={24} />
+                  ) : (
+                    <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-inset text-[10px] font-semibold text-ink-secondary">
+                      R
+                    </span>
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink">{candidate.name}</span>
+                  <span className="shrink-0 text-xs text-ink-secondary">{candidate.kind === "routine" ? "Routine" : "Agent"}</span>
+                </button>
+              );
+            })}
           </div>
         )}
         <div
@@ -285,8 +360,25 @@ export function Composer({ bot }: { bot: Bot }) {
             onDropFiles(e.dataTransfer.files);
           }}
         >
-        {chips.length > 0 && (
+        {(chips.length > 0 || skillChips.length > 0) && (
           <div className="flex flex-wrap gap-1.5 px-2 pt-1">
+            {skillChips.map((chip) => (
+              <span
+                key={`skill-${chip.id}`}
+                className="flex max-w-full items-center gap-1.5 rounded-full bg-accent/15 px-2.5 py-1 text-[12px] text-ink"
+              >
+                <span className="truncate">/{chip.name}</span>
+                <span className="text-[10px] uppercase tracking-wide text-ink-secondary">This turn</span>
+                <button
+                  type="button"
+                  onClick={() => setSkillChips((c) => c.filter((item) => item.id !== chip.id))}
+                  className="rounded-full p-0.5 text-ink-secondary hover:bg-raised hover:text-ink"
+                  title="Remove this-turn skill"
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
             {chips.map((chip) => (
               <span
                 key={chip.id}
@@ -338,12 +430,12 @@ export function Composer({ bot }: { bot: Bot }) {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
                 const delta = e.key === "ArrowDown" ? 1 : -1;
-                setHighlight((h) => moveHighlight(h, delta, slashHits.length));
+                setHighlight((h) => moveHighlight(h, delta, slashItems.length));
                 return;
               }
               if (e.key === "Enter" || e.key === "Tab") {
                 e.preventDefault();
-                runSlash(slashHits[highlight] ?? slashHits[0]);
+                runSlash(slashItems[highlight] ?? slashItems[0]);
                 return;
               }
               if (e.key === "Escape") {
