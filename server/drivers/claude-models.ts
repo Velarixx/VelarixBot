@@ -59,7 +59,7 @@ export function parseClaudeModelCatalog(stdout: string): ModelCatalog | null {
   const rows = json !== null ? asRows(json) : stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#") && !line.startsWith(" "));
+    .filter((line) => /^[A-Za-z0-9][\w.+/-]*$/.test(line));
   const seen = new Set<string>();
   const options: ModelCatalog["options"] = [];
   for (const row of rows) {
