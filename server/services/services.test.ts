@@ -43,6 +43,22 @@ describe("bots service", () => {
     return createBotsService({ repos, defaultSelection: selection });
   };
 
+  it("publicBot allowlist omits resumeCursors and keeps public fields", () => {
+    const bot = bots.createBot();
+    bots.setResumeCursor(bot.id, "claude", "sess-must-not-leak");
+    bots.patchBot(bot.id, { enabledApps: ["gmail"], alwaysAllow: true });
+    const pub = bots.publicBot(bot.id)!;
+    expect(pub).not.toHaveProperty("resumeCursors");
+    expect(JSON.stringify(pub)).not.toContain("sess-must-not-leak");
+    expect(pub.enabledApps).toEqual(["gmail"]);
+    expect(pub.alwaysAllow).toBe(true);
+    expect(pub.messages.length).toBeGreaterThan(0);
+    expect(bots.bot(bot.id)?.resumeCursors).toEqual({ claude: "sess-must-not-leak" });
+    const listed = bots.publicBots();
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).not.toHaveProperty("resumeCursors");
+  });
+
   it("creates an off/IDLE bot with greeting and onboarding card", () => {
     const bot = bots.createBot();
     expect(bot).toMatchObject({ modelSelection: selection(), computer: "off", state: "IDLE" });

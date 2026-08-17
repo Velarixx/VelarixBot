@@ -22,9 +22,12 @@ const support: AcpSupport = {
   // --permission-mode must always be explicit: ~/.grok/config.toml may set
   // permission_mode = "always-approve", which would silently make every
   // session yolo and never fire session/request_permission.
+  // Match the ACP permission-bridge policy (core.ts / Hermes): a
+  // require-approval bot on a fullAuto instance must still card — never
+  // spawn card-less via bypassPermissions.
   spawnArgs: (config, turn) => [
     "--permission-mode",
-    config.fullAuto ? "bypassPermissions" : "default",
+    config.fullAuto && !turn.requireApproval ? "bypassPermissions" : "default",
     ...(turn.model ? ["-m", turn.model] : []),
     "agent",
     "stdio",

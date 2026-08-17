@@ -16,6 +16,7 @@ import { importLegacyData } from "./db/importer.ts";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
+import { attachListenError } from "./listen-error.ts";
 import { createRepositories } from "./repositories/index.ts";
 import { initSecretStore } from "./secrets.ts";
 
@@ -100,7 +101,7 @@ setInterval(() => app.tick(), 15_000).unref?.();
 const server = createServer((req, res) => {
   void app.handle(req, res);
 });
-
+attachListenError(server);
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`velarixbot server on http://127.0.0.1:${PORT}`);
 });

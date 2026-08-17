@@ -26,9 +26,9 @@ import { createHealthRoutes } from "./routes/health.ts";
 import { createIntegrationsRoutes } from "./routes/integrations.ts";
 import { createRoutinesRoutes } from "./routes/routines.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
-import { createBotsService, type BotsService } from "./services/bots.ts";
+import { createBotsService, projectPublicBotFrame, type BotsService } from "./services/bots.ts";
 import { createDiagnosticsService } from "./services/diagnostics.ts";
-import { createSseHub, type SseHub } from "./services/events.ts";
+import { createSseHub, type Broadcast, type SseHub } from "./services/events.ts";
 import { createListenerPoller } from "./listeners/index.ts";
 import { createRoutinesService, type RoutinesService } from "./services/routines.ts";
 import { createTeachService, type TeachService } from "./services/teach.ts";
@@ -98,7 +98,13 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     latest: () => repos.eventLog.latestSequence(UI_STREAM_ID),
     oldest: () => repos.eventLog.oldestSequence(UI_STREAM_ID),
   });
-  const broadcast = hub.broadcast;
+  // Late-bound: bots is created below. Every {kind:"bot"} frame is
+  // projected through the publicBot allowlist before it hits the wire
+  // (live SSE + durable ui-stream replay).
+  let botsRef: BotsService | null = null;
+  const broadcast: Broadcast = (payload) => {
+    hub.broadcast(projectPublicBotFrame(payload, (id) => botsRef?.publicBot(id) ?? null));
+  };
 
   // canonical events are mirrored into SQLite (event_log); the per-thread
   // NDJSON files stay on as the export surface (harness/bus.ts)
@@ -128,6 +134,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     defaultSelection: () => bootSelection,
     computerBindings: () => computers.list().map((p) => p.id),
   });
+  botsRef = bots;
 
   const teach = createTeachService({
     bus,
@@ -143,7 +150,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       const bot = bots.bot(botId);
       if (!bot) return;
       bots.patchBot(botId, { unread: true });
-      broadcast({ kind: "bot", bot: bots.bot(botId) });
+      broadcast({ kind: "bot", bot: bots.publicBot(botId) });
       broadcast({ kind: "nudge", botId, reason: "stall" });
     },
     onTrigger: (botId, prompt) => {

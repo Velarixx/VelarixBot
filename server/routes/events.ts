@@ -27,7 +27,7 @@ export function createEventsRoutes(deps: { hub: SseHub; bots: BotsService }): Ro
       const cursor = hub.cursor();
       json(res, 200, {
         ...cursor,
-        bots: bots.bots().map((b) => ({ ...b, messages: bots.messagesFor(b.threadId) })),
+        bots: bots.publicBots(),
       });
       return true;
     }

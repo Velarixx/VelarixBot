@@ -83,18 +83,24 @@ export function redactSecrets(text: string): string {
 }
 
 /** Argument pattern stored with a rule — redacted, capped, no raw keys. */
+export const MATCHER_MAX = 200;
+
 export function argumentPattern(summary: string): string {
-  return redactSecrets(summary).trim().slice(0, 200);
+  return redactSecrets(summary).trim().slice(0, MATCHER_MAX);
 }
 
 export function globMatch(value: string, pattern: string): boolean {
   if (!pattern || pattern === "*") return true;
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  // `?` must be escaped: an unescaped `?` makes the preceding char optional
+  // and silently widens a stored Allow matcher.
+  const escaped = pattern.replace(/[.+^${}()|[\]\\?]/g, "\\$&").replace(/\*/g, ".*");
   return new RegExp(`^${escaped}$`, "s").test(value);
 }
 
 function matchingRule(rules: ApprovalRule[], tool: string, summary: string): ApprovalRule | null {
-  const haystack = redactSecrets(summary);
+  // Cap the haystack identically to the stored matcher. Always-allow on a
+  // summary > MATCHER_MAX must still match after persist (anchored ^…$).
+  const haystack = argumentPattern(summary);
   for (const rule of rules) {
     if (rule.disabled === true) continue;
     if (rule.tool !== tool) continue;

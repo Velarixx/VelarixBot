@@ -108,6 +108,12 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   const { cfg, registry, computers, bus, repos, bots, teach, proactive, broadcast, port, commsToken } = deps;
   const store = bots; // message + bot accessors (repository-backed)
 
+  /** Every {kind:"bot"} SSE frame goes through the publicBot allowlist. */
+  const broadcastBot = (id: string) => {
+    const bot = store.publicBot(id);
+    if (bot) broadcast({ kind: "bot", bot });
+  };
+
   /** The provider a bot.computer binding resolves to — null for off/unbound
    * (including bindings whose provider was removed from config). */
   function boundProvider(computer: string | undefined): ComputerProvider | null {
@@ -207,7 +213,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           const owner = store.botByThread(groupThreadId);
           if (owner) {
             store.patchBot(owner.id, { unread: true });
-            broadcast({ kind: "bot", bot: store.bot(owner.id) });
+            broadcastBot(owner.id);
             broadcast({ kind: "peer.reply", botId: owner.id, fromBotId: target.id, fromName: target.name });
           }
         }
@@ -294,7 +300,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     broadcast({ kind: "message", threadId: bot.threadId, message });
     store.patchBot(bot.id, { state: "NEEDS_INPUT" });
     proactive.noteState(bot.id, "NEEDS_INPUT");
-    broadcast({ kind: "bot", bot: store.bot(bot.id) });
+    broadcastBot(bot.id);
     pendingAskByRequest.set(requestId, {
       botId: bot.id,
       tool: secret ? "ask_secret" : input.connectUrl ? "connect_app" : "ask_choice",
@@ -466,7 +472,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         const skill = saveSkill({ name, botId: fromBotId, markdown: steps });
         const current = enabledSkillIds(bot);
         bots.patchBot(fromBotId, { enabledSkills: uniqueSkillIds([...current, skill.id]) });
-        broadcast({ kind: "bot", bot: store.bot(fromBotId) });
+        broadcastBot(fromBotId);
         return { text: `Saved skill ${skill.name} (id: ${skill.id}). Run it with run_skill using that id.` };
       }
       if (tool === "run_skill") {
@@ -534,7 +540,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (!url) return { error: `could not start connect for ${slug}` };
         const enabled = Array.from(new Set([...(bot.enabledApps ?? []), slug]));
         bots.patchBot(fromBotId, { enabledApps: enabled });
-        broadcast({ kind: "bot", bot: store.bot(fromBotId) });
+        broadcastBot(fromBotId);
         const answer = await askUserAndWait(fromBotId, {
           question: `Connect ${slug} in the browser, then come back here.`,
           connectUrl: url,
@@ -578,7 +584,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (event.turnId) turnUsage.delete(event.turnId);
         bots.patchBot(bot.id, { busy: true, state: "RUNNING", stateDetail: undefined });
         proactive.noteState(bot.id, "RUNNING");
-        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        broadcastBot(bot.id);
         break;
       case "thread.token-usage.updated":
         if (event.turnId) turnUsage.set(event.turnId, { input: event.input, output: event.output, cost: null });
@@ -655,7 +661,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (event.requestId) askMessageByRequest.set(event.requestId, message.id);
         bots.patchBot(bot.id, { state: "NEEDS_INPUT" });
         proactive.noteState(bot.id, "NEEDS_INPUT");
-        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        broadcastBot(bot.id);
         break;
       }
       case "request.resolved": {
@@ -673,7 +679,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (event.requestId) pendingAskByRequest.delete(event.requestId);
         bots.patchBot(bot.id, { state: "RUNNING" });
         proactive.noteState(bot.id, "RUNNING");
-        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        broadcastBot(bot.id);
         break;
       }
       case "runtime.error":
@@ -682,7 +688,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
         proactive.noteState(bot.id, "BLOCKED");
         notifyIdle(bot.id);
-        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        broadcastBot(bot.id);
         break;
       case "turn.completed": {
         // the last live frame becomes a settled inline screen message —
@@ -733,7 +739,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
             /* post-turn distill/extract must not fail the turn or log prompts */
           });
         }
-        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        broadcastBot(bot.id);
         break;
       }
     }
@@ -847,7 +853,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     // hang the HTTP request
     bots.patchBot(bot.id, { busy: true, unread: false, state: "RUNNING", stateDetail: undefined });
     proactive.noteState(bot.id, "RUNNING");
-    broadcast({ kind: "bot", bot: store.bot(bot.id) });
+    broadcastBot(bot.id);
 
     void (async () => {
       try {
@@ -964,7 +970,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: message.slice(0, 160) });
         proactive.noteState(bot.id, "BLOCKED");
         notifyIdle(bot.id);
-        broadcast({ kind: "bot", bot: store.bot(bot.id) });
+        broadcastBot(bot.id);
       }
     })();
   }
@@ -1046,7 +1052,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
     proactive.noteState(bot.id, "BLOCKED");
     notifyIdle(bot.id);
-    broadcast({ kind: "bot", bot: store.bot(bot.id) });
+    broadcastBot(bot.id);
     return { ok: true };
   }
 
