@@ -20,6 +20,8 @@ jobs:
         with: { version: 10 }
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: pnpm, cache-dependency-path: docs-site/pnpm-lock.yaml }
+      # Root pnpm-workspace.yaml is for native arches, not this site.
+      # --ignore-workspace keeps install on docs-site/pnpm-lock.yaml.
       - run: pnpm install --frozen-lockfile --ignore-workspace
         working-directory: docs-site
       - run: pnpm build
