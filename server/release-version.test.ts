@@ -97,7 +97,13 @@ describe("release version gate", () => {
     expect(workflow).toContain("needs.validate.outputs.notes");
     expect(workflow).toMatch(/if \[ "\$RELEASE_PRERELEASE" = "true" \]; then/);
     expect(workflow).toContain('extra+=(--prerelease)');
-    expect(workflow).toContain('pnpm version "${{ inputs.version }}" --no-git-tag-version');
+    const stamp =
+      'pnpm version "${{ inputs.version }}" --no-git-tag-version --allow-same-version';
+    expect(workflow).toContain(stamp);
+    expect(workflow.split(stamp).length - 1).toBe(2);
+    expect(workflow).not.toMatch(
+      /pnpm version "\$\{\{ inputs\.version \}\}" --no-git-tag-version(?! --allow-same-version)/,
+    );
     expect(workflow).toContain('v${{ inputs.version }}');
     expect(workflow).toContain("velarixbot-mac-arm64-${{ inputs.version }}");
     expect(workflow).toContain("velarixbot-windows-x64-${{ inputs.version }}");

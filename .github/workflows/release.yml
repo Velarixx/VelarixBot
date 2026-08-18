@@ -50,7 +50,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Set package version
         shell: bash
-        run: pnpm version "${{ inputs.version }}" --no-git-tag-version
+        run: pnpm version "${{ inputs.version }}" --no-git-tag-version --allow-same-version
       - run: pnpm build
       - run: pnpm build:server
       - run: pnpm stage:sqlite
@@ -109,7 +109,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Set package version
         shell: bash
-        run: pnpm version "${{ inputs.version }}" --no-git-tag-version
+        run: pnpm version "${{ inputs.version }}" --no-git-tag-version --allow-same-version
       - run: pnpm package:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
