@@ -1,6 +1,7 @@
 import { defineConfig } from "vitepress";
 
 export default defineConfig({
+  base: "/VelarixBot/",
   title: "VelarixBot Docs",
   description:
     "Guides and references for running VelarixBot — your AI team in a messaging app: bots, engines, computers, routines, and the local-first harness.",

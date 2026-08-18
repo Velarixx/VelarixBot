@@ -17,7 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with: { version: 10 }
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: pnpm, cache-dependency-path: docs-site/pnpm-lock.yaml }
       # Root pnpm-workspace.yaml is for native arches, not this site.
