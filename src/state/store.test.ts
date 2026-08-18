@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { nextFlushBotIds } from "@/lib/prompt-queue";
-import { initialState, reducer, type Bot, type Group } from "./store";
+import { initialState, newBotRequestBody, reducer, type Bot, type Group } from "./store";
 
 function bot(over: Partial<Bot> & Pick<Bot, "id">): Bot {
   return {
@@ -171,6 +171,33 @@ describe("A ⇄ B DM groups", () => {
     });
     expect(state.groups[0]?.messages).toHaveLength(1);
     expect(state.groups[0]?.messages[0]?.text).toBe("do this");
+  });
+});
+
+describe("one-step named create", () => {
+  it("newBotRequestBody always sends name and omits computer/alwaysAllow", () => {
+    expect(newBotRequestBody({ name: "  Scout  ", title: " Field ", color: "green" })).toEqual({
+      name: "Scout",
+      title: "Field",
+      color: "green",
+    });
+    expect(newBotRequestBody({ name: "Scout" })).toEqual({ name: "Scout" });
+    expect(JSON.stringify(newBotRequestBody({ name: "Scout", model: "claude-sonnet-5" }))).not.toMatch(
+      /computer|alwaysAllow/,
+    );
+  });
+
+  it("Plus opens the modal; confirm closes it; botAdded paints the typed name first", () => {
+    let state = reducer(initialState, { type: "toggleCreateBot", open: true });
+    expect(state.createBotOpen).toBe(true);
+    expect(state.bots).toEqual([]);
+    state = reducer(state, { type: "newBot", name: "Scout", title: "Field scout", color: "green" });
+    expect(state.createBotOpen).toBe(false);
+    const created = bot({ id: "bot-scout", name: "Scout", title: "Field scout", color: "green" });
+    state = reducer(state, { type: "botAdded", bot: created });
+    expect(state.bots[0]?.name).toBe("Scout");
+    expect(state.bots[0]?.name).not.toBe("New Bot");
+    expect(state.selectedId).toBe("bot-scout");
   });
 });
 

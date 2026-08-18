@@ -232,7 +232,7 @@ export function Composer({ bot }: { bot: Bot }) {
     setDismissedAt(null);
     switch (hit.command.id) {
       case "newBot":
-        dispatch({ type: "newBot" });
+        dispatch({ type: "toggleCreateBot", open: true });
         break;
       case "model":
         dispatch({ type: "toggleSettings", open: true });
@@ -399,7 +399,7 @@ export function Composer({ bot }: { bot: Bot }) {
         )}
         <div className="flex items-center gap-2">
         <button
-          onClick={() => dispatch({ type: "newBot" })}
+          onClick={() => dispatch({ type: "toggleCreateBot", open: true })}
           className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-raised hover:text-ink"
           title="New bot"
         >

@@ -4,7 +4,7 @@
 // driver kind, and unavailable instances render disabled with the reason.
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
-import { useStore, type Bot, type InstanceInfo } from "@/state/store";
+import { useStore, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
 import { ProviderMark } from "./ProviderIcons";
 import { cn } from "@/lib/cn";
 
@@ -12,7 +12,16 @@ function modelLabel(instance: InstanceInfo | undefined, model: string): string {
   return instance?.models.options.find((o) => o.id === model)?.label ?? model;
 }
 
-export function ModelPicker({ bot, className }: { bot: Bot; className?: string }) {
+export function ModelPicker({
+  bot,
+  className,
+  onSelect,
+}: {
+  bot: Bot;
+  className?: string;
+  /** Draft create: keep the pick in the modal instead of PATCHing a bot id. */
+  onSelect?: (selection: ModelSelection) => void;
+}) {
   const { state, dispatch } = useStore();
   const [open, setOpen] = useState(false);
   const [railId, setRailId] = useState<string | null>(null);
@@ -38,30 +47,27 @@ export function ModelPicker({ bot, className }: { bot: Bot; className?: string }
     };
   }, [open]);
 
+  const apply = (next: ModelSelection) => {
+    if (onSelect) onSelect(next);
+    else dispatch({ type: "setModel", botId: bot.id, selection: next });
+  };
+
   const pick = (instance: InstanceInfo, model: string, effort?: string) => {
     const nextEffort =
       effort ??
       (instance.effort && selection.effort && instance.effort.options.some((o) => o.id === selection.effort)
         ? selection.effort
         : instance.effort?.default);
-    dispatch({
-      type: "setModel",
-      botId: bot.id,
-      selection: {
-        instanceId: instance.instanceId,
-        model,
-        ...(nextEffort ? { effort: nextEffort } : {}),
-      },
+    apply({
+      instanceId: instance.instanceId,
+      model,
+      ...(nextEffort ? { effort: nextEffort } : {}),
     });
     setOpen(false);
   };
 
   const pickEffort = (instance: InstanceInfo, effort: string) => {
-    dispatch({
-      type: "setModel",
-      botId: bot.id,
-      selection: { instanceId: instance.instanceId, model: selection.model, effort },
-    });
+    apply({ instanceId: instance.instanceId, model: selection.model, effort });
   };
 
   return (

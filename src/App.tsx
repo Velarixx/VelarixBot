@@ -13,6 +13,7 @@ import { AppSettingsPanel } from "@/components/AppSettingsPanel";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { RoutinesPanel } from "@/components/RoutinesPanel";
 import { SkillsPanel } from "@/components/SkillsPanel";
+import { CreateBotModal } from "@/components/CreateBotModal";
 
 function Shell() {
   const { state, dispatch } = useStore();
@@ -42,7 +43,7 @@ function Shell() {
             </p>
           </div>
           <button
-            onClick={() => dispatch({ type: "newBot" })}
+            onClick={() => dispatch({ type: "toggleCreateBot", open: true })}
             className="mt-2 rounded-lg bg-accent px-4 py-2.5 text-[14px] font-medium text-white hover:bg-accent/90"
           >
             Create a bot
@@ -63,6 +64,7 @@ function Shell() {
       {state.pluginsOpen && <PluginsPanel />}
       {state.routinesOpen && <RoutinesPanel />}
       {state.skillsOpen && <SkillsPanel />}
+      {state.createBotOpen && <CreateBotModal />}
       </div>
     </div>
   );
