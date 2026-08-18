@@ -45,7 +45,7 @@ import { ensureBotWorkspace } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
 import { codexImageInput } from "../attachments.ts";
 import { HANDOFF_CONTINUE, classifyOpenedRequest, isCredentialAsk } from "../handoff.ts";
-import { cliVersion, displayCliPath, killProcessTree, probeProtocol, spawnCliHidden } from "./cli.ts";
+import { cliExec, cliVersion, displayCliPath, killProcessTree, probeProtocol, spawnCliHidden } from "./cli.ts";
 import { FALLBACK_CODEX_MODELS, loadCodexModelCatalog } from "./codex-models.ts";
 
 // [VERIFY] 2026-08-17: Codex app-server `turn/start` accepts `effort`.
@@ -63,6 +63,55 @@ const CODEX_EFFORT_IDS = new Set(CODEX_EFFORT.options.map((o) => o.id));
 import { appendNative } from "./native.ts";
 
 const DRIVER_KIND = "codex";
+
+/** Banner / setup-card copy when ChatGPT login is missing or the refresh
+ * token was already used. Names `codex logout` then `codex login` — never
+ * spawn either; OAuth will not complete from a hidden console. */
+export const CODEX_LOGIN_NOTE =
+  "Codex ChatGPT login expired — run `codex logout` then `codex login` in a terminal";
+
+const REFRESH_TOKEN_USED = /refresh token[\s\S]*already used/i;
+const LOG_OUT_AND_SIGN_IN = /log out[\s\S]*sign in again/i;
+
+/** True for the Codex CLI refresh-token-reused sentence, or our loginNote.
+ * Used by the driver (RPC / runtime.error) and userFacingBlock so the
+ * banner never shows the raw CLI string. */
+export function isCodexChatGptReauth(message: string | null | undefined): boolean {
+  if (!message) return false;
+  if (message === CODEX_LOGIN_NOTE) return true;
+  const text = message.toLowerCase();
+  if (text.includes("codex logout") && text.includes("codex login")) return true;
+  return REFRESH_TOKEN_USED.test(message) || LOG_OUT_AND_SIGN_IN.test(message);
+}
+
+/** The CLI environment shared by auth probes and real turns.
+ *
+ * The CLI owns its own ChatGPT login; a leaked OPENAI_API_KEY silently
+ * flips billing to pay-as-you-go. Probe and turn must strip the same key
+ * so snapshot cannot claim a login the turn would remove. */
+export function codexEnvironment(source: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...source, PATH: augmentedPath(), NPM_CONFIG_LOGLEVEL: "error" };
+  delete env.OPENAI_API_KEY;
+  return env;
+}
+
+/** Whether `codex` has a usable ChatGPT (or other) login.
+ *
+ * Credential files are not inspected — tokens may live in the OS store,
+ * and `~/.codex/auth.json` can be stale while `login status` still
+ * reports the refresh-token-already-used sentence. The CLI's own
+ * `codex login status` is the source of truth. Never `codex login`. */
+export async function codexSignedIn(
+  cli: string,
+  env: NodeJS.ProcessEnv,
+  run: typeof cliExec = cliExec,
+): Promise<boolean> {
+  const result = await run(cli, ["login", "status"], { timeout: 8000, env });
+  const text = `${result.stdout}\n${result.stderr}`;
+  if (isCodexChatGptReauth(text)) return false;
+  if (!result.ok) return false;
+  return /logged in/i.test(text);
+}
 
 // in the packaged app process.execPath is the Electron binary — this env
 // makes it behave as plain node for the spawned MCP proxies (harmless in dev)
@@ -205,7 +254,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
 
   async create(input: DriverCreateInput<CodexConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
-    const probeEnv = { ...process.env, PATH: augmentedPath() };
+    const probeEnv = codexEnvironment();
     let models = await loadCodexModelCatalog(config.cli, probeEnv);
     const listeners = new Set<RuntimeEventListener>();
     interface Turn {
@@ -235,10 +284,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const mcpOverlay = Object.keys(mcpServersConfig).length ? { mcp_servers: mcpServersConfig } : null;
 
       const workspace = turn.cwd ?? ensureBotWorkspace("codex");
-      const env: Record<string, string | undefined> = { ...process.env, PATH: augmentedPath(), NPM_CONFIG_LOGLEVEL: "error" };
-      // the CLI owns its own ChatGPT login; a leaked API key silently flips
-      // billing to pay-as-you-go (agentcal)
-      delete env.OPENAI_API_KEY;
+      const env = codexEnvironment();
 
       const child = spawnCliHidden(config.cli, ["app-server"], {
         cwd: workspace,
@@ -479,11 +525,29 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
           case "turn/completed": {
             const t = p.turn ?? {};
-            settle(t.status === "completed", t.status === "completed" ? null : (t.error?.message ?? t.status ?? "failed"));
+            if (t.status === "completed") {
+              settle(true, null);
+              break;
+            }
+            const failReason = typeof t.error?.message === "string" ? t.error.message : (t.status ?? "failed");
+            if (isCodexChatGptReauth(failReason)) {
+              emit({ ...base(threadId, turnId), type: "runtime.error", message: CODEX_LOGIN_NOTE });
+              settle(false, "auth_required");
+              break;
+            }
+            settle(false, failReason);
             break;
           }
           case "error":
-            if (p.message) emit({ ...base(threadId, turnId), type: "runtime.error", message: p.message });
+            if (p.message) {
+              const auth = isCodexChatGptReauth(p.message);
+              emit({
+                ...base(threadId, turnId),
+                type: "runtime.error",
+                message: auth ? CODEX_LOGIN_NOTE : p.message,
+              });
+              if (auth) settle(false, "auth_required");
+            }
             break;
         }
       };
@@ -557,6 +621,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           return;
         }
         const tail = stderr.trim().slice(-300);
+        if (isCodexChatGptReauth(stderr) || isCodexChatGptReauth(tail)) {
+          emit({ ...base(threadId, turnId), type: "runtime.error", message: CODEX_LOGIN_NOTE });
+          settle(false, "auth_required");
+          return;
+        }
         if (code !== 0) {
           emit({
             ...base(threadId, turnId),
@@ -635,8 +704,14 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           await request("turn/start", turnStart);
         } catch (e) {
           if (!state.settled) {
-            emit({ ...base(threadId, turnId), type: "runtime.error", message: (e as Error).message });
-            settle(false, "rpc_error");
+            const raw = (e as Error).message;
+            const auth = isCodexChatGptReauth(raw);
+            emit({
+              ...base(threadId, turnId),
+              type: "runtime.error",
+              message: auth ? CODEX_LOGIN_NOTE : raw,
+            });
+            settle(false, auth ? "auth_required" : "rpc_error");
           }
         }
       })();
@@ -648,7 +723,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     // so the model picker doesn't spawn a process on every describe().
     let identityCache: { key: string; at: number; ok: boolean; detail: string } | null = null;
     const snapshot = async (): Promise<ProviderSnapshot> => {
-      const version = await cliVersion(config.cli, 8000, probeEnv);
+      const env = codexEnvironment();
+      const version = await cliVersion(config.cli, 8000, env);
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
       // `--version` succeeding proves presence, not identity: a PATH-shadowed
       // or outdated `codex` (issue #9 class) still answers it and then fails
@@ -660,18 +736,24 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           config.cli,
           ["app-server"],
           { jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "velarixbot", version: "1" } } },
-          { timeoutMs: 8000, env: probeEnv },
+          { timeoutMs: 8000, env },
         );
         identityCache = { key, at: Date.now(), ...probe };
       }
       if (!identityCache.ok) {
         return {
           state: "unavailable",
-          reason: `\`${displayCliPath(config.cli, probeEnv)}\` (${version}) does not speak the app-server protocol — update the codex CLI or fix PATH shadowing (${identityCache.detail})`,
+          reason: `\`${displayCliPath(config.cli, env)}\` (${version}) does not speak the app-server protocol — update the codex CLI or fix PATH shadowing (${identityCache.detail})`,
         };
       }
-      models = await loadCodexModelCatalog(config.cli, probeEnv);
-      return { state: "available", version };
+      models = await loadCodexModelCatalog(config.cli, env);
+      // ChatGPT login can be stale while the binary still speaks app-server.
+      // `codex login status` is the CLI's own signal — never `codex login`.
+      const authenticated = await codexSignedIn(config.cli, env);
+      if (!authenticated) {
+        return { state: "available", version, authenticated: false, reason: CODEX_LOGIN_NOTE };
+      }
+      return { state: "available", version, authenticated: true };
     };
 
     return {

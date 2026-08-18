@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { CODEX_LOGIN_NOTE } from "./drivers/codex.ts";
 import {
+  CODEX_REAUTH_OPTION,
   SETUP_ENGINE_OPTIONS,
   SWITCH_MODEL_OPTION,
   cliMissing,
@@ -112,6 +114,21 @@ describe("userFacingBlock", () => {
     expect(isSpawnFailure("spawn_error")).toBe(true);
     expect(isSpawnFailure(undefined, "spawn failed: x")).toBe(true);
   });
+
+  it("Codex refresh-token RPC copy is auth_required + loginNote, not the raw CLI string", () => {
+    const raw =
+      "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.";
+    const blocked = userFacingBlock({
+      stopReason: "rpc_error",
+      runtimeMessage: raw,
+    });
+    expect(blocked.stateCode).toBe("auth_required");
+    expect(blocked.stateDetail).toBe(CODEX_LOGIN_NOTE);
+    expect(blocked.stateDetail).toMatch(/codex logout/);
+    expect(blocked.stateDetail).toMatch(/codex login/);
+    expect(blocked.stateDetail).not.toMatch(/refresh token was already used/i);
+    expect(blocked.stateDetail).not.toMatch(/Please log out and sign in again/i);
+  });
 });
 
 describe("engineSetupCard", () => {
@@ -128,5 +145,16 @@ describe("engineSetupCard", () => {
     const one = engineSetupCard({ reason: "`claude` CLI not found", offerSwitch: true });
     expect(one.options[0]).toBe(SWITCH_MODEL_OPTION);
     expect(one.options.slice(1)).toEqual([...SETUP_ENGINE_OPTIONS]);
+
+    const auth = engineSetupCard({
+      reason: CODEX_LOGIN_NOTE,
+      offerSwitch: true,
+      authRequired: true,
+    });
+    expect(auth.options[0]).toBe(SWITCH_MODEL_OPTION);
+    expect(auth.options).toContain(CODEX_REAUTH_OPTION);
+    expect(auth.options.join("\n")).toMatch(/codex logout/);
+    expect(auth.options.join("\n")).toMatch(/codex login/);
+    expect(auth.subtitle).toBe(CODEX_LOGIN_NOTE);
   });
 });

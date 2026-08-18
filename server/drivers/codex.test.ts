@@ -19,8 +19,10 @@ import {
   CodexDriver,
   CODEX_EFFORT,
   CODEX_ELICITATION_METHOD,
+  CODEX_LOGIN_NOTE,
   CODEX_MCP_ELICITATION_FEATURE,
   codexElicitationCard,
+  isCodexChatGptReauth,
   isCodexElicitationMethod,
   isCodexPermissionUserInput,
   isCodexPermissionsMethod,
@@ -99,6 +101,26 @@ describe("Codex requestUserInput classification", () => {
       tool: "list_bots",
       summary: "agents list_bots",
     });
+  });
+
+  it("classifies the Codex refresh-token sentence as ChatGPT reauth", () => {
+    const raw =
+      "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.";
+    expect(isCodexChatGptReauth(raw)).toBe(true);
+    expect(isCodexChatGptReauth(CODEX_LOGIN_NOTE)).toBe(true);
+    expect(isCodexChatGptReauth("codex requested unsupported method item/tool/call")).toBe(false);
+    expect(CODEX_LOGIN_NOTE).toMatch(/`codex logout`/);
+    expect(CODEX_LOGIN_NOTE).toMatch(/`codex login`/);
+    expect(CODEX_LOGIN_NOTE.indexOf("codex logout")).toBeLessThan(CODEX_LOGIN_NOTE.indexOf("codex login"));
+  });
+
+  it("never spawns `codex login` via spawnCliHidden — OAuth cannot complete hidden", () => {
+    const src = readFileSync(fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts"), "utf8");
+    expect(src).toMatch(/spawnCliHidden\(config\.cli, \["app-server"\]/);
+    expect(src).not.toMatch(/spawnCliHidden\([^)]*["']login["']/);
+    expect(src).toMatch(/\["login", "status"\]/);
+    expect(src).not.toMatch(/GITHUB_TOKEN|GH_TOKEN/);
+    expect(src).toMatch(/delete env\.OPENAI_API_KEY/);
   });
 
   it("still treats Accept/Decline/Cancel user-input as a permission ask", () => {
@@ -193,6 +215,7 @@ posixOnly("CodexDriver turns (fake app-server) — POSIX-only: shebang fake CLI"
   afterEach(async () => {
     delete process.env.FAKE_CODEX_MODE;
     delete process.env.FAKE_CODEX_DUMP;
+    delete process.env.FAKE_CODEX_AUTH;
     delete process.env.OPENAI_API_KEY;
     recorder?.stop();
     await instance?.dispose();
@@ -633,6 +656,20 @@ posixOnly("CodexDriver turns (fake app-server) — POSIX-only: shebang fake CLI"
     await recorder.until((e) => e.type === "turn.completed");
   });
 
+  it("a refresh-token RPC settles auth_required with loginNote, not the raw CLI string", async () => {
+    await create({ mode: "refresh-token" });
+    await instance.adapter.sendTurn({ threadId: "t-reauth", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "auth_required" });
+    const error = recorder.events.find((e) => e.type === "runtime.error")!;
+    expect(error.message).toBe(CODEX_LOGIN_NOTE);
+    expect(error.message).toMatch(/codex logout/);
+    expect(error.message).toMatch(/codex login/);
+    expect(error.message).not.toMatch(/refresh token was already used/i);
+    expect(error.message).not.toMatch(/Please log out and sign in again/i);
+    expect(instance.adapter.hasSession("t-reauth")).toBe(false);
+  });
+
   it("a missing binary surfaces as a failed turn, and snapshot says unavailable", async () => {
     instance = await CodexDriver.create({
       instanceId: "codex-missing",
@@ -873,6 +910,8 @@ posixOnly("CodexDriver snapshot protocol identity — POSIX-only: shebang fake C
 
   afterEach(async () => {
     delete process.env.FAKE_CODEX_MODE;
+    delete process.env.FAKE_CODEX_AUTH;
+    delete process.env.OPENAI_API_KEY;
     await instance?.dispose();
   });
 
@@ -889,7 +928,44 @@ posixOnly("CodexDriver snapshot protocol identity — POSIX-only: shebang fake C
 
   it("a binary that speaks app-server is available", async () => {
     await createWith();
-    expect(await instance.snapshot()).toMatchObject({ state: "available", version: "fake-codex 0.144.4" });
+    expect(await instance.snapshot()).toMatchObject({
+      state: "available",
+      version: "fake-codex 0.144.4",
+      authenticated: true,
+    });
+  });
+
+  it("reports signed out with loginNote when `login status` says not logged in", async () => {
+    process.env.FAKE_CODEX_AUTH = "out";
+    await createWith();
+    expect(await instance.snapshot()).toMatchObject({
+      state: "available",
+      authenticated: false,
+      reason: CODEX_LOGIN_NOTE,
+    });
+  });
+
+  it("reports authenticated:false + loginNote when ChatGPT login is stale — never available with no reason", async () => {
+    process.env.FAKE_CODEX_AUTH = "stale";
+    await createWith();
+    const snap = await instance.snapshot();
+    expect(snap.state).toBe("available");
+    expect(snap.authenticated).toBe(false);
+    expect(snap.reason).toBe(CODEX_LOGIN_NOTE);
+    expect(snap.reason).toMatch(/codex logout/);
+    expect(snap.reason).toMatch(/codex login/);
+    expect(JSON.stringify(snap)).not.toMatch(/refresh token was already used/i);
+  });
+
+  it("fails closed on an inherited OPENAI_API_KEY — the turn strips it, so snapshot must too", async () => {
+    process.env.FAKE_CODEX_AUTH = "inherited-api-key";
+    process.env.OPENAI_API_KEY = "sk-should-not-leak";
+    await createWith();
+    expect(await instance.snapshot()).toMatchObject({
+      state: "available",
+      authenticated: false,
+      reason: CODEX_LOGIN_NOTE,
+    });
   });
 
   it("a --version-only impostor is unavailable with resolved path + version, not silently available", async () => {
