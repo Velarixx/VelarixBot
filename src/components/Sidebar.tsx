@@ -223,7 +223,10 @@ export function Sidebar() {
   const visibleBots = filterSidebarBots(state.bots, query);
 
   return (
-    <aside className="flex h-full w-[320px] shrink-0 flex-col border-r border-hairline/40 bg-panel">
+    <aside
+      aria-label="Workspace sidebar"
+      className="flex h-full w-[320px] shrink-0 flex-col border-r border-hairline/40 bg-panel"
+    >
       {/* Titlebar: real traffic lights in Electron, faux ones in the browser */}
       <div
         className="flex items-center justify-between px-4 pt-3.5 pb-1"
@@ -240,6 +243,7 @@ export function Sidebar() {
         )}
         <button
           onClick={() => dispatch({ type: "toggleCreateBot", open: true })}
+          aria-label="New bot"
           className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           title="New bot"
@@ -255,6 +259,7 @@ export function Sidebar() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            aria-label="Search conversations"
             placeholder="Search"
             className="w-full bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />
@@ -262,7 +267,13 @@ export function Sidebar() {
       </div>
 
       {/* Bot list + A ⇄ B DMs */}
-      <div className="flex-1 overflow-y-auto px-2">
+      <section aria-labelledby="sidebar-conversations-heading" className="flex-1 overflow-y-auto px-2">
+        <h2
+          id="sidebar-conversations-heading"
+          className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary"
+        >
+          Conversations
+        </h2>
         <div className="flex flex-col gap-0.5">
           {visibleBots.map((b) => (
             <BotListItem key={b.id} bot={b} onMenu={setMenu} />
@@ -274,9 +285,9 @@ export function Sidebar() {
           if (!dms.length) return null;
           return (
             <div className="mt-3">
-              <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
+              <h3 className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
                 Direct messages
-              </div>
+              </h3>
               <div className="flex flex-col gap-0.5">
                 {dms.map((g) => (
                   <DmListItem key={g.id} group={g} />
@@ -285,34 +296,64 @@ export function Sidebar() {
             </div>
           );
         })()}
-      </div>
+      </section>
 
-      {/* Footer */}
-      <div className="px-3 pb-3 pt-2">
-        <button onClick={() => dispatch({ type: "toggleRoutines" })} className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50", state.routinesOpen && "bg-raised")}>
-          <CalendarClock size={20} className="text-ink-secondary" />
-          <span className="flex-1 text-[14px] text-ink">Routines</span>
-          {state.routines.filter((routine) => routine.enabled).length > 0 && <span className="text-[11px] text-ink-secondary">{state.routines.filter((routine) => routine.enabled).length}</span>}
-        </button>
-        <button onClick={() => dispatch({ type: "toggleSkills" })} className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50", state.skillsOpen && "bg-raised")}>
-          <BookOpen size={20} className="text-ink-secondary" />
-          <span className="text-[14px] text-ink">Skills</span>
-        </button>
-        <button
-          onClick={() => dispatch({ type: "togglePlugins", open: true })}
-          className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50"
-        >
-          <Puzzle size={20} className="text-ink-secondary" />
-          <span className="text-[14px] text-ink">Apps</span>
-        </button>
-        <button
-          onClick={() => dispatch({ type: "toggleAppSettings" })}
-          className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50"
-        >
-          <Settings size={20} className="text-ink-secondary" />
-          <span className="text-[14px] text-ink">App Settings</span>
-        </button>
-      </div>
+      {/* Grouped utility navigation */}
+      <nav aria-label="Workspace navigation" className="px-3 pb-3 pt-2">
+        <section aria-labelledby="sidebar-automate-heading">
+          <h2
+            id="sidebar-automate-heading"
+            className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary"
+          >
+            Automate
+          </h2>
+          <button
+            onClick={() => dispatch({ type: "toggleRoutines" })}
+            aria-pressed={state.routinesOpen}
+            className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50", state.routinesOpen && "bg-raised")}
+          >
+            <CalendarClock size={20} className="text-ink-secondary" />
+            <span className="flex-1 text-[14px] text-ink">Routines</span>
+            {state.routines.filter((routine) => routine.enabled).length > 0 && <span className="text-[11px] text-ink-secondary">{state.routines.filter((routine) => routine.enabled).length}</span>}
+          </button>
+          <button
+            onClick={() => dispatch({ type: "toggleSkills" })}
+            aria-pressed={state.skillsOpen}
+            className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50", state.skillsOpen && "bg-raised")}
+          >
+            <BookOpen size={20} className="text-ink-secondary" />
+            <span className="text-[14px] text-ink">Skills</span>
+          </button>
+        </section>
+
+        <section aria-labelledby="sidebar-connect-heading" className="mt-2">
+          <h2
+            id="sidebar-connect-heading"
+            className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary"
+          >
+            Connect
+          </h2>
+          <button
+            onClick={() => dispatch({ type: "togglePlugins", open: true })}
+            aria-pressed={state.pluginsOpen}
+            className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50", state.pluginsOpen && "bg-raised")}
+          >
+            <Puzzle size={20} className="text-ink-secondary" />
+            <span className="text-[14px] text-ink">Apps</span>
+          </button>
+        </section>
+
+        <div className="mt-2 border-t border-hairline/40 pt-2">
+          <button
+            onClick={() => dispatch({ type: "toggleAppSettings" })}
+            aria-pressed={state.appSettingsOpen}
+            className={cn("flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-raised/50", state.appSettingsOpen && "bg-raised")}
+          >
+            <Settings size={20} className="text-ink-secondary" />
+            <span className="text-[14px] text-ink">App Settings</span>
+          </button>
+        </div>
+      </nav>
 
       {menu && <BotContextMenu menu={menu} onClose={() => setMenu(null)} />}
     </aside>
