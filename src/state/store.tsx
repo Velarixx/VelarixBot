@@ -228,6 +228,8 @@ interface AppState {
   skillsOpen: boolean;
   routinesCreating: boolean;
   routineCreateBotId: string | null;
+  /** One create-bot modal. Plus / /new / empty-state open this; they do not POST. */
+  createBotOpen: boolean;
   routines: Routine[];
   /** in-flight assistant text per threadId (content.delta fold) */
   streaming: Record<string, string>;
@@ -272,7 +274,8 @@ type Action =
       secret?: string;
     }
   | { type: "dismissCard"; botId: string; messageId: string }
-  | { type: "newBot" }
+  | { type: "newBot"; name: string; title?: string; description?: string; model?: string; color?: string }
+  | { type: "toggleCreateBot"; open?: boolean }
   | { type: "botAdded"; bot: Bot; select?: boolean }
   | { type: "deleteBot"; botId: string }
   | { type: "duplicateBot"; botId: string }
@@ -636,6 +639,8 @@ export function reducer(state: AppState, action: Action): AppState {
         routinesOpen: open ? false : state.routinesOpen,
       };
     }
+    case "toggleCreateBot":
+      return { ...state, createBotOpen: action.open ?? !state.createBotOpen };
     case "updateBot": {
       const mascotChanged =
         Object.prototype.hasOwnProperty.call(action.patch, "color") ||
@@ -678,7 +683,9 @@ export function reducer(state: AppState, action: Action): AppState {
         action.botId,
         "working",
       );
+    // Confirm closes the one modal; the wrapper POSTs the named JSON body.
     case "newBot":
+      return { ...state, createBotOpen: false };
     case "duplicateBot":
     case "interrupt":
       return state;
@@ -700,6 +707,7 @@ export const initialState: AppState = {
   skillsOpen: false,
   routinesCreating: false,
   routineCreateBotId: null,
+  createBotOpen: false,
   routines: [],
   streaming: {},
   streamingRaw: {},
@@ -720,6 +728,36 @@ export async function api(path: string, init?: RequestInit): Promise<any> {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
   return body;
+}
+
+/** Fields the one-step create modal may send. Never computer or alwaysAllow —
+ * those PATCH 409 on unsafe combinations and are Settings-only. */
+export type NewBotInit = {
+  name: string;
+  title?: string;
+  description?: string;
+  model?: string;
+  color?: string;
+};
+
+// [VERIFY] 2026-08-18: newBot POSTs JSON { name, title?, description?,
+// model?, color? } in one request. An empty POST was instant "New Bot".
+export function newBotRequestBody(init: NewBotInit): Record<string, string> {
+  const name = init.name.trim();
+  const body: Record<string, string> = { name };
+  const title = init.title?.trim();
+  const description = init.description?.trim();
+  const model = init.model?.trim();
+  const color = init.color?.trim();
+  if (title) body.title = title;
+  if (description) body.description = description;
+  if (model) body.model = model;
+  if (color) body.color = color;
+  return body;
+}
+
+export function postNewBot(init: NewBotInit) {
+  return api("/api/bots", { method: "POST", body: JSON.stringify(newBotRequestBody(init)) });
 }
 
 const StoreContext = createContext<{
@@ -847,7 +885,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "newBot":
-          api("/api/bots", { method: "POST" })
+          postNewBot(action)
             .then(({ bot }) => rawDispatch({ type: "botAdded", bot }))
             .catch(showError);
           break;

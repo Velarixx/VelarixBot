@@ -239,7 +239,7 @@ export function Sidebar() {
           </div>
         )}
         <button
-          onClick={() => dispatch({ type: "newBot" })}
+          onClick={() => dispatch({ type: "toggleCreateBot", open: true })}
           className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
           title="New bot"
