@@ -16,6 +16,8 @@
     "typecheck": "tsc -b && tsc -p tsconfig.server.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:smoke": "vite build && playwright test e2e/fake-engine-smoke.spec.ts --workers=1 --reporter=line",
+    "typecheck:smoke": "tsc -p tsconfig.e2e.json",
     "eval": "node eval/run.mjs",
     "preview": "vite preview",
     "build:server": "node scripts/build-server.mjs",

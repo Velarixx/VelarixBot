@@ -16,3 +16,4 @@ build/generated-cua-sdk/
 build/generated-server-deps/
 release
 eval-artifacts
+test-results
