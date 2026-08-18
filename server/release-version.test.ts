@@ -54,12 +54,12 @@ describe("release version gate", () => {
   });
 
   it("refuses to release when the input disagrees with package.json", () => {
-    expect(readPackageVersion(repoPackageJsonPath())).toBe("0.2.3");
-    expect(() => assertReleaseMatchesPackage("0.2.3", "0.2.3")).not.toThrow();
-    expect(() => assertReleaseMatchesPackage("0.2.2", "0.2.3")).toThrow(
+    expect(readPackageVersion(repoPackageJsonPath())).toBe("0.2.4");
+    expect(() => assertReleaseMatchesPackage("0.2.4", "0.2.4")).not.toThrow();
+    expect(() => assertReleaseMatchesPackage("0.2.3", "0.2.4")).toThrow(
       /does not match package\.json version/,
     );
-    expect(() => assertReleaseMatchesPackage("0.2.3-rc.1", "0.2.3")).toThrow(
+    expect(() => assertReleaseMatchesPackage("0.2.4-rc.1", "0.2.4")).toThrow(
       /does not match package\.json version/,
     );
   });
