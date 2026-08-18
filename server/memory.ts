@@ -10,6 +10,16 @@
 // turn (failures swallowed). Extract returns structured suggestions
 // only — PRO cards write on accept. No embeddings, no cloud, no
 // secrets or prompts in logs.
+//
+// 2026-08-18 [VERIFY] (HEAD e85462b / #102): memoryPrompt called
+// composeUserKnowledge({ bumpUse: false }) and bump ran only when a
+// query was set. Inject (no query) now increments useCount on this
+// bot's injected row docs. bumpRetrievedRows stays swallow-on-error.
+//
+// 2026-08-18 [VERIFY]: memoryDecayScore is ranking only (recency ×
+// useCount, pinned +10). Eviction is separate — see
+// UNCONFIRMED_IDLE_MS / decayUnconfirmedRows. No confirmed column,
+// no second store, no snapshot-table dual-write. Pinned rows survive.
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -196,6 +206,40 @@ const BM25_K1 = 1.2;
 const BM25_B = 0.75;
 const DAY_MS = 86_400_000;
 
+/** Idle window for unconfirmed eviction.
+ * Rule (2026-08-18): not pinned AND useCount === 0 (never injected)
+ * AND (now - updatedAt) >= this window → delete from memory_rows.
+ * Reuses pinned / useCount / updatedAt — no new column or store.
+ * Pinned rows always survive extract and decay. */
+export const UNCONFIRMED_IDLE_MS = 14 * DAY_MS;
+
+/** True when decay should evict this row. Other botIds are never listed. */
+export function isUnconfirmedIdle(
+  row: Pick<MemoryRow, "pinned" | "useCount" | "updatedAt">,
+  now: number,
+): boolean {
+  return !row.pinned && row.useCount === 0 && now - row.updatedAt >= UNCONFIRMED_IDLE_MS;
+}
+
+/** Evict this bot's unconfirmed idle rows. Swallow-on-error so inject
+ * cannot throw out of the turn. Never deletes pinned rows or other botIds. */
+export function decayUnconfirmedRows(botId: string, now = Date.now()): void {
+  if (!rowsStore) return;
+  try {
+    for (const row of rowsStore.listByBot(botId)) {
+      if (row.botId !== botId) continue;
+      if (!isUnconfirmedIdle(row, now)) continue;
+      try {
+        rowsStore.delete(row.id);
+      } catch {
+        /* decay must not fail the turn */
+      }
+    }
+  } catch {
+    /* decay must not fail the turn */
+  }
+}
+
 function stem(token: string): string {
   if (token.length > 4 && token.endsWith("ies")) return `${token.slice(0, -3)}y`;
   if (token.length > 3 && token.endsWith("es")) return token.slice(0, -2);
@@ -296,16 +340,21 @@ function bumpRetrievedRows(docs: MemoryDocument[], now: number): void {
 /**
  * Single composition function for inject + recall. Markdown files are
  * always eligible; structured rows are additive. Query uses BM25 (top 10).
+ * Inject (no query) and recall both bump this bot's injected row docs
+ * unless bumpUse is false. Decay runs first (unconfirmed idle only).
  */
 export function composeUserKnowledge(opts: { botId: string; query?: string; now?: number; bumpUse?: boolean }): string {
   const now = opts.now ?? Date.now();
+  decayUnconfirmedRows(opts.botId, now);
   const docs = collectMemoryDocuments(opts.botId);
   if (!docs.length) return opts.query?.trim() ? `No memory matching ${opts.query.trim()}.` : "";
 
   const query = opts.query?.trim();
   const picked = query ? rankMemoryDocuments(docs, query, now) : docs;
   if (!picked.length) return query ? `No memory matching ${query}.` : "";
-  if (opts.bumpUse !== false && query) bumpRetrievedRows(picked, now);
+  // 2026-08-18 [VERIFY]: #102 gated this on `query`. Inject (memoryPrompt /
+  // startTurn / composeUserKnowledge without query) now bumps too.
+  if (opts.bumpUse !== false) bumpRetrievedRows(picked, now);
 
   const chunks: string[] = [];
   const workspace = picked.find((d) => d.kind === "workspace");
@@ -326,9 +375,11 @@ export function composeUserKnowledge(opts: { botId: string; query?: string; now?
   return capMemory(`\n\n${USER_KNOWLEDGE_HEADING}\n\n${chunks.join("\n\n")}`);
 }
 
-/** System-prompt fragment. Empty when neither markdown nor rows have content. */
+/** System-prompt fragment. Empty when neither markdown nor rows have content.
+ * 2026-08-18 [VERIFY]: #102 passed bumpUse: false; inject now increments
+ * useCount on this bot's injected row docs (swallow-on-error). */
 export function memoryPrompt(botId: string, now?: number): string {
-  return composeUserKnowledge({ botId, now, bumpUse: false });
+  return composeUserKnowledge({ botId, now });
 }
 
 const DISTILL_INSTRUCTIONS =
@@ -481,6 +532,7 @@ export function insertMemoryRow(input: {
   type: MemoryRowType;
   text: string;
   pinned?: boolean;
+  useCount?: number;
   id?: string;
   now?: number;
 }): MemoryRow {
@@ -492,6 +544,7 @@ export function insertMemoryRow(input: {
     type: input.type,
     text: input.text,
     pinned: input.pinned,
+    useCount: input.useCount,
     createdAt: now,
     updatedAt: now,
   });
