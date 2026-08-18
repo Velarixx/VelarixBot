@@ -10,7 +10,7 @@ import { DATA_DIR } from "./config.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import { defaultDbPath, openDatabase } from "./db/database.ts";
 import type { SqliteDatabase } from "./db/sqlite-native.ts";
-import { SWITCH_MODEL_OPTION, setCliSearchPathForTests } from "./engine-setup.ts";
+import { CODEX_LOGIN_NOTE, CODEX_REAUTH_OPTION, SWITCH_MODEL_OPTION, setCliSearchPathForTests } from "./engine-setup.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { createComputerRegistry } from "./computer/registry.ts";
@@ -207,6 +207,55 @@ describe("engine-unavailable turns (clean PATH, no spawn)", () => {
     expect(settled.stateDetail).toContain("ENOENT");
     expect(settled.stateDetail).not.toMatch(/The selected engine CLI is not available/);
     expect(settled.stateDetail).not.toMatch(/spawn_error/i);
+  });
+
+  it("Codex refresh-token runtime.error is auth_required + loginNote with a sign-in card", async () => {
+    await boot({ fake: { displayName: "Codex" } }, "fake");
+    const live = fake.created.get("fake")!;
+    const raw =
+      "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.";
+    live.instance.adapter.sendTurn = async (turn) => {
+      sendTurns.push({ instanceId: "fake", threadId: turn.threadId, text: turn.text });
+      const base = {
+        eventId: "ev",
+        provider: "fake" as const,
+        providerInstanceId: "fake",
+        threadId: turn.threadId,
+        createdAt: new Date().toISOString(),
+      };
+      live.emit({
+        ...base,
+        eventId: "ev-err",
+        type: "runtime.error",
+        message: raw,
+      } satisfies RuntimeEvent);
+      live.emit({
+        ...base,
+        eventId: "ev-done",
+        type: "turn.completed",
+        ok: false,
+        stopReason: "rpc_error",
+      } satisfies RuntimeEvent);
+      return { turnId: "fake-turn" };
+    };
+    const bot = bots.createBot();
+    await turns.startTurn(bot.id, "hello?");
+    await flush();
+    expect(sendTurns).toHaveLength(1);
+    const settled = bots.bot(bot.id)!;
+    expect(settled.state).toBe("BLOCKED");
+    expect(settled.stateCode).toBe("auth_required");
+    expect(settled.stateDetail).toBe(CODEX_LOGIN_NOTE);
+    expect(settled.stateDetail).toMatch(/codex logout/);
+    expect(settled.stateDetail).toMatch(/codex login/);
+    expect(settled.stateDetail).not.toMatch(/refresh token was already used/i);
+    expect(settled.stateDetail).not.toMatch(/Please log out and sign in again/i);
+    const card = bots.messagesFor(bot.threadId).find((m) => m.card?.requestType === "setup")?.card;
+    expect(card?.options[0]).toBe(SWITCH_MODEL_OPTION);
+    expect(card?.options).toContain(CODEX_REAUTH_OPTION);
+    expect(card?.options.join("\n")).toMatch(/codex logout/);
+    expect(card?.options.join("\n")).toMatch(/codex login/);
+    expect(card?.subtitle).toBe(CODEX_LOGIN_NOTE);
   });
 
   it("a fake instance with no cli still calls sendTurn (does not treat empty PATH as zero engines)", async () => {

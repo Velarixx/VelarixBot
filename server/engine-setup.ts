@@ -12,8 +12,11 @@
 import { existsSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 
+import { CODEX_LOGIN_NOTE, isCodexChatGptReauth } from "./drivers/codex.ts";
 import { augmentedPath } from "./env-path.ts";
 import { COLORS, type MausColor, type OptionCardData } from "./store.ts";
+
+export { CODEX_LOGIN_NOTE };
 
 /** Test-only PATH for cliMissing. Production always uses augmentedPath(). */
 let cliSearchPathOverride: string | undefined;
@@ -78,6 +81,10 @@ export const SETUP_ENGINE_OPTIONS = [
 
 export const SWITCH_MODEL_OPTION = "Switch model in Settings";
 
+/** Auth-required setup-card row. Same copy as the banner loginNote so the
+ * card is not only generic install-CLI rows. Keep Switch model. */
+export const CODEX_REAUTH_OPTION = CODEX_LOGIN_NOTE;
+
 const MACHINE_CODE = /^[a-z][a-z0-9_]*$/;
 
 export function isMachineStateCode(value: string | null | undefined): boolean {
@@ -107,11 +114,14 @@ export function engineSetupCard(opts: {
   /** When at least one other engine might work, lead with switch-model. */
   offerSwitch?: boolean;
   zeroEngines?: boolean;
+  /** Codex/ACP ChatGPT (or other) login is stale — include sign-in copy. */
+  authRequired?: boolean;
 }): OptionCardData {
   const title = opts.zeroEngines ? "Set up a local engine" : "This engine is not available";
+  const signIn = opts.authRequired && !opts.zeroEngines ? [CODEX_REAUTH_OPTION] : [];
   const options = opts.offerSwitch && !opts.zeroEngines
-    ? [SWITCH_MODEL_OPTION, ...SETUP_ENGINE_OPTIONS]
-    : [...SETUP_ENGINE_OPTIONS];
+    ? [SWITCH_MODEL_OPTION, ...signIn, ...SETUP_ENGINE_OPTIONS]
+    : [...signIn, ...SETUP_ENGINE_OPTIONS];
   return {
     title,
     subtitle: opts.reason,
@@ -139,6 +149,12 @@ export function userFacingBlock(opts: {
       humanizeSpawnMessage(opts.runtimeMessage) ||
       "The selected engine CLI is not available. Install it or switch models in Settings.";
     return { stateCode: "spawn_error", stateDetail: reason };
+  }
+  // Codex refresh-token-reused / log-out-and-sign-in-again: never copy the
+  // raw CLI sentence into the banner — even when the driver still settled
+  // rpc_error. ACP auth_required keeps its own loginNote below.
+  if (isCodexChatGptReauth(opts.runtimeMessage) || isCodexChatGptReauth(opts.stopReason)) {
+    return { stateCode: "auth_required", stateDetail: CODEX_LOGIN_NOTE };
   }
   if (opts.stopReason === "auth_required") {
     return {

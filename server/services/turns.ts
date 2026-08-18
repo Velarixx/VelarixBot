@@ -650,6 +650,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         reason: blocked.stateDetail,
         offerSwitch: blocked.stateCode !== "no_engines",
         zeroEngines: blocked.stateCode === "no_engines",
+        authRequired: blocked.stateCode === "auth_required",
       }),
     });
     broadcast({ kind: "message", threadId, message });

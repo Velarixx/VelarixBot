@@ -36,6 +36,12 @@
 //                       stdin first, then stays alive — the client's next
 //                       write hits a closed pipe: async EPIPE, which must be
 //                       handled, never an unhandled 'error' server crash)
+//                     | refresh-token (JSON-RPC error on turn/start with the
+//                       real CLI "refresh token was already used" sentence)
+//   FAKE_CODEX_AUTH   in (default) | out | stale | unsupported |
+//                     inherited-api-key — what `login status` reports.
+//                     Bare `login` (OAuth) is a hard fail so a driver that
+//                     spawned `codex login` via a hidden console cannot hide.
 //   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision,
 //                     threadStartConfig, threadResumeConfig} as JSON
 //
@@ -67,6 +73,38 @@ const dump = () => {
 
 if (argv.includes("--version")) {
   process.stdout.write("fake-codex 0.144.4\n");
+  process.exit(0);
+}
+
+// Snapshot probes: answer on argv alone and exit without reading stdin.
+// Strict: only `login status`. Bare `login` is the OAuth flow — refuse it
+// so a driver that spawned login in a hidden console fails the suite.
+if (argv[0] === "login") {
+  if (argv[1] !== "status" || argv.length !== 2) {
+    process.stderr.write("error: expected `login status` — do not spawn `codex login`\n");
+    process.exit(1);
+  }
+  const auth = process.env.FAKE_CODEX_AUTH ?? "in";
+  if (auth === "unsupported") {
+    process.stderr.write("error: unknown command 'login'\n");
+    process.exit(1);
+  }
+  if (auth === "stale") {
+    process.stderr.write(
+      "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.\n",
+    );
+    process.exit(1);
+  }
+  if (auth === "out") {
+    process.stderr.write("Not logged in\n");
+    process.exit(1);
+  }
+  const loggedIn = auth === "in" || (auth === "inherited-api-key" && Boolean(process.env.OPENAI_API_KEY));
+  if (!loggedIn) {
+    process.stderr.write("Not logged in\n");
+    process.exit(1);
+  }
+  process.stderr.write("Logged in using ChatGPT\n");
   process.exit(0);
 }
 
@@ -174,6 +212,18 @@ process.stdin.on("data", (chunk) => {
         out({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: "codex-thread-1" }, model: "fake-codex-model" } });
         break;
       case "turn/start":
+        if (mode === "refresh-token") {
+          out({
+            jsonrpc: "2.0",
+            id: msg.id,
+            error: {
+              code: -32603,
+              message:
+                "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+            },
+          });
+          break;
+        }
         out({ jsonrpc: "2.0", id: msg.id, result: { ok: true } });
         notify("item/started", { item: { id: "i1", type: "commandExecution", command: "ls -la" } });
         if (mode === "approval") {
