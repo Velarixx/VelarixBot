@@ -9,14 +9,28 @@ import {
   decideListenerAction,
   decidePackagedGuiAction,
   decideServiceHostAction,
+  leftoverOccupantPid,
   isAttachableOurs,
   isOursHealth,
   isSpawnedChildHealth,
+  planPackagedGuiBoot,
+  planServiceHostBoot,
   probeResultsFromMap,
+  runPackagedGuiBoot,
+  runServiceHostBoot,
   shouldForkHarness,
   waitForAttachable,
 } from "./service-attach.mjs";
 import { healthWithoutSecrets, readServiceAuth, writeServiceAuth } from "./service-auth.mjs";
+import {
+  applyOccupantStop,
+  isScServiceStop,
+  isUserSessionWindowsService,
+  planEnsureUserSessionHost,
+  planOccupantStop,
+  runEnsureUserSessionHost,
+  windowsStopArgs,
+} from "./service-control.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
@@ -50,23 +64,38 @@ describe("attach vs spawn", () => {
     );
   });
 
-  it("does not adopt a foreign velarixbot (no sidecar / pid mismatch) and does not second-fleet", () => {
+  it("replaces a leftover 0.2.2-shaped velarixbot (no sidecar / pid mismatch) instead of ERROR_PAGE-only", () => {
     const health = oursHealth(8800);
     expect(isAttachableOurs(health, null)).toBe(false);
+    expect(leftoverOccupantPid(health, null)).toBe(8800);
+    expect(leftoverOccupantPid(health, sidecar(1))).toBe(8800);
     expect(decideListenerAction({ health, sidecar: null })).toEqual({
-      action: "conflict",
-      reason: "velarixbot-not-ours",
+      action: "replace",
+      reason: "velarixbot-leftover",
+      pid: 8800,
     });
     expect(decideListenerAction({ health, sidecar: sidecar(1) })).toEqual({
-      action: "conflict",
-      reason: "velarixbot-not-ours",
+      action: "replace",
+      reason: "velarixbot-leftover",
+      pid: 8800,
     });
     const gui = decidePackagedGuiAction(probeResultsFromMap({ 8799: health }, null));
-    expect(gui.action).toBe("conflict");
+    expect(gui).toEqual({ action: "replace", port: 8799, reason: "velarixbot-leftover", pid: 8800 });
     expect(shouldForkHarness(gui)).toBe(false);
     const host = decideServiceHostAction(probeResultsFromMap({ 8799: health }, null));
-    expect(host.action).toBe("conflict");
+    expect(host).toEqual({ action: "replace", port: 8799, reason: "velarixbot-leftover", pid: 8800 });
     expect(shouldForkHarness(host)).toBe(false);
+    const guiPlan = planPackagedGuiBoot(gui);
+    expect(guiPlan.steps).toEqual(["stop-occupant", "ensure-host", "attach"]);
+    expect(guiPlan.fork).toBe(false);
+    expect(guiPlan.mintToken).toBe(false);
+    expect(guiPlan.writeSidecar).toBe(false);
+    expect(guiPlan.stopCard).toBe(true);
+    expect(guiPlan.page).toBe("stop-card");
+    expect(guiPlan.page).not.toBe("error-page");
+    const hostPlan = planServiceHostBoot(host);
+    expect(hostPlan.steps).toEqual(["stop-occupant", "spawn"]);
+    expect(hostPlan.idleEmpty).toBe(false);
   });
 
   it("does not adopt a non-static velarixbot or a non-velarixbot listener", () => {
@@ -91,6 +120,15 @@ describe("attach vs spawn", () => {
     });
     const empty = probeResultsFromMap({}, null);
     expect(decidePackagedGuiAction(empty)).toEqual({ action: "start-service", reason: "empty" });
+    expect(planPackagedGuiBoot(decidePackagedGuiAction(empty), { serviceMissing: true })).toEqual(
+      expect.objectContaining({
+        steps: ["ensure-host", "attach"],
+        page: "app",
+        fork: false,
+        mintToken: false,
+        writeSidecar: false,
+      }),
+    );
     expect(shouldForkHarness(decidePackagedGuiAction(empty))).toBe(false);
     const host = decideServiceHostAction(empty);
     expect(host).toEqual({ action: "spawn", port: 8799, reason: "empty" });
@@ -157,14 +195,234 @@ describe("attach vs spawn", () => {
     expect(main).toContain("API_TOKEN = found.sidecar.token");
     const attachFn = main.slice(
       main.indexOf("async function attachToRunningService"),
-      main.indexOf("function enableUserSessionService"),
+      main.indexOf("async function probeCandidatePorts"),
     );
     expect(attachFn).toContain("readServiceAuth");
     expect(attachFn).not.toContain("writeServiceAuth");
     expect(attachFn).not.toContain("mintApiToken");
+    expect(attachFn).not.toContain("utilityProcess.fork");
+    expect(main).toContain("STOP_PAGE");
+    expect(main).toContain("leftoverStopCard");
+    expect(main).toContain("stopLeftoverOccupant");
+    expect(main).toContain("planOccupantStop");
+    expect(main).toContain("ensureUserSessionHost");
+    expect(main).toContain("runEnsureUserSessionHost");
+    expect(main).toContain("applyHarnessHostLaunch");
+    expect(main).toContain("planHarnessHostLaunch");
+    expect(main).toContain("isWindowsServiceMissing");
+    expect(main).toContain("runPackagedGuiBoot");
+    expect(main).toContain("runServiceHostBoot");
+    expect(main).toMatch(/spawnFn:\s*spawn/);
     expect(main).toMatch(/utilityProcess\.fork\(entry, \[\], \{/);
     expect(main).not.toMatch(/fork\([^)]*VELARIX_API_TOKEN/);
     expect(main).not.toMatch(/Access-Control-Allow-Origin/i);
+    expect(main).toContain("leftoverStopCard ? STOP_PAGE : ERROR_PAGE");
+    expect(main).toMatch(/fetch\(`http:\/\/127\.0\.0\.1:\$\{port\}\/api\/health`\)/);
+    const healthSrc = read("server/routes/health.ts");
+    expect(healthSrc).toContain('app: "velarixbot"');
+    expect(healthSrc).toContain("pid: process.pid");
+    expect(healthSrc).toContain("static: deps.staticServing");
+    expect(healthSrc).toContain("stamp: deps.stamp");
+    expect(healthSrc).not.toMatch(/token:\s/);
+    expect(read("server/index.ts")).toMatch(/server\.listen\(PORT, "127\.0\.0\.1"/);
+    const prepareFn = main.slice(
+      main.indexOf("async function preparePackagedGuiServer"),
+      main.indexOf("function enableUserSessionService"),
+    );
+    expect(prepareFn).not.toContain("writeServiceAuth");
+    expect(prepareFn).not.toContain("mintApiToken");
+    expect(prepareFn).not.toContain("utilityProcess.fork");
+    const ensureFn = main.slice(
+      main.indexOf("async function ensureUserSessionHost"),
+      main.indexOf("async function preparePackagedGuiServer"),
+    );
+    expect(ensureFn).not.toContain("writeServiceAuth");
+    expect(ensureFn).not.toContain("mintApiToken");
+    expect(ensureFn).not.toContain("utilityProcess.fork");
+    expect(ensureFn).toContain("applyHarnessHostLaunch");
+    expect(ensureFn).toContain("queryWindowsService");
+  });
+
+  it("leftover replace stops health.pid then attaches; sc stop is not the occupant stop", async () => {
+    const health = oursHealth(8800);
+    const gui = decidePackagedGuiAction(probeResultsFromMap({ 8799: health }, null));
+    const killed: number[] = [];
+    const serviceSteps: string[] = [];
+    const attached = { port: 8799, health: oursHealth(9900), sidecar: sidecar(9900) };
+    const result = await runPackagedGuiBoot(gui, {
+      stopOccupant: (pid: number) => {
+        killed.push(pid);
+      },
+      ensureHost: () => {
+        serviceSteps.push("ensure-host");
+      },
+      attach: () => attached,
+    });
+    expect(killed).toEqual([8800]);
+    expect(serviceSteps).toEqual(["ensure-host"]);
+    expect(result.found).toEqual(attached);
+    expect(result.plan.fork).toBe(false);
+    expect(result.plan.mintToken).toBe(false);
+    expect(result.plan.writeSidecar).toBe(false);
+    expect(result.log.map((row) => row.step)).toEqual(["stop-occupant", "ensure-host", "attach"]);
+
+    const host = await runServiceHostBoot(decideServiceHostAction(probeResultsFromMap({ 8799: health }, null)), {
+      stopOccupant: (pid: number) => {
+        killed.push(pid);
+      },
+      spawn: () => true,
+    });
+    expect(host.spawned).toBe(true);
+    expect(host.idleEmpty).toBe(false);
+    expect(host.log.map((row) => row.step)).toEqual(["stop-occupant", "spawn"]);
+    expect(killed).toEqual([8800, 8800]);
+
+    const occupant = planOccupantStop({ pid: 8800, platform: "win32" });
+    expect(occupant.command).toBe("taskkill");
+    expect(occupant.args).toEqual(["/pid", "8800", "/T", "/F"]);
+    expect(isScServiceStop(occupant)).toBe(false);
+    const scStop = windowsStopArgs({ sc: "C:\\Windows\\System32\\sc.exe" });
+    expect(isScServiceStop(scStop)).toBe(true);
+    expect(applyOccupantStop(scStop).ok).toBe(false);
+    expect(applyOccupantStop(scStop).reason).toBe("sc-stop-not-occupant");
+  });
+
+  it("empty ports + missing Windows user service register/launch --harness-service then attach", async () => {
+    const empty = decidePackagedGuiAction(probeResultsFromMap({}, null));
+    expect(empty).toEqual({ action: "start-service", reason: "empty" });
+    const guiPlan = planPackagedGuiBoot(empty, { serviceMissing: true });
+    expect(guiPlan.steps).toEqual(["ensure-host", "attach"]);
+    expect(guiPlan.page).not.toBe("error-page");
+    expect(guiPlan.fork).toBe(false);
+    expect(guiPlan.mintToken).toBe(false);
+    expect(guiPlan.writeSidecar).toBe(false);
+    expect(shouldForkHarness(empty)).toBe(false);
+
+    const exe = "C:\\Users\\Dyon\\AppData\\Local\\Programs\\VelarixBot\\VelarixBot.exe";
+    const hostPlan = planEnsureUserSessionHost({
+      platform: "win32",
+      exePath: exe,
+      serviceMissing: true,
+      env: { SystemRoot: "C:\\Windows" },
+    });
+    expect(hostPlan.steps).toEqual(["register", "launch-host"]);
+    expect(hostPlan.steps).not.toContain("os-stop");
+    expect(isUserSessionWindowsService(hostPlan.register)).toBe(true);
+    expect(JSON.stringify(hostPlan.register)).not.toMatch(/LocalSystem|perMachine|NSSM/i);
+    expect(hostPlan.launch.args).toEqual(["--harness-service"]);
+    expect(hostPlan.launch.command).toBe(exe);
+    expect(JSON.stringify(hostPlan)).not.toMatch(/VELARIX_API_TOKEN/);
+    expect(hostPlan.fork).toBe(false);
+    expect(hostPlan.mintToken).toBe(false);
+    expect(hostPlan.writeSidecar).toBe(false);
+
+    const launched: string[][] = [];
+    const result = await runPackagedGuiBoot(empty, {
+      serviceMissing: true,
+      ensureHost: async () => {
+        await runEnsureUserSessionHost(
+          { platform: "win32", exePath: exe, serviceMissing: true, env: { SystemRoot: "C:\\Windows" } },
+          {
+            register: (plan) => {
+              launched.push(["register", ...(plan.args ?? [])]);
+            },
+            launchHost: (plan) => {
+              launched.push(["launch-host", ...(plan.args ?? [])]);
+            },
+            osStart: () => {
+              launched.push(["os-start"]);
+            },
+          },
+        );
+      },
+      attach: () => ({ port: 8799, health: oursHealth(9001), sidecar: sidecar(9001) }),
+    });
+    expect(launched.map((row) => row[0])).toEqual(["register", "launch-host"]);
+    expect(launched[1]).toEqual(["launch-host", "--harness-service"]);
+    expect(result.found?.port).toBe(8799);
+    expect(result.found?.sidecar?.pid).toBe(9001);
+    expect(result.plan.page).not.toBe("error-page");
+    expect(result.log.map((row) => row.step)).toEqual(["ensure-host", "attach"]);
+  });
+
+  it("matching sidecar still attaches without fork or occupant stop", async () => {
+    const health = oursHealth(4400);
+    const side = sidecar(4400);
+    const gui = decidePackagedGuiAction(probeResultsFromMap({ 8799: health }, side));
+    expect(gui).toEqual({ action: "attach", port: 8799, reason: "sidecar-pid" });
+    const killed: number[] = [];
+    const result = await runPackagedGuiBoot(gui, {
+      stopOccupant: (pid: number) => {
+        killed.push(pid);
+      },
+      ensureHost: () => {
+        killed.push(-1);
+      },
+      attach: () => ({ port: 8799, health, sidecar: side }),
+    });
+    expect(killed).toEqual([]);
+    expect(result.found?.port).toBe(8799);
+    expect(result.plan.steps).toEqual(["attach"]);
+    expect(shouldForkHarness(gui)).toBe(false);
+  });
+
+  it("does not adopt or kill a foreign non-velarixbot occupant", async () => {
+    const rows = [
+      { port: 8799, health: { app: "nginx", pid: 4242, static: true }, sidecar: null },
+      { port: 18799, health: null, sidecar: null },
+      { port: 28799, health: null, sidecar: null },
+    ];
+    expect(decideListenerAction(rows[0])).toEqual({ action: "skip", reason: "foreign" });
+    expect(leftoverOccupantPid(rows[0].health, null)).toBeNull();
+    const gui = decidePackagedGuiAction(rows);
+    expect(gui).toEqual({ action: "start-service", reason: "fallback-port" });
+    const killed: number[] = [];
+    const result = await runPackagedGuiBoot(gui, {
+      stopOccupant: (pid: number) => {
+        killed.push(pid);
+      },
+      ensureHost: () => undefined,
+      attach: () => ({ port: 18799, sidecar: sidecar(7, 18799) }),
+    });
+    expect(killed).toEqual([]);
+    expect(result.log.map((row) => row.step)).not.toContain("stop-occupant");
+    expect(result.found?.port).toBe(18799);
+    expect(decideServiceHostAction(rows)).toEqual({ action: "spawn", port: 18799, reason: "empty" });
+  });
+
+  it("replaces leftover on a later attach-scan port after an empty 8799", () => {
+    const leftover = oursHealth(512);
+    const rows = [
+      { port: 8799, health: null, sidecar: null },
+      { port: 18799, health: leftover, sidecar: null },
+      { port: 28799, health: null, sidecar: null },
+    ];
+    expect(decidePackagedGuiAction(rows)).toEqual({
+      action: "replace",
+      port: 18799,
+      reason: "velarixbot-leftover",
+      pid: 512,
+    });
+    expect(decideServiceHostAction(rows)).toEqual({
+      action: "replace",
+      port: 18799,
+      reason: "velarixbot-leftover",
+      pid: 512,
+    });
+  });
+
+  it("matching sidecar on a later port still attaches even if 8799 is leftover", () => {
+    const leftover = oursHealth(1);
+    const ours = oursHealth(77);
+    const side = sidecar(77, 18799);
+    const rows = [
+      { port: 8799, health: leftover, sidecar: side },
+      { port: 18799, health: ours, sidecar: side },
+      { port: 28799, health: null, sidecar: side },
+    ];
+    expect(decidePackagedGuiAction(rows)).toEqual({ action: "attach", port: 18799, reason: "sidecar-pid" });
+    expect(shouldForkHarness(decidePackagedGuiAction(rows))).toBe(false);
+    expect(decideServiceHostAction(rows).action).toBe("already-running");
   });
 
   it("second local client reads the sidecar and attaches without minting", () => {

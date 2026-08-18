@@ -14,16 +14,31 @@ import { shouldQuitOnLastWindow } from "./background.mjs";
 import { createRestartPolicy } from "./server-supervisor.mjs";
 import { parseTrayEnabled, trayBadgeText, trayTooltip } from "./tray-settings.mjs";
 import { readServiceAuth, removeServiceAuth, writeServiceAuth } from "./service-auth.mjs";
-import { CANDIDATE_PORTS, decideServiceHostAction, isSpawnedChildHealth, waitForAttachable } from "./service-attach.mjs";
 import {
+  CANDIDATE_PORTS,
+  decidePackagedGuiAction,
+  decideServiceHostAction,
+  isSpawnedChildHealth,
+  runPackagedGuiBoot,
+  runServiceHostBoot,
+  waitForAttachable,
+} from "./service-attach.mjs";
+import {
+  applyHarnessHostLaunch,
+  applyOccupantStop,
   applyServicePlan,
   isHarnessServiceArgv,
+  isWindowsServiceMissing,
   parseServiceEnabledPref,
+  planHarnessHostLaunch,
+  planOccupantStop,
   planServiceInstall,
   planServiceStart,
   planServiceStop,
   planServiceUninstall,
+  queryWindowsService,
   removeLaunchAgentPlist,
+  runEnsureUserSessionHost,
   writeLaunchAgentPlist,
 } from "./service-control.mjs";
 import { shouldKillServerOnBeforeQuit } from "./service-quit.mjs";
@@ -157,6 +172,13 @@ const ERROR_PAGE =
     `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><div style="font-size:40px">🐭</div><h2 style="font-weight:600;margin:12px 0 6px">Couldn't start the bot server</h2><p style="color:#fcfcfc99;line-height:1.5">Something else is using its ports. Quit and reopen VelarixBot — if it keeps happening, restart your computer.</p></div></body>`,
   );
 
+const STOP_PAGE =
+  "data:text/html;charset=utf-8," +
+  encodeURIComponent(
+    `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><div style="font-size:40px">🐭</div><h2 style="font-weight:600;margin:12px 0 6px">Stopped an old bot server</h2><p style="color:#fcfcfc99;line-height:1.5">A leftover server from a previous version was using the ports. VelarixBot stopped it and is starting the new one — quit and reopen if this stays up.</p></div></body>`,
+  );
+let leftoverStopCard = false;
+
 const SERVER_DOWN_PAGE =
   "data:text/html;charset=utf-8," +
   encodeURIComponent(
@@ -199,6 +221,62 @@ async function attachToRunningService() {
   API_TOKEN = found.sidecar.token;
   SERVER_PORT = found.port;
   harnessOwnership = "attached";
+  return found;
+}
+
+async function probeCandidatePorts() {
+  const sidecar = readServiceAuth();
+  const results = [];
+  for (const port of CANDIDATE_PORTS) {
+    results.push({ port, health: await probeHealth(port), sidecar });
+  }
+  return results;
+}
+
+function stopLeftoverOccupant(pid) {
+  applyOccupantStop(planOccupantStop({ pid, platform: process.platform }));
+}
+
+async function ensureUserSessionHost({ recycle = false } = {}) {
+  const exe = process.execPath;
+  const uid = sessionUid();
+  const platform = process.platform;
+  const queried = platform === "win32" ? queryWindowsService() : null;
+  const serviceMissing = platform === "win32" ? isWindowsServiceMissing(queried) : false;
+  let startedOk = false;
+  await runEnsureUserSessionHost(
+    { platform, exePath: exe, uid, serviceMissing, recycle },
+    {
+      register: (plan) => {
+        if (!plan || plan.action === "unsupported") return;
+        if (plan.plist) writeLaunchAgentPlist({ exePath: exe, destPath: plan.plistPath });
+        if (plan.bootstrap) applyServicePlan(plan.bootstrap);
+        else applyServicePlan(plan);
+      },
+      osStop: (plan) => applyServicePlan(plan),
+      osStart: (plan) => {
+        const result = applyServicePlan(plan);
+        startedOk = Boolean(result?.ok);
+        return result;
+      },
+      launchHost: (plan) =>
+        applyHarnessHostLaunch(plan ?? planHarnessHostLaunch({ exePath: exe }), { spawnFn: spawn }),
+    },
+  );
+  if (!serviceMissing && !startedOk) {
+    applyHarnessHostLaunch(planHarnessHostLaunch({ exePath: exe }), { spawnFn: spawn });
+  }
+}
+
+async function preparePackagedGuiServer() {
+  const decision = decidePackagedGuiAction(await probeCandidatePorts());
+  leftoverStopCard = decision.action === "replace";
+  const { found } = await runPackagedGuiBoot(decision, {
+    stopOccupant: stopLeftoverOccupant,
+    ensureHost: ({ serviceMissing } = {}) =>
+      ensureUserSessionHost({ recycle: decision.action === "replace" && !serviceMissing }),
+    attach: attachToRunningService,
+  });
   return found;
 }
 
@@ -255,16 +333,16 @@ async function runServiceHost() {
     results.push({ port, health: await probeHealth(port), sidecar });
   }
   const decision = decideServiceHostAction(results);
+  const { spawned } = await runServiceHostBoot(decision, {
+    stopOccupant: stopLeftoverOccupant,
+    spawn: startServerPackaged,
+  });
   if (decision.action === "already-running") {
     app.exit(0);
     return;
   }
-  if (decision.action === "spawn") {
-    serverReady = await startServerPackaged();
-    if (serverReady && serverProc) superviseServer(serverProc);
-  } else {
-    serverReady = false;
-  }
+  serverReady = Boolean(spawned);
+  if (serverReady && serverProc) superviseServer(serverProc);
   app.on("activate", () => spawnGui());
 }
 
@@ -322,7 +400,7 @@ function createWindow() {
   });
 
   if (app.isPackaged) {
-    win.loadURL(serverReady ? `http://127.0.0.1:${SERVER_PORT}` : ERROR_PAGE);
+    win.loadURL(serverReady ? `http://127.0.0.1:${SERVER_PORT}` : leftoverStopCard ? STOP_PAGE : ERROR_PAGE);
   } else {
     win.loadURL(DEV_URL);
   }
@@ -505,7 +583,7 @@ ipcMain.handle("login:set", (_event, enabled) => {
   serviceEnabled = enabled === true;
   savePrefs({ serviceEnabled });
   if (app.isPackaged) {
-    if (serviceEnabled) enableUserSessionService();
+    if (serviceEnabled) void ensureUserSessionHost();
     else disableUserSessionService();
   }
   return serviceEnabled;
@@ -571,11 +649,8 @@ app.whenReady().then(async () => {
     // First packaged launch (pref unset) enables the user-session service
     // so Quit leaves routines ticking and the next OS login starts it
     // without opening the GUI.
-    if (serviceEnabled) {
-      if (servicePref === null) savePrefs({ serviceEnabled: true });
-      enableUserSessionService();
-    }
-    const attached = await attachToRunningService();
+    if (serviceEnabled && servicePref === null) savePrefs({ serviceEnabled: true });
+    const attached = await preparePackagedGuiServer();
     serverReady = Boolean(attached);
     if (serverReady) registerApiAuth();
   }

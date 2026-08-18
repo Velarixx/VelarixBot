@@ -10,8 +10,13 @@ import {
   SERVICE_FLAG,
   WINDOWS_SERVICE_NAME,
   WINDOWS_SERVICE_TYPE,
+  applyHarnessHostLaunch,
+  applyOccupantStop,
   applyServicePlan,
   assertUserSessionLaunchAgent,
+  harnessHostLaunchEnv,
+  isScServiceStop,
+  isWindowsServiceMissing,
   isHarnessServiceArgv,
   isUserSessionWindowsService,
   launchAgentPlistPath,
@@ -19,6 +24,9 @@ import {
   macBootoutArgs,
   macKickstartArgs,
   parseServiceEnabledPref,
+  planEnsureUserSessionHost,
+  planHarnessHostLaunch,
+  planOccupantStop,
   planServiceInstall,
   planServiceStart,
   planServiceStop,
@@ -26,6 +34,7 @@ import {
   renderLaunchAgentPlist,
   windowsCreateArgs,
   windowsDeleteArgs,
+  windowsQueryArgs,
   windowsStartArgs,
   windowsStopArgs,
 } from "./service-control.mjs";
@@ -93,6 +102,85 @@ describe("user-session service control", () => {
     expect(windowsStartArgs({ sc: "sc.exe" }).args).toEqual(["start", WINDOWS_SERVICE_NAME]);
     expect(windowsStopArgs({ sc: "sc.exe" }).args).toEqual(["stop", WINDOWS_SERVICE_NAME]);
     expect(windowsDeleteArgs({ sc: "sc.exe" }).args).toEqual(["delete", WINDOWS_SERVICE_NAME]);
+    expect(windowsQueryArgs({ sc: "sc.exe" }).args).toEqual(["query", WINDOWS_SERVICE_NAME]);
+  });
+
+  it("treats sc query 1060 as a missing user service, not a port conflict", () => {
+    expect(isWindowsServiceMissing(null)).toBe(true);
+    expect(isWindowsServiceMissing({ status: 1060, stdout: "", stderr: "" })).toBe(true);
+    expect(
+      isWindowsServiceMissing({
+        status: 1,
+        stdout: "",
+        stderr: "The specified service does not exist as an installed service.\r\n",
+      }),
+    ).toBe(true);
+    expect(isWindowsServiceMissing({ status: 0, stdout: "STATE : 4 RUNNING" })).toBe(false);
+  });
+
+  it("launches exe --harness-service without a token and without LocalSystem", () => {
+    const launch = planHarnessHostLaunch({ exePath: EXE_WIN });
+    expect(launch).toEqual({
+      action: "launch-host",
+      reason: "harness-service-process",
+      command: EXE_WIN,
+      args: [SERVICE_FLAG],
+      detached: true,
+    });
+    expect(launch.args.join(" ")).not.toMatch(/LocalSystem|node\.exe/i);
+    const env = harnessHostLaunchEnv({
+      PATH: "C:\\Windows\\System32",
+      VELARIX_API_TOKEN: "ab".repeat(32),
+    });
+    expect(env.VELARIX_HARNESS_SERVICE).toBe("1");
+    expect(env).not.toHaveProperty("VELARIX_API_TOKEN");
+    const spawned: Array<[string, string[], { shell?: boolean; detached?: boolean; env?: Record<string, string> }]> =
+      [];
+    const child = {
+      pid: 4242,
+      unref() {
+        return undefined;
+      },
+    };
+    const result = applyHarnessHostLaunch(launch, {
+      env: { PATH: "C:\\Windows\\System32", VELARIX_API_TOKEN: "ab".repeat(32) },
+      spawnFn: (command: string, args: string[], opts: { shell?: boolean; detached?: boolean; env?: Record<string, string> }) => {
+        spawned.push([command, args, opts]);
+        return child;
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0][0]).toBe(EXE_WIN);
+    expect(spawned[0][1]).toEqual(["--harness-service"]);
+    expect(spawned[0][2].shell).toBe(false);
+    expect(spawned[0][2].detached).toBe(true);
+    expect(spawned[0][2].env).not.toHaveProperty("VELARIX_API_TOKEN");
+    expect(spawned[0][2].env?.VELARIX_HARNESS_SERVICE).toBe("1");
+  });
+
+  it("empty + missing Windows service plans register then launch-host, not sc stop only", () => {
+    const missing = planEnsureUserSessionHost({
+      platform: "win32",
+      exePath: EXE_WIN,
+      serviceMissing: true,
+      env: { SystemRoot: "C:\\Windows" },
+    });
+    expect(missing.steps).toEqual(["register", "launch-host"]);
+    expect(isUserSessionWindowsService(missing.register)).toBe(true);
+    expect(missing.launch.args).toEqual([SERVICE_FLAG]);
+    expect(missing.fork).toBe(false);
+    expect(missing.mintToken).toBe(false);
+    expect(missing.writeSidecar).toBe(false);
+
+    const present = planEnsureUserSessionHost({
+      platform: "win32",
+      exePath: EXE_WIN,
+      serviceMissing: false,
+      env: { SystemRoot: "C:\\Windows" },
+    });
+    expect(present.steps).toEqual(["register", "os-start"]);
+    expect(present.osStart.args).toEqual(["start", WINDOWS_SERVICE_NAME]);
   });
 
   it("start/stop are idempotent — already-running start and already-stopped stop do not spawn", () => {
@@ -191,6 +279,36 @@ describe("user-session service control", () => {
     expect(install).toMatch(/sc\.exe stop velarixbot-harness/);
     expect(install).toMatch(/Library\/LaunchAgents/);
     expect(install).not.toMatch(/LaunchDaemons/);
+  });
+
+  it("stops a leftover occupant by health.pid — not sc.exe stop velarixbot-harness", () => {
+    const posix = planOccupantStop({ pid: 8800, platform: "darwin" });
+    expect(posix).toEqual({ action: "stop-occupant", reason: "leftover-health-pid", pid: 8800, signal: "SIGTERM" });
+    expect(isScServiceStop(posix)).toBe(false);
+    const killed: Array<[number, string]> = [];
+    expect(applyOccupantStop(posix, { killFn: (pid, signal) => killed.push([pid, String(signal)]) }).ok).toBe(true);
+    expect(killed).toEqual([[8800, "SIGTERM"]]);
+
+    const calls: Array<[string, string[]]> = [];
+    const win = planOccupantStop({ pid: 8800, platform: "win32" });
+    expect(win.command).toBe("taskkill");
+    expect(win.args).toEqual(["/pid", "8800", "/T", "/F"]);
+    expect(isScServiceStop(win)).toBe(false);
+    const spawnSyncFn = (command: string, args: string[]) => {
+      calls.push([command, args]);
+      return { status: 0 };
+    };
+    expect(applyOccupantStop(win, { spawnSyncFn }).ok).toBe(true);
+    expect(calls).toEqual([["taskkill", ["/pid", "8800", "/T", "/F"]]]);
+    expect(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "service-control.mjs"), "utf8")).toMatch(
+      /shell:\s*false/,
+    );
+
+    const scStop = windowsStopArgs({ sc: "C:\\Windows\\System32\\sc.exe" });
+    expect(isScServiceStop(scStop)).toBe(true);
+    expect(applyOccupantStop(scStop).ok).toBe(false);
+    expect(applyOccupantStop(scStop).reason).toBe("sc-stop-not-occupant");
+    expect(planOccupantStop({ pid: 0, platform: "win32" }).action).toBe("noop");
   });
 
   it("treats an unset serviceEnabled pref as null (first packaged launch enables)", () => {

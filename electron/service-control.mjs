@@ -161,6 +161,88 @@ export function windowsQueryArgs({ name = WINDOWS_SERVICE_NAME, sc = windowsScEx
   return { command: sc, args: ["query", name] };
 }
 
+/** sc query 1060 — the per-user service was never registered (NSIS hook
+ * skipped, or create failed). Not a port conflict. */
+export function isWindowsServiceMissing(result) {
+  if (!result) return true;
+  const status = Number(result.status);
+  const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}\n${result.error ?? ""}`;
+  if (status === 1060) return true;
+  if (/\b1060\b/.test(text)) return true;
+  if (/specified service does not exist/i.test(text)) return true;
+  return false;
+}
+
+export function queryWindowsService({ name = WINDOWS_SERVICE_NAME, spawnSyncFn = spawnSync, env = process.env } = {}) {
+  const plan = windowsQueryArgs({ name, sc: windowsScExe(env) });
+  return runArgv(plan.command, plan.args, { spawnSyncFn, env });
+}
+
+/** Launch the packaged exe as the user-session host. Not LocalSystem,
+ * not utilityProcess.fork, not a minted GUI token. */
+export function planHarnessHostLaunch({ exePath } = {}) {
+  if (!exePath) throw new Error("Harness host launch requires the packaged Electron executable");
+  return {
+    action: "launch-host",
+    reason: "harness-service-process",
+    command: exePath,
+    args: [SERVICE_FLAG],
+    detached: true,
+  };
+}
+
+export function harnessHostLaunchEnv(env = process.env) {
+  const out = {};
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (key === "VELARIX_API_TOKEN") continue;
+    out[key] = value;
+  }
+  out[HARNESS_SERVICE_ENV] = "1";
+  return out;
+}
+
+/** Register + start the OS service, or spawn exe --harness-service when
+ * the Windows user service is missing / sc start failed. sc stop is
+ * never sufficient to start a host that does not exist. */
+export function planEnsureUserSessionHost({
+  platform,
+  exePath,
+  uid,
+  serviceMissing = false,
+  osStartOk = true,
+  recycle = false,
+  env = process.env,
+} = {}) {
+  const steps = [];
+  if (recycle && !serviceMissing) steps.push("os-stop");
+  steps.push("register");
+  if (!serviceMissing) steps.push("os-start");
+  if (serviceMissing || !osStartOk) steps.push("launch-host");
+  return {
+    steps,
+    register: planServiceInstall({ platform, uid, exePath, env }),
+    osStart: planServiceStart({ running: false, platform, uid, env }),
+    osStop: planServiceStop({ running: true, platform, uid, env }),
+    launch: exePath ? planHarnessHostLaunch({ exePath }) : null,
+    fork: false,
+    mintToken: false,
+    writeSidecar: false,
+  };
+}
+
+export async function runEnsureUserSessionHost(input, { register, osStart, osStop, launchHost } = {}) {
+  const plan = planEnsureUserSessionHost(input);
+  const log = [];
+  for (const step of plan.steps) {
+    if (step === "register" && typeof register === "function") await register(plan.register);
+    if (step === "os-start" && typeof osStart === "function") await osStart(plan.osStart);
+    if (step === "os-stop" && typeof osStop === "function") await osStop(plan.osStop);
+    if (step === "launch-host" && typeof launchHost === "function") await launchHost(plan.launch);
+    log.push({ step });
+  }
+  return { plan, log };
+}
+
 export function isUserSessionWindowsService(plan) {
   const args = plan?.args ?? [];
   const joined = args.join(" ");
@@ -243,6 +325,64 @@ export function applyServicePlan(plan, { spawnSyncFn = spawnSync, env } = {}) {
   if (!plan.command) return { ok: false, skipped: true, plan };
   const result = runArgv(plan.command, plan.args ?? [], { spawnSyncFn, env });
   return { ok: result.status === 0, status: result.status, plan };
+}
+
+/** Stop a leftover occupant by health.pid. sc.exe stop velarixbot-harness
+ * is not this — a 0.2.2 GUI-forked server is not the user-session service. */
+export function planOccupantStop({ pid, platform } = {}) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return { action: "noop", reason: "invalid-pid" };
+  if (platform === "win32") {
+    return {
+      action: "stop-occupant",
+      reason: "leftover-health-pid",
+      command: "taskkill",
+      args: ["/pid", String(n), "/T", "/F"],
+    };
+  }
+  return { action: "stop-occupant", reason: "leftover-health-pid", pid: n, signal: "SIGTERM" };
+}
+
+export function isScServiceStop(plan) {
+  const args = plan?.args ?? [];
+  const command = String(plan?.command ?? "");
+  return /sc(?:\.exe)?$/i.test(command) && args[0] === "stop" && args.includes(WINDOWS_SERVICE_NAME);
+}
+
+export function applyHarnessHostLaunch(plan, { spawnFn, env = process.env } = {}) {
+  if (!plan || plan.action !== "launch-host" || !plan.command) return { ok: false, plan };
+  if (typeof spawnFn !== "function") return { ok: false, reason: "missing-spawn", plan };
+  const child = spawnFn(plan.command, plan.args ?? [], {
+    detached: true,
+    stdio: "ignore",
+    shell: false,
+    windowsHide: true,
+    env: harnessHostLaunchEnv(env),
+  });
+  try {
+    child?.unref?.();
+  } catch {
+    /* already detached */
+  }
+  return { ok: true, pid: child?.pid, plan };
+}
+
+export function applyOccupantStop(plan, { spawnSyncFn = spawnSync, killFn = process.kill } = {}) {
+  if (!plan || plan.action === "noop") return { ok: true, skipped: true, plan };
+  if (isScServiceStop(plan)) return { ok: false, reason: "sc-stop-not-occupant", plan };
+  if (plan.action !== "stop-occupant") return { ok: false, reason: "not-occupant-stop", plan };
+  if (plan.command === "taskkill") {
+    const result = runArgv(plan.command, plan.args ?? [], { spawnSyncFn });
+    return { ok: result.status === 0, status: result.status, plan };
+  }
+  if (!plan.pid) return { ok: false, reason: "invalid-pid", plan };
+  try {
+    killFn(plan.pid, plan.signal);
+    return { ok: true, plan };
+  } catch (err) {
+    if (err && (err.code === "ESRCH" || err.code === "EINVAL")) return { ok: true, alreadyGone: true, plan };
+    return { ok: false, plan };
+  }
 }
 
 export function writeLaunchAgentPlist({ exePath, destPath, home = homedir() } = {}) {
