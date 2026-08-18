@@ -150,7 +150,9 @@ function EngineCliRow({
   );
 }
 
-/** Launch-at-login — desktop shell only; default off. */
+/** User-session harness at login — desktop shell only. First packaged
+ * launch enables it so Quit leaves routines ticking; the GUI does not
+ * have to open. Sleep still uses each routine's missed-run policy. */
 function LaunchAtLoginRow() {
   const login = window.ogb?.loginItem;
   const [on, setOn] = useState(false);
@@ -164,7 +166,8 @@ function LaunchAtLoginRow() {
       <div>
         <div className="text-[15px] font-medium text-ink">Launch at login</div>
         <div className="mt-0.5 text-[13px] text-ink-secondary">
-          Open VelarixBot when you sign in. Off by default. The harness stays local.
+          Start the local harness service when you sign in. The window does not have to open. Sleep and lid-close still
+          use each routine's missed-run policy — nothing runs while the machine is asleep or off.
         </div>
       </div>
       <button

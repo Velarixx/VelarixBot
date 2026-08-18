@@ -25,7 +25,8 @@ declare global {
       onNotifyClick?(cb: (botId: string) => void): () => void;
       /** Desktop file picker for composer attachments (local paths). */
       openFiles?(): Promise<Array<{ path: string; name: string }>>;
-      /** Launch at login. Default off. Packaged/desktop only. */
+      /** User-session harness at login (LaunchAgent / per-user service).
+       * Not the Electron GUI login item. Packaged/desktop only. */
       loginItem?: {
         get(): Promise<boolean>;
         set(enabled: boolean): Promise<boolean>;

@@ -44,15 +44,55 @@ xattr -dr com.apple.quarantine "/Applications/VelarixBot.app"
 
 Do not disable SmartScreen or Microsoft Defender globally. Windows supports bots, the shared cloud computer, and local computer control (Claude/Codex via the bundled CUA driver). Native dictation is unavailable.
 
+The NSIS installer registers a **per-user** Windows service named `velarixbot-harness` (`type= userown`, not LocalSystem). It starts the packaged Electron binary with `--harness-service` so the harness can unseal `safeStorage` secrets in your user session.
+
+## Local harness service
+
+Routines and nudges tick while the **local harness service** is running — not only while the window is open, and not via a cloud scheduler. Sleep, lid-close, and power-off still miss their ticks; each routine's missed-run policy applies. The first packaged launch enables the service (macOS writes `~/Library/LaunchAgents/com.velarix.bot.harness.plist` with `LimitLoadToSessionType=Aqua`). OS login starts the service without opening the GUI; OS logout stops it.
+
+Start or stop the service **without** launching the GUI:
+
+macOS:
+
+```sh
+# start (after the LaunchAgent plist exists)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.velarix.bot.harness.plist
+launchctl kickstart "gui/$(id -u)/com.velarix.bot.harness"
+
+# prove it is up (GUI not required). Body is exactly app, pid, static, stamp.
+curl -sS http://127.0.0.1:8799/api/health
+
+# stop
+launchctl bootout "gui/$(id -u)/com.velarix.bot.harness"
+```
+
+Windows (from an unelevated user session — this is a per-user service, not a machine service):
+
+```powershell
+sc.exe start velarixbot-harness
+# GET http://127.0.0.1:8799/api/health  → app=velarixbot, static=true
+sc.exe stop velarixbot-harness
+```
+
+`launchctl bootstrap` / `sc.exe start` are idempotent when the service is already running: they must not fork a second harness. Dragging the app to Trash or running the NSIS uninstaller is not enough unless the service is stopped and unregistered (see Uninstall).
+
 ## Updates
 
 Updates are manual because the source and releases are private. Download the next release from this repository, verify its checksum, and install it over the existing version. Your bots, transcripts, routines, and settings remain in the VelarixBot user-data directory.
 
 ## Uninstall
 
-Removing the app does not delete leftover config or bot data.
+Removing the app does not delete leftover config or bot data. **Stop and unregister the user-session service** or the harness keeps running after the GUI is gone.
 
-- **macOS:** drag `/Applications/VelarixBot.app` to Trash. Leftover folders: `~/Library/Application Support/VelarixBot` (app prefs) and `~/.velarixbot` (bots, transcripts, keys, per-bot workspaces).
-- **Windows:** uninstall VelarixBot from Settings. Leftover folders: `%APPDATA%\VelarixBot` (app prefs) and `%USERPROFILE%\.velarixbot` (bots, transcripts, keys, per-bot workspaces).
+- **macOS:** stop the LaunchAgent, then drag `/Applications/VelarixBot.app` to Trash:
+
+  ```sh
+  launchctl bootout "gui/$(id -u)/com.velarix.bot.harness"
+  rm -f ~/Library/LaunchAgents/com.velarix.bot.harness.plist
+  ```
+
+  After that, `curl http://127.0.0.1:8799/api/health` must fail. Leftover folders: `~/Library/Application Support/VelarixBot` (app prefs) and `~/.velarixbot` (bots, transcripts, keys, per-bot workspaces).
+
+- **Windows:** the NSIS uninstaller runs `sc.exe stop velarixbot-harness` and `sc.exe delete velarixbot-harness`. If you copied the app without the installer, stop and delete that per-user service yourself before removing the files. Leftover folders: `%APPDATA%\VelarixBot` (app prefs) and `%USERPROFILE%\.velarixbot` (bots, transcripts, keys, per-bot workspaces).
 
 Delete those folders only if you want a clean slate.

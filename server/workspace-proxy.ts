@@ -69,7 +69,7 @@ const TOOLS = [
         time: { type: "string", description: "HH:MM 24h clock, for daily or weekdays." },
         every_day: { type: "boolean", description: "true = every calendar day; default weekdays only." },
         every_minutes: { type: "number", description: "Interval instead of a clock time." },
-        listener: { type: "string", enum: ["github", "slack"], description: "Poll GitHub (token) or Slack (connected app) while VelarixBot is open." },
+        listener: { type: "string", enum: ["github", "slack"], description: "Poll GitHub (token) or Slack (connected app) while the local harness service is running." },
         repo: { type: "string", description: "GitHub owner/name. One concrete repo — not all repos." },
         events: {
           type: "array",

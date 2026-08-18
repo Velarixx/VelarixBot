@@ -148,16 +148,17 @@ State details explain blocked or interrupted turns. The sidebar and chat header 
 input/output token totals and cost when the provider supplies it; unknown cost is shown as unavailable, never guessed.
 
 Open **Routines** from the sidebar to create a persistent scheduled prompt for a bot, enable or pause it, inspect its
-next/last run, or delete it. Routines are stored locally and **run while VelarixBot is open** — there is no cloud
-scheduler, so nothing runs while the app is closed or the laptop is asleep. Each routine has an explicit missed-run
+next/last run, or delete it. Routines are stored locally and **run while the local harness service is running** — there
+is no cloud scheduler, and Quit leaves that service up in your user session. Nothing runs while the laptop is asleep
+or powered off; each routine has an explicit missed-run
 policy for occurrences that came due while it was: **run once** (coalesce the backlog into one run — the default),
 **skip** (drop them), or **catch up** (replay each missed occurrence in order, capped at 20). Clock schedules store
 the IANA time zone they were created in, so a daily 09:00 stays 09:00 wall-clock across DST transitions and OS
 timezone changes; a wall time skipped by spring-forward runs at the first moment after the gap.
 
 Every run — including skips, with the reason why — lands in a per-routine history (the last 20 runs, shown in the
-panel). A running routine holds a lease it renews every scheduler tick; if VelarixBot dies mid-run, the next launch
-recovers the lease, records the run as interrupted, and never double-runs that occurrence (each scheduled occurrence
+panel). A running routine holds a lease it renews every scheduler tick; if the local harness dies mid-run, the next service
+start recovers the lease, records the run as interrupted, and never double-runs that occurrence (each scheduled occurrence
 is claimed under an idempotency key). A **Test run** button runs a routine immediately without consuming its
 schedule. A busy bot will not start overlapping routine work; the skipped occurrence is recorded. An open Routines
 panel stays live over SSE as runs start, finish, or are deleted.
@@ -281,8 +282,9 @@ pnpm typecheck     # app + server
 pnpm build         # typecheck + production build
 ```
 
-Every `/api/*` route except `/api/health` requires a per-launch bearer token. The packaged app mints one per
-launch in Electron main and injects it on every renderer request (including the SSE stream). In dev, export the
+Every `/api/*` route except `/api/health` requires a bearer token. The packaged user-session service mints one,
+hands it to the forked server via env, and writes it to `~/.velarixbot/service-auth.json` (0600) so the GUI can
+attach without a second mint or putting the token in `/api/health`. In dev, export the
 same `VELARIX_DEV_TOKEN` for both `pnpm dev:server` and `pnpm dev` — there is no way to switch auth off: without
 a token in env the server mints one nobody holds and stays locked.
 
@@ -299,7 +301,7 @@ chat, routines, provider CLIs, local CUA (Claude/Codex), and per-bot Box cloud c
 Shipped teammates runtime (local-first, no cloud service, no telemetry, no paid gating):
 
 - **Tier 1** — OS notifications (honors per-bot `notifications`), boxAgent permission cards, local chat attachments, persistent routines, sidebar search, in-app updater from private GitHub Releases (write-only token).
-- **Tier 2** — close-to-hide tray (Show/Quit) so the harness stays up, launch-at-login (off by default), per-bot markdown memory plus workspace notes, stall nudges, routine-complete `startTurn`, per-bot Always-allow rules with a require-approval override.
+- **Tier 2** — close-to-hide tray (Show/Quit), user-session harness service (LaunchAgent / per-user Windows service) so routines keep ticking after Quit and at login without opening the GUI, per-bot markdown memory plus workspace notes, stall nudges, routine-complete `startTurn`, per-bot Always-allow rules with a require-approval override.
 - **Tier 3** — group mention threads, `ask_bot` depth 2 with a cycle guard and busy-peer queue, Box sign-in credential cards, teach-a-task → editable skill, per-bot Composio app mounts, per-bot Box workspaces so two cloud bots can run at once.
 
 The driver SPI in [`server/contracts.ts`](server/contracts.ts) is small. Adding a provider requires one driver in

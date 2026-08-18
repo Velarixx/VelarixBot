@@ -81,8 +81,10 @@ win:
 
 nsis:
   oneClick: false
+  perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: VelarixBot
   artifactName: VelarixBot-Setup-${version}-${arch}.${ext}
+  include: build/installer.nsh

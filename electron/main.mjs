@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Menu, Tray, desktopCapturer, dialog, ipcMain, nativeImage, safeStorage, session, shell, systemPreferences, utilityProcess } from "electron";
+import { spawn } from "node:child_process";
 import path, { basename, join } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -11,7 +12,21 @@ import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { registerNotifyIpc } from "./notify.mjs";
 import { shouldQuitOnLastWindow } from "./background.mjs";
 import { createRestartPolicy } from "./server-supervisor.mjs";
-import { parseTrayEnabled, serializeTrayPrefs, trayBadgeText, trayTooltip } from "./tray-settings.mjs";
+import { parseTrayEnabled, trayBadgeText, trayTooltip } from "./tray-settings.mjs";
+import { readServiceAuth, removeServiceAuth, writeServiceAuth } from "./service-auth.mjs";
+import { CANDIDATE_PORTS, decideServiceHostAction, isSpawnedChildHealth, waitForAttachable } from "./service-attach.mjs";
+import {
+  applyServicePlan,
+  isHarnessServiceArgv,
+  parseServiceEnabledPref,
+  planServiceInstall,
+  planServiceStart,
+  planServiceStop,
+  planServiceUninstall,
+  removeLaunchAgentPlist,
+  writeLaunchAgentPlist,
+} from "./service-control.mjs";
+import { shouldKillServerOnBeforeQuit } from "./service-quit.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 127.0.0.1 explicitly — vite binds IPv4; a bare "localhost" here can
@@ -25,20 +40,36 @@ let tray = null;
 let isQuitting = false;
 let trayEnabled = true;
 let trayUnread = 0;
+let serviceEnabled = true;
+let guiChild = null;
+
+// [VERIFY] 2026-08-18: HEAD forked the harness from every packaged GUI
+// and killed it on Quit. The user-session service (--harness-service) is
+// now the only packaged host. The GUI attaches (sidecar token + health
+// app/static/pid) and must not utilityProcess.fork a second fleet.
+const isService = isHarnessServiceArgv(process.argv, process.env);
+const isDuplicateGui = !isService && !app.requestSingleInstanceLock();
+if (isDuplicateGui) app.quit();
+if (!isService) {
+  app.on("second-instance", () => {
+    showMainWindow();
+  });
+}
 
 // Packaged: the harness server ships in Resources (compiled JS, zero deps)
 // and runs on Electron's own Node via utilityProcess. It serves the built
 // UI too, so the window talks to one origin and there is no dev proxy.
 // A stray server on the default port must not brick the app — fall back to
 // alternate ports until one binds AND identifies as ours (the probe checks
-// our API shape, not just a 200).
+// our API shape, not just a 200). Attach additionally requires the local
+// sidecar pid — pid===child is spawn-only (service host confirming its fork).
 let serverProc = null;
 let serverReady = true;
-// One capability token per app launch: every /api/* call (except the
-// /api/health identity probe) requires it. The forked server learns it via
-// env; the renderer never sees it — main injects the header at the network
-// layer (registerApiAuth below), which also covers EventSource/SSE.
-const API_TOKEN = mintApiToken();
+let harnessOwnership = "none";
+// Service host mints the token and writes ~/.velarixbot/service-auth.json
+// (0600). The GUI never mints: it reads the service token from that file.
+// Health stays {app,pid,static,stamp} — the token is not in the JSON.
+let API_TOKEN = isService ? mintApiToken() : "";
 // P1.5 SecretStore: safeStorage lives here in main only — the forked server
 // brokers encrypt/decrypt over its parent port (see secret-broker.mjs).
 const handleSecretMessage = createSecretBrokerHandler({
@@ -79,16 +110,15 @@ async function startServerOn(port) {
     exited = true;
   });
   // wait for the port to answer (fresh machine: first boot writes data dirs).
-  // Identity check is by PID: a dev harness server has the same API shape,
-  // so only the child we actually forked (matching pid + static serving)
-  // counts as ours.
+  // Spawn-only identity: pid===child. Attach uses the sidecar (see
+  // service-attach.mjs) and must not treat "we just forked this pid" as ours.
   for (let i = 0; i < 40; i++) {
     if (exited) return null;
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/health`);
       if (res.ok) {
         const body = await res.json().catch(() => null);
-        if (body?.app === "velarixbot" && body.pid === proc.pid && body.static) return proc;
+        if (isSpawnedChildHealth(body, proc.pid)) return proc;
         break; // someone else owns this port — try the next one
       }
     } catch {
@@ -106,11 +136,13 @@ async function startServerPackaged() {
   // two passes: a quit-and-reopen relaunch can race the dying instance's
   // server during teardown — one settle-and-retry covers it
   for (let attempt = 0; attempt < 2; attempt++) {
-    for (const port of [8799, 18799, 28799]) {
+    for (const port of CANDIDATE_PORTS) {
       const proc = await startServerOn(port);
       if (proc) {
         serverProc = proc;
         SERVER_PORT = port;
+        writeServiceAuth({ pid: proc.pid, port, token: API_TOKEN });
+        harnessOwnership = "service";
         return true;
       }
     }
@@ -136,10 +168,104 @@ const SERVER_DOWN_PAGE =
 // after every (re)start — a respawn can land on a different fallback port,
 // and re-registering replaces the previous filter.
 function registerApiAuth() {
+  if (!API_TOKEN) return;
   session.defaultSession.webRequest.onBeforeSendHeaders(
     { urls: serverUrlFilter(SERVER_PORT) },
     (details, callback) => callback({ requestHeaders: withAuthHeader(details.requestHeaders, API_TOKEN) }),
   );
+}
+
+async function probeHealth(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function sessionUid() {
+  return typeof process.getuid === "function" ? process.getuid() : 0;
+}
+
+async function attachToRunningService() {
+  const found = await waitForAttachable({
+    probe: probeHealth,
+    readSidecar: () => readServiceAuth(),
+    sleep: () => new Promise((r) => setTimeout(r, 250)),
+  });
+  if (!found?.sidecar?.token) return null;
+  API_TOKEN = found.sidecar.token;
+  SERVER_PORT = found.port;
+  harnessOwnership = "attached";
+  return found;
+}
+
+function enableUserSessionService() {
+  const exe = process.execPath;
+  const uid = sessionUid();
+  const install = planServiceInstall({ platform: process.platform, uid, exePath: exe });
+  if (install.action === "unsupported") return false;
+  if (install.plist) writeLaunchAgentPlist({ exePath: exe, destPath: install.plistPath });
+  if (install.bootstrap) applyServicePlan(install.bootstrap);
+  else applyServicePlan(install);
+  applyServicePlan(planServiceStart({ running: false, platform: process.platform, uid }));
+  return true;
+}
+
+function disableUserSessionService() {
+  const uid = sessionUid();
+  applyServicePlan(planServiceStop({ running: true, platform: process.platform, uid }));
+  if (process.platform === "darwin") removeLaunchAgentPlist();
+  if (process.platform === "win32") {
+    const uninstall = planServiceUninstall({ platform: "win32", uid, running: false });
+    if (uninstall.remove) applyServicePlan(uninstall.remove);
+  }
+}
+
+function spawnGui() {
+  if (guiChild && !guiChild.killed) return;
+  const args = app.isPackaged ? [] : ["."];
+  guiChild = spawn(process.execPath, args, {
+    detached: true,
+    stdio: "ignore",
+    shell: false,
+    env: Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => key !== "VELARIX_API_TOKEN" && key !== "VELARIX_HARNESS_SERVICE"),
+    ),
+  });
+  guiChild.unref();
+  guiChild.once("exit", () => {
+    guiChild = null;
+  });
+}
+
+async function runServiceHost() {
+  if (IS_MAC) {
+    try {
+      app.dock.hide();
+    } catch {
+      /* older Electron */
+    }
+  }
+  const sidecar = readServiceAuth();
+  const results = [];
+  for (const port of CANDIDATE_PORTS) {
+    results.push({ port, health: await probeHealth(port), sidecar });
+  }
+  const decision = decideServiceHostAction(results);
+  if (decision.action === "already-running") {
+    app.exit(0);
+    return;
+  }
+  if (decision.action === "spawn") {
+    serverReady = await startServerPackaged();
+    if (serverReady && serverProc) superviseServer(serverProc);
+  } else {
+    serverReady = false;
+  }
+  app.on("activate", () => spawnGui());
 }
 
 // Post-boot supervision (rc.12 field fix): the exit listener inside
@@ -166,6 +292,7 @@ async function respawnServer() {
   if (mainWindow?.isDestroyed()) return;
   if (serverReady) {
     superviseServer(serverProc);
+    if (serverProc?.pid && API_TOKEN) writeServiceAuth({ pid: serverProc.pid, port: SERVER_PORT, token: API_TOKEN });
     registerApiAuth();
     mainWindow?.loadURL(`http://127.0.0.1:${SERVER_PORT}`);
   } else {
@@ -213,21 +340,35 @@ function trayPrefsPath() {
   return join(app.getPath("userData"), "prefs.json");
 }
 
-function loadTrayEnabled() {
+function loadPrefs() {
   try {
-    return parseTrayEnabled(JSON.parse(readFileSync(trayPrefsPath(), "utf8")));
+    return JSON.parse(readFileSync(trayPrefsPath(), "utf8"));
   } catch {
-    return true;
+    return {};
+  }
+}
+
+function loadTrayEnabled() {
+  return parseTrayEnabled(loadPrefs());
+}
+
+function savePrefs(patch) {
+  try {
+    mkdirSync(app.getPath("userData"), { recursive: true });
+    const current = loadPrefs();
+    const next = {
+      trayEnabled: patch.trayEnabled !== undefined ? patch.trayEnabled !== false : parseTrayEnabled(current),
+      serviceEnabled:
+        patch.serviceEnabled !== undefined ? patch.serviceEnabled === true : parseServiceEnabledPref(current) !== false,
+    };
+    writeFileSync(trayPrefsPath(), JSON.stringify(next, null, 2));
+  } catch (e) {
+    console.error("[prefs] save failed:", e);
   }
 }
 
 function saveTrayEnabled(enabled) {
-  try {
-    mkdirSync(app.getPath("userData"), { recursive: true });
-    writeFileSync(trayPrefsPath(), serializeTrayPrefs(enabled));
-  } catch (e) {
-    console.error("[tray] prefs save failed:", e);
-  }
+  savePrefs({ trayEnabled: enabled !== false });
 }
 
 function applyTrayBadge(count) {
@@ -353,10 +494,21 @@ ipcMain.handle("fs:open-files", async (event) => {
   return result.filePaths.map((p) => ({ path: p, name: basename(p) }));
 });
 
-ipcMain.handle("login:get", () => Boolean(app.getLoginItemSettings()?.openAtLogin));
+ipcMain.handle("login:get", () => serviceEnabled !== false);
 ipcMain.handle("login:set", (_event, enabled) => {
-  app.setLoginItemSettings({ openAtLogin: enabled === true });
-  return Boolean(app.getLoginItemSettings()?.openAtLogin);
+  // Electron GUI login item is not a substitute for the user-session service.
+  try {
+    app.setLoginItemSettings({ openAtLogin: false });
+  } catch {
+    /* unpackaged / unsupported */
+  }
+  serviceEnabled = enabled === true;
+  savePrefs({ serviceEnabled });
+  if (app.isPackaged) {
+    if (serviceEnabled) enableUserSessionService();
+    else disableUserSessionService();
+  }
+  return serviceEnabled;
 });
 
 ipcMain.handle("tray:get", () => trayEnabled !== false);
@@ -380,6 +532,11 @@ ipcMain.handle("tray:setUnread", (_event, count) => {
 });
 
 app.whenReady().then(async () => {
+  if (isDuplicateGui) return;
+  if (isService) {
+    await runServiceHost();
+    return;
+  }
   if (IS_MAC) app.dock.setIcon(APP_ICON);
   // getDisplayMedia in the renderer → this handler → ScreenCaptureKit, all
   // inside the app's own processes — the one capture path macOS reliably
@@ -401,17 +558,27 @@ app.whenReady().then(async () => {
   // connection descriptor on first render. Never blocks window creation on
   // failure — computer use degrades to "unavailable", the rest still works.
   startCua().catch((e) => console.error("[cua] start failed:", e));
+  const prefs = loadPrefs();
+  trayEnabled = parseTrayEnabled(prefs);
+  const servicePref = parseServiceEnabledPref(prefs);
+  serviceEnabled = servicePref !== false;
   if (app.isPackaged) {
-    serverReady = await startServerPackaged();
-    // Token injection registered AFTER port fallback settles so the filter
-    // matches the port the window actually loads from; supervision so a
-    // post-boot server death respawns instead of leaving a dead app.
-    if (serverReady) {
-      superviseServer(serverProc);
-      registerApiAuth();
+    try {
+      app.setLoginItemSettings({ openAtLogin: false });
+    } catch {
+      /* unsigned / unsupported */
     }
+    // First packaged launch (pref unset) enables the user-session service
+    // so Quit leaves routines ticking and the next OS login starts it
+    // without opening the GUI.
+    if (serviceEnabled) {
+      if (servicePref === null) savePrefs({ serviceEnabled: true });
+      enableUserSessionService();
+    }
+    const attached = await attachToRunningService();
+    serverReady = Boolean(attached);
+    if (serverReady) registerApiAuth();
   }
-  trayEnabled = loadTrayEnabled();
   if (trayEnabled) {
     try {
       createTray();
@@ -437,9 +604,12 @@ app.on("before-quit", (e) => {
   isQuitting = true;
   if (cuaCleanedUp) return;
   e.preventDefault();
-  try {
-    serverProc?.kill();
-  } catch {}
+  if (shouldKillServerOnBeforeQuit({ role: isService ? "service" : "gui", ownership: harnessOwnership })) {
+    try {
+      serverProc?.kill();
+    } catch {}
+    if (isService) removeServiceAuth();
+  }
   destroyTray();
   stopCua().finally(() => {
     cuaCleanedUp = true;

@@ -525,7 +525,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         });
         broadcast({ kind: "routine", routine });
         return {
-          text: `Created routine ${routine.name} (id: ${routine.id}, ${routine.schedule.kind}${routine.schedule.kind === "listener" ? ` ${routine.schedule.source}` : ""}). It runs while VelarixBot is open.`,
+          text: `Created routine ${routine.name} (id: ${routine.id}, ${routine.schedule.kind}${routine.schedule.kind === "listener" ? ` ${routine.schedule.source}` : ""}). It runs while the local harness service is running.`,
         };
       }
       if (tool === "save_skill") {
