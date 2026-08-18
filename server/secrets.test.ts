@@ -99,7 +99,7 @@ describe("file backend (headless/dev fallback)", () => {
   });
 
   const posixOnly = process.platform === "win32" ? it.skip : it;
-  posixOnly("keeps secrets.json 0600", async () => {
+  posixOnly("keeps secrets.json 0600 — POSIX-only: Windows has no Unix 0600 mode bits", async () => {
     ensureDirs();
     const store = await initSecretStore(createFileBackend());
     await store.put("github.token", canary("mode"));

@@ -222,7 +222,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       {/* Blocked state banner */}
       {bot.state === "BLOCKED" && bot.stateDetail && (
         <div className="mx-auto w-full max-w-[900px] px-5">
-          <div className="mb-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2">
+          <div className="mb-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2" data-state-code={bot.stateCode}>
             <div className="mb-1 text-[13px] font-semibold text-danger">Bot is blocked</div>
             <div className="text-[13px] text-danger/90">{bot.stateDetail}</div>
           </div>

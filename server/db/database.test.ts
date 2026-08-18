@@ -100,7 +100,7 @@ describe("database + migrations", () => {
     expect(migrate(db, [broken])).toEqual([]); // recorded → skipped, no rethrow
   });
 
-  (process.platform === "win32" ? it.skip : it)("keeps the database file user-private (0600)", () => {
+  (process.platform === "win32" ? it.skip : it)("keeps the database file user-private (0600) — POSIX-only: Windows has no Unix 0600 mode bits", () => {
     db = openDatabase(defaultDbPath());
     db.prepare("INSERT INTO threads(id, bot_id, created_at) VALUES ('t', NULL, 1)").run();
     expect(statSync(defaultDbPath()).mode & 0o777).toBe(0o600);

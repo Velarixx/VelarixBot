@@ -341,6 +341,9 @@ export function createIntegrationsRoutes(deps: {
 
   const api: RouteHandler = async ({ req, res, url, path, method }) => {
     // ── provider instances (model picker) ──
+    // [VERIFY] 2026-08-18 M5: the model picker, Onboarding, App Settings,
+    // eval/flow.mjs, and every test caller use GET /api/instances. A repo
+    // search of code + docs found zero /api/models callers — no alias.
     if (method === "GET" && path === "/api/instances") {
       json(res, 200, { instances: await registry.describe() });
       return true;

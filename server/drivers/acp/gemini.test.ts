@@ -83,6 +83,27 @@ describe("Gemini decodeConfig & model catalog", () => {
     await inst.dispose();
   });
 
+  it("keeps the static fallback when session/new has no catalog (no keys on argv)", async () => {
+    const inst = await GeminiAgentDriver.create({
+      instanceId: "gemini-static-fallback",
+      displayName: "Gemini",
+      environment: {
+        FAKE_ACP_AUTH_IDS: "oauth-personal,gemini-api-key,vertex-ai,gateway",
+        // no FAKE_ACP_SESSION_MODELS — resolveModels returns null
+      },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    expect(inst.models.options.map((o) => o.id)).toEqual(ADVERTISED_MODELS);
+    await inst.snapshot();
+    expect(inst.models.options.map((o) => o.id)).toEqual(ADVERTISED_MODELS);
+    expect(inst.models.default).toBe("auto");
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "gemini.ts"), "utf8");
+    expect(source).toMatch(/resolveModels: async \(config, env\) => \(await probeSession\(config, env\)\)\.models/);
+    expect(source).not.toMatch(/GEMINI_API_KEY.*argv|argv.*GEMINI_API_KEY/);
+    await inst.dispose();
+  });
+
   it("catalogs the ids a live gemini-cli 0.55.1 advertised (2026-08-16), defaulting to the CLI's own `auto`", () => {
     // the catalog is the CLI's session/new advertisement, dated — not an
     // invented list. `auto` is what currentModelId reports with no -m.

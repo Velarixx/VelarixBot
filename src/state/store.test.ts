@@ -173,3 +173,41 @@ describe("A ⇄ B DM groups", () => {
     expect(state.groups[0]?.messages[0]?.text).toBe("do this");
   });
 });
+
+describe("setup card → Settings", () => {
+  it("Switch model in Settings on a setup card opens Settings", () => {
+    let state = reducer(initialState, {
+      type: "hydrate",
+      bots: [
+        bot({
+          id: "bot-1",
+          messages: [
+            {
+              id: "m-setup",
+              role: "bot",
+              kind: "options",
+              at: 1,
+              card: {
+                title: "This engine is not available",
+                subtitle: "`claude` CLI not found",
+                options: ["Switch model in Settings"],
+                requestType: "setup",
+              },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(state.settingsOpen).toBe(false);
+    state = reducer(state, {
+      type: "answerCard",
+      botId: "bot-1",
+      messageId: "m-setup",
+      answer: "Switch model in Settings",
+    });
+    expect(state.settingsOpen).toBe(true);
+    expect(state.computerOpen).toBe(false);
+    expect(state.appSettingsOpen).toBe(false);
+    expect(state.bots[0]?.messages[0]?.card?.answered).toBe("Switch model in Settings");
+  });
+});

@@ -235,6 +235,23 @@ describe("harness HTTP API", () => {
     expect(body.manifest.coverage.secrets.included).toBe(true);
   });
 
+  it("POST /api/bots honors create fields (name Scout is Scout, not New Bot)", async () => {
+    const created = await api("POST", "/api/bots", {
+      name: "Scout",
+      title: "Recon",
+      description: "Looks ahead",
+      color: "teal",
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.bot).toMatchObject({
+      name: "Scout",
+      title: "Recon",
+      description: "Looks ahead",
+      color: "teal",
+    });
+    await api("DELETE", `/api/bots/${created.body.bot.id}`);
+  });
+
   it("creates, patches, and deletes a bot", async () => {
     const created = await api("POST", "/api/bots");
     expect(created.status).toBe(201);
@@ -400,6 +417,17 @@ describe("harness HTTP API", () => {
     const send = await api("POST", `/api/bots/${bot.id}/messages`, { text: "hello?" });
     expect(send.status).toBe(409);
     expect(send.body.error).toContain("unavailable");
+  });
+
+  it("PATCH rejects whitespace-only names and 404s /api/models (use /api/instances)", async () => {
+    const created = await api("POST", "/api/bots", { name: "Keep Me" });
+    const blank = await api("PATCH", `/api/bots/${created.body.bot.id}`, { name: "   " });
+    expect(blank.status).toBe(400);
+    const listed = await api("GET", "/api/bots");
+    expect(listed.body.bots.find((b: { id: string }) => b.id === created.body.bot.id).name).toBe("Keep Me");
+    expect((await api("GET", "/api/models")).status).toBe(404);
+    expect((await api("GET", "/api/instances")).status).toBe(200);
+    await api("DELETE", `/api/bots/${created.body.bot.id}`);
   });
 
   it("saves config keys write-only and reports booleans", async () => {

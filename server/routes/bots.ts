@@ -280,7 +280,25 @@ export function createBotsRoutes(deps: {
       return true;
     }
     if (method === "POST" && path === "/api/bots") {
-      const bot = await turns.createSidebarBot();
+      // [VERIFY] 2026-08-18: createSidebarBot already honors
+      // name/title/description/model/computer (internal create_bot uses
+      // them). This route used to ignore the body, so POST {name:"Scout"}
+      // returned "New Bot". Color is the same palette PATCH already accepts.
+      const body = await readBody(req).catch(() => ({}));
+      const name = typeof body.name === "string" ? body.name : undefined;
+      const title = typeof body.title === "string" ? body.title : undefined;
+      const description = typeof body.description === "string" ? body.description : undefined;
+      const model = typeof body.model === "string" ? body.model : undefined;
+      const computer = typeof body.computer === "string" ? body.computer : undefined;
+      const color = typeof body.color === "string" ? body.color : undefined;
+      const bot = await turns.createSidebarBot({
+        ...(name !== undefined ? { name } : {}),
+        ...(title !== undefined ? { title } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(model !== undefined ? { model } : {}),
+        ...(computer !== undefined ? { computer } : {}),
+        ...(color !== undefined ? { color } : {}),
+      });
       json(res, 201, { bot });
       return true;
     }

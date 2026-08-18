@@ -50,18 +50,22 @@ let probed = false;
 /** Current best PATH, synchronously. Cheap after the first call. */
 export function augmentedPath(): string {
   if (cached === null) {
+    // OMB_PATH_STRICT=1: tests that need a clean PATH (no host /usr/local/bin
+    // or ~/.local/bin bleed-in). Production never sets this — GUI launches
+    // still get knownDirs + the login-shell probe.
+    const strict = process.env.OMB_PATH_STRICT === "1";
     cached = mergePaths([
       ...(process.env.OMB_EXTRA_PATH ? process.env.OMB_EXTRA_PATH.split(delimiter) : []),
       ...(process.env.PATH ? process.env.PATH.split(delimiter) : []),
       // GUI apps on Windows inherit the user PATH already; the unix
       // install-dir scan and shell probe are the darwin/linux cure
-      ...(process.platform === "win32" ? [] : knownDirs().filter((d) => existsSync(d))),
+      ...(strict || process.platform === "win32" ? [] : knownDirs().filter((d) => existsSync(d))),
     ]);
   }
   // belt-and-braces: fold in the login shell's PATH once, in the
   // background — catches anything the known-dirs list doesn't (custom
   // rc exports). Never blocks a spawn; the next one benefits.
-  if (!probed && !process.env.VITEST && process.platform !== "win32") {
+  if (!probed && !process.env.VITEST && process.env.OMB_PATH_STRICT !== "1" && process.platform !== "win32") {
     probed = true;
     probeLoginShellPath();
   }

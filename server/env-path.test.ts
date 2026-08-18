@@ -33,7 +33,7 @@ describe("augmentedPath", () => {
     expect(parts.filter((p) => p === "/tmp/omb-extra")).toHaveLength(1);
   });
 
-  posixIt("includes nvm bin dirs from the home dir, newest node first", () => {
+  posixIt("includes nvm bin dirs from the home dir, newest node first — POSIX-only: nvm layout is Unix", () => {
     // setup.ts points homedir at a temp dir, so this is hermetic
     const nvm = join(homedir(), ".nvm", "versions", "node");
     mkdirSync(join(nvm, "v9.0.0", "bin"), { recursive: true });
@@ -49,7 +49,7 @@ describe("augmentedPath", () => {
     expect(v24).toBeLessThan(v9);
   });
 
-  posixIt("makes a CLI in a known install dir spawnable despite a bare PATH", async () => {
+  posixIt("makes a CLI in a known install dir spawnable despite a bare PATH — POSIX-only: chmod + shebang", async () => {
     const bin = join(homedir(), ".local", "bin");
     mkdirSync(bin, { recursive: true });
     const fake = join(bin, "omb-fake-cli");

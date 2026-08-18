@@ -260,6 +260,8 @@ describe("bots service", () => {
     expect(bots.bots().some((b) => b.id === bot.id)).toBe(true);
     expect(bots.bot(bot.id)).toMatchObject({ id: bot.id, name: "New Bot" });
     expect(bots.patchBot(bot.id, { name: "Chief of Staff" })?.name).toBe("Chief of Staff");
+    expect(() => bots.patchBot(bot.id, { name: "   " })).toThrow(/invalid bot patch: name/);
+    expect(bots.bot(bot.id)?.name).toBe("Chief of Staff");
   });
 
   it("a 0-row update() during patchBot is a 404, never a fake 200 or a 500", () => {
@@ -300,11 +302,18 @@ describe("bots service", () => {
     expect(stale.name).toBe("New Bot"); // the stale in-memory copy stayed stale — it is never written back
   });
 
-  it("seedIfEmpty creates Milind exactly once", () => {
+  it("seedIfEmpty creates Chief of Staff exactly once and never renames an existing bot", () => {
     bots.seedIfEmpty();
-    expect(bots.bots().map((b) => b.name)).toEqual(["Milind"]);
+    expect(bots.bots().map((b) => b.name)).toEqual(["Chief of Staff"]);
     bots.seedIfEmpty();
     expect(bots.count()).toBe(1);
+    bots.patchBot(bots.bots()[0]!.id, { name: "Scout" });
+    bots.seedIfEmpty();
+    expect(bots.bots().map((b) => b.name)).toEqual(["Scout"]);
+    // Historical leftover names are user data — never migrate/overwrite.
+    bots.patchBot(bots.bots()[0]!.id, { name: "Milind" });
+    bots.seedIfEmpty();
+    expect(bots.bots().map((b) => b.name)).toEqual(["Milind"]);
   });
 
   it("clearSkillRefs strips a deleted skill from bots and routines", () => {

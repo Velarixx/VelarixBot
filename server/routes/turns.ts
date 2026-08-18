@@ -27,8 +27,11 @@ export function createTurnsRoutes(deps: { turns: TurnsService }): RouteHandler {
       const extraSkillIds = Array.isArray(body.mentionSkillIds)
         ? body.mentionSkillIds.map((id: unknown) => String(id).trim()).filter(Boolean)
         : [];
-      await turns.startTurn(m[1], text, { attachments, extraSkillIds });
-      json(res, 202, { ok: true });
+      const started = await turns.startTurn(m[1], text, { attachments, extraSkillIds });
+      // [VERIFY] 2026-08-18: existing clients only read `ok`. Extra
+      // threadId/messageId let a client correlate the POST with the SSE
+      // {kind:"message"} frame without a contract break.
+      json(res, 202, { ok: true, threadId: started.threadId, messageId: started.messageId });
       return true;
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/respond$/);

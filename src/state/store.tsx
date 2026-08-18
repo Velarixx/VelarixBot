@@ -37,7 +37,7 @@ export interface OptionCardData {
   dismissed?: boolean;
   /** Present when this card is a live provider ask (approval/question/sign-in). */
   requestId?: string;
-  requestType?: "permission" | "question" | "credential" | "secret" | "suggestion";
+  requestType?: "permission" | "question" | "credential" | "secret" | "suggestion" | "setup";
   /** Composio OAuth URL for connect_app — opened in the user's browser. */
   connectUrl?: string;
   /** PRO extract card. Accept writes via the card PATCH, never a new turn. */
@@ -104,6 +104,8 @@ export interface Bot {
   busy?: boolean;
   state: BotState;
   stateDetail?: string;
+  /** Machine-readable block code (spawn_error, no_engines). Not user-facing. */
+  stateCode?: string;
   usage: Usage;
   currentTurnUsage?: Usage;
   modelSelection: ModelSelection;
@@ -406,12 +408,27 @@ export function reducer(state: AppState, action: Action): AppState {
         (b) => ({ ...b, unread: false }),
       );
     // optimistic card settle; the server's message.patch confirms it later
-    case "answerCard":
-      return withMascotMotion(
+    case "answerCard": {
+      const card = state.bots.find((b) => b.id === action.botId)?.messages.find((m) => m.id === action.messageId)?.card;
+      const next = withMascotMotion(
         patchCard(state, action.botId, action.messageId, { answered: action.answer }),
         action.botId,
         "working",
       );
+      // Setup card: open the model picker. Duplicate the label — server
+      // engine-setup.ts imports node:fs and must not ship in the client.
+      if (card?.requestType === "setup" && action.answer === "Switch model in Settings") {
+        return {
+          ...next,
+          settingsOpen: true,
+          computerOpen: false,
+          appSettingsOpen: false,
+          routinesOpen: false,
+          skillsOpen: false,
+        };
+      }
+      return next;
+    }
     case "dismissCard":
       return patchCard(state, action.botId, action.messageId, { dismissed: true });
     case "botAdded": {
@@ -805,7 +822,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 ...(action.always === true ? { persistScope: action.persistScope ?? "bot" } : {}),
               }),
             }).catch(showError);
-          } else if (card?.requestType === "suggestion") {
+          } else if (card?.requestType === "suggestion" || card?.requestType === "setup") {
             persistCard(action.botId, action.messageId, { answered: action.answer });
           } else {
             persistCard(action.botId, action.messageId, { answered: action.answer });

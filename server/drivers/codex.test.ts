@@ -28,6 +28,7 @@ import {
 } from "./codex.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-codex-app-server.ts");
+// POSIX-only: the fake is a shebang script Windows cannot exec (same as codex.cmd).
 const posixOnly = describe.skipIf(process.platform === "win32");
 
 describe("CodexDriver.decodeConfig", () => {
@@ -114,7 +115,7 @@ describe("Codex requestUserInput classification", () => {
   });
 });
 
-posixOnly("CodexDriver model catalog (fake CLI dump)", () => {
+posixOnly("CodexDriver model catalog (fake CLI dump) — POSIX-only: shebang fake CLI", () => {
   let instance: ProviderInstance;
   let scratch: string;
 
@@ -167,7 +168,7 @@ posixOnly("CodexDriver model catalog (fake CLI dump)", () => {
   });
 });
 
-posixOnly("CodexDriver turns (fake app-server)", () => {
+posixOnly("CodexDriver turns (fake app-server) — POSIX-only: shebang fake CLI", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
   let scratch: string;
@@ -867,7 +868,7 @@ posixOnly("CodexDriver turns (fake app-server)", () => {
   });
 });
 
-posixOnly("CodexDriver snapshot protocol identity", () => {
+posixOnly("CodexDriver snapshot protocol identity — POSIX-only: shebang fake CLI", () => {
   let instance: ProviderInstance;
 
   afterEach(async () => {

@@ -1,4 +1,4 @@
-// Durable, private file writes (the OpenMausBot atomic.ts pattern):
+// Durable, private file writes (temp file + rename, 0600):
 // write to a temp file, fsync the file so its bytes are on disk BEFORE the
 // rename publishes them, rename over the target (atomic on one filesystem),
 // then fsync the directory so the rename itself survives a power cut.

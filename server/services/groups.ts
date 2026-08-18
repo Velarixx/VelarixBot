@@ -1,4 +1,4 @@
-// Bot⇄bot DM groups. Slim port of OpenMausBot store.createGroup / dmGroup
+// Bot⇄bot DM groups. createGroup / dmGroup for A⇄B visibility.
 // — enough to open `Name ⇄ Name` channels. Not rooms, bulletin, or voice.
 import { newId } from "../contracts.ts";
 import type { Repositories } from "../repositories/index.ts";

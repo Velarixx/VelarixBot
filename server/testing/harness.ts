@@ -85,10 +85,10 @@ export function apiAt(base: string, token?: string) {
 export interface SseFrame {
   kind?: string;
   event?: { type?: string; threadId?: string; ok?: boolean; source?: string; requestId?: string; requestType?: string; [k: string]: unknown };
-  bot?: { id?: string; state?: string; busy?: boolean; name?: string; usage?: { input: number; output: number; cost: number | null }; threadParticipants?: string[]; messages?: unknown[] };
+  bot?: { id?: string; state?: string; busy?: boolean; name?: string; stateDetail?: string; stateCode?: string; usage?: { input: number; output: number; cost: number | null }; threadParticipants?: string[]; messages?: unknown[] };
   botId?: string;
   threadId?: string;
-  message?: { kind?: string; role?: string; text?: string; card?: { requestId?: string; options?: string[]; answered?: string; dismissed?: boolean; title?: string } };
+  message?: { kind?: string; role?: string; text?: string; id?: string; card?: { requestId?: string; options?: string[]; answered?: string; dismissed?: boolean; title?: string; requestType?: string; subtitle?: string } };
   /** P1.3 durable-stream stamps (persisted frames only). */
   schemaVersion?: number;
   streamId?: string;

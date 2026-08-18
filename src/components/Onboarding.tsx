@@ -51,6 +51,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     ["claudeAgent", "Claude Code", "npm i -g @anthropic-ai/claude-code"],
     ["codex", "Codex", "npm i -g @openai/codex"],
     ["grokAgent", "Grok", grokInstall],
+    ["geminiAgent", "Gemini", "npm i -g @google/gemini-cli — then run `gemini` and complete Log in with Google (or set GEMINI_API_KEY)"],
   ] as const;
 
   return (

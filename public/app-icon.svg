@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
   <title id="title">VelarixBot</title>
-  <desc id="desc">A large silver gradient SupaMaus cursor entering from the left side of a dark app tile.</desc>
+  <desc id="desc">A large silver gradient cursor entering from the left side of a dark app tile.</desc>
 
   <defs>
     <clipPath id="mac-tile">

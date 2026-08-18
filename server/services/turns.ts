@@ -50,6 +50,7 @@ import { createPeerQueue } from "../peer-queue.ts";
 import type { Proactive } from "../proactive.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "../response-options.ts";
+import { cliMissing, engineSetupCard, isMachineStateCode, isSpawnFailure, normalizeBotColor, normalizeBotName, userFacingBlock } from "../engine-setup.ts";
 import { enabledSkillIds, LAST_BOT_ERROR, listenerScheduleFromArgs, mentionedBots, uniqueSkillIds, wouldEmptyWorkspace, type Message, type Usage } from "../store.ts";
 import { deleteSkillsForBot, getSkill, saveSkill, skillSystemNote, skillsForTurn } from "../teach.ts";
 import type { Broadcast } from "./events.ts";
@@ -101,7 +102,7 @@ export interface TurnsServiceDeps {
 }
 
 export interface TurnsService {
-  startTurn(botId: string, text: string, opts?: StartTurnOpts): Promise<void>;
+  startTurn(botId: string, text: string, opts?: StartTurnOpts): Promise<{ threadId: string; messageId: string }>;
   /** ask_bot with the per-target peer queue in front (internal comms). */
   askBotQueued(
     toBotId: string,
@@ -111,7 +112,7 @@ export interface TurnsService {
   ): Promise<string>;
   handleWorkspaceTool(fromBotId: string, tool: string, args: Record<string, unknown>, depth: number): Promise<{ text?: string; error?: string }>;
   askUserAndWait(botId: string, input: { question: string; choices?: string[]; secret?: boolean; connectUrl?: string }): Promise<string>;
-  createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: string }): Promise<
+  createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: string; color?: string }): Promise<
     NonNullable<ReturnType<BotsService["publicBot"]>>
   >;
   removeSidebarBot(id: string): Promise<{ ok: true; bot: { id: string; name: string } } | { error: string; status: number }>;
@@ -395,7 +396,15 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   });
 
   // ── sidebar bot lifecycle (create/remove fan out on SSE) ──────────────
-  async function createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: string }) {
+  async function createSidebarBot(init?: { name?: string; title?: string; description?: string; model?: string; computer?: string; color?: string }) {
+    const named = typeof init?.name === "string" ? normalizeBotName(init.name) : null;
+    if (named && !named.ok) {
+      throw Object.assign(new Error(named.error), { status: 400 });
+    }
+    const color = init?.color !== undefined ? normalizeBotColor(init.color) : null;
+    if (init?.color !== undefined && !color) {
+      throw Object.assign(new Error("color must be a known palette name"), { status: 400 });
+    }
     const bot = bots.createBot();
     // the requested binding must resolve to a registered provider — when it
     // doesn't (e.g. "cloud" with Box removed from config), the bot simply
@@ -403,10 +412,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const computerBinding = init?.computer ? computers.resolveBinding(init.computer) : null;
     bots.patchBot(bot.id, {
       modelSelection: await selectionForModel(init?.model),
-      ...(init?.name?.trim() ? { name: init.name.trim() } : {}),
+      ...(named?.ok ? { name: named.name } : {}),
       ...(typeof init?.title === "string" ? { title: init.title } : {}),
       ...(typeof init?.description === "string" ? { description: init.description } : {}),
       ...(computerBinding && computerBinding !== "off" ? { computer: computerBinding } : {}),
+      ...(color ? { color } : {}),
     });
     const full = bots.publicBot(bot.id)!;
     broadcast({ kind: "bot.added", bot: full });
@@ -615,6 +625,35 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
   const turnUsage = new Map<string, Usage>();
   const responseOptionsByTurn = new Map<string, string[]>();
+  /** Last runtime.error text for this thread. turn.completed only has
+   * stopReason (often "spawn_error") and used to overwrite the concrete
+   * spawn detail with the generic fallback. */
+  const lastRuntimeMessage = new Map<string, string>();
+
+  function maybeAppendSetupCard(threadId: string, blocked: { stateCode: string; stateDetail: string }) {
+    if (
+      blocked.stateCode !== "spawn_error" &&
+      blocked.stateCode !== "no_engines" &&
+      blocked.stateCode !== "engine_unavailable" &&
+      blocked.stateCode !== "auth_required"
+    ) {
+      return;
+    }
+    const already = store
+      .messagesFor(threadId)
+      .some((m) => m.card?.requestType === "setup" && !m.card.dismissed && !m.card.answered);
+    if (already) return;
+    const message = store.appendMessage(threadId, {
+      role: "bot",
+      kind: "options",
+      card: engineSetupCard({
+        reason: blocked.stateDetail,
+        offerSwitch: blocked.stateCode !== "no_engines",
+        zeroEngines: blocked.stateCode === "no_engines",
+      }),
+    });
+    broadcast({ kind: "message", threadId, message });
+  }
 
   bus.subscribe((event: RuntimeEvent) => {
     broadcast({ kind: "runtime", event });
@@ -635,7 +674,8 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         break;
       case "turn.started":
         if (event.turnId) turnUsage.delete(event.turnId);
-        bots.patchBot(bot.id, { busy: true, state: "RUNNING", stateDetail: undefined });
+        lastRuntimeMessage.delete(event.threadId);
+        bots.patchBot(bot.id, { busy: true, state: "RUNNING", stateDetail: undefined, stateCode: undefined });
         proactive.noteState(bot.id, "RUNNING");
         broadcastBot(bot.id);
         break;
@@ -735,16 +775,20 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         broadcastBot(bot.id);
         break;
       }
-      case "runtime.error":
+      case "runtime.error": {
         if (event.turnId) responseOptionsByTurn.delete(event.turnId);
+        if (event.message) lastRuntimeMessage.set(event.threadId, event.message);
         releaseComputerLease(bot.id);
-        pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${event.message.slice(0, 160)}`, ok: false } });
-        bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: event.message.slice(0, 160) });
+        const blocked = userFacingBlock({ runtimeMessage: event.message, stopReason: isSpawnFailure(undefined, event.message) ? "spawn_error" : undefined });
+        pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${blocked.stateDetail.slice(0, 160)}`, ok: false } });
+        maybeAppendSetupCard(event.threadId, blocked);
+        bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: blocked.stateDetail, stateCode: blocked.stateCode });
         proactive.noteState(bot.id, "BLOCKED");
         notifyIdle(bot.id);
         discardDelegations(commsBus, event.threadId);
         broadcastBot(bot.id);
         break;
+      }
       case "turn.completed": {
         releaseComputerLease(bot.id);
         // the last live frame becomes a settled inline screen message —
@@ -767,7 +811,25 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
             },
           });
         }
-        bots.patchBot(bot.id, { busy: false, unread: true, state: event.ok ? "DONE" : "BLOCKED", stateDetail: event.stopReason ?? undefined });
+        const priorDetail = bot.stateDetail?.trim();
+        const snapshotReason = priorDetail && !isMachineStateCode(priorDetail) ? priorDetail : undefined;
+        const runtimeMessage = lastRuntimeMessage.get(event.threadId);
+        lastRuntimeMessage.delete(event.threadId);
+        const blocked = event.ok
+          ? null
+          : userFacingBlock({
+              stopReason: event.stopReason,
+              snapshotReason,
+              runtimeMessage,
+            });
+        if (blocked) maybeAppendSetupCard(event.threadId, blocked);
+        bots.patchBot(bot.id, {
+          busy: false,
+          unread: true,
+          state: event.ok ? "DONE" : "BLOCKED",
+          stateDetail: event.ok ? undefined : (blocked?.stateDetail ?? event.stopReason ?? undefined),
+          ...(event.ok ? { stateCode: undefined } : blocked ? { stateCode: blocked.stateCode } : {}),
+        });
         proactive.noteState(bot.id, event.ok ? "DONE" : "BLOCKED");
         notifyIdle(bot.id);
         if (event.ok) {
@@ -887,8 +949,39 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     return entry.last;
   }
 
+  async function settleUnavailableTurn(
+    bot: { id: string; threadId: string },
+    userMessageId: string,
+    opts: { zeroEngines: boolean; snapshotReason?: string | null; offerSwitch?: boolean },
+  ): Promise<{ threadId: string; messageId: string }> {
+    const blocked = userFacingBlock({
+      zeroEngines: opts.zeroEngines,
+      snapshotReason: opts.snapshotReason,
+      // Pre-spawn: we never launched a child, so this is not spawn_error.
+      stopReason: opts.zeroEngines ? "no_engines" : "engine_unavailable",
+    });
+    const card = engineSetupCard({
+      reason: blocked.stateDetail,
+      zeroEngines: opts.zeroEngines,
+      offerSwitch: opts.offerSwitch === true && !opts.zeroEngines,
+    });
+    const setup = store.appendMessage(bot.threadId, { role: "bot", kind: "options", card });
+    broadcast({ kind: "message", threadId: bot.threadId, message: setup });
+    bots.patchBot(bot.id, {
+      busy: false,
+      unread: true,
+      state: "BLOCKED",
+      stateDetail: blocked.stateDetail,
+      stateCode: blocked.stateCode,
+    });
+    proactive.noteState(bot.id, "BLOCKED");
+    notifyIdle(bot.id);
+    broadcastBot(bot.id);
+    return { threadId: bot.threadId, messageId: userMessageId };
+  }
+
   // ── turn dispatch (upstream ProviderCommandReactor, miniature) ──────────
-  async function startTurn(botId: string, text: string, opts?: StartTurnOpts): Promise<void> {
+  async function startTurn(botId: string, text: string, opts?: StartTurnOpts): Promise<{ threadId: string; messageId: string }> {
     const bot = store.bot(botId);
     if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
     if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
@@ -952,6 +1045,27 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
 
     void (async () => {
       try {
+        // [VERIFY] 2026-08-18: skip spawn synchronously when the selected
+        // (or every) instance's CLI is missing — absolute path not on disk
+        // OR a bare PATH name (claude/codex/grok/gemini) that findOnPath
+        // cannot resolve. API/fake instances have no cli and stay
+        // spawnable so #98 drain/ask_bot still calls sendTurn on the same
+        // tick. Must not await describe() here.
+        {
+          const live = registry.instances();
+          const spawnable = live.filter((inst) => !cliMissing(inst.cli));
+          const selectedMissing = cliMissing(instance.cli);
+          if (spawnable.length === 0 || selectedMissing) {
+            await settleUnavailableTurn(bot, userMessage.id, {
+              zeroEngines: spawnable.length === 0,
+              snapshotReason: selectedMissing
+                ? `\`${instance.cli}\` CLI not found`
+                : `provider instance "${bot.modelSelection.instanceId}" is unavailable`,
+              offerSwitch: spawnable.length > 0,
+            });
+            return;
+          }
+        }
         const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
         if (bot.enabledApps?.length && composioSessionKey(cfg)) {
           const session = await ensureBotSession(cfg, bot.id, bot.enabledApps);
@@ -1081,19 +1195,22 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         // proceed without the computer
         releaseComputerLease(bot.id);
         const message = e instanceof Error ? e.message : String(e);
+        const blocked = userFacingBlock({ runtimeMessage: message, stopReason: isSpawnFailure(undefined, message) ? "spawn_error" : undefined });
         const failure = store.appendMessage(bot.threadId, {
           role: "bot",
           kind: "activity",
-          tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
+          tool: { name: `error: ${blocked.stateDetail.slice(0, 160)}`, ok: false },
         });
         broadcast({ kind: "message", threadId: bot.threadId, message: failure });
-        bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: message.slice(0, 160) });
+        maybeAppendSetupCard(bot.threadId, blocked);
+        bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: blocked.stateDetail, stateCode: blocked.stateCode });
         proactive.noteState(bot.id, "BLOCKED");
         notifyIdle(bot.id);
         discardDelegations(commsBus, bot.threadId);
         broadcastBot(bot.id);
       }
     })();
+    return { threadId: bot.threadId, messageId: userMessage.id };
   }
 
   // ── user response to a pending ask / permission card ──────────────────

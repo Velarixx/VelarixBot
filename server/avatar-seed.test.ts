@@ -14,8 +14,8 @@ describe("seedAvatar", () => {
   });
 
   it("is stable for name-keyed seeds too", () => {
-    const first = seedAvatar({ name: "Milind", nonce: 3 });
-    expect(seedAvatar({ name: "Milind", nonce: 3 })).toEqual(first);
+    const first = seedAvatar({ name: "Scout", nonce: 3 });
+    expect(seedAvatar({ name: "Scout", nonce: 3 })).toEqual(first);
   });
 
   it("changes the face when the nonce changes", () => {
