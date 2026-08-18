@@ -13,6 +13,7 @@ import {
   capMemory,
   composeUserKnowledge,
   configureMemoryStore,
+  decayUnconfirmedRows,
   distillMemory,
   extractMemory,
   fleetGenerateText,
@@ -21,6 +22,7 @@ import {
   listMemoryRows,
   memoryPrompt,
   pinMemoryRow,
+  UNCONFIRMED_IDLE_MS,
   readBotMemory,
   readWorkspace,
   recallMemory,
@@ -208,12 +210,74 @@ describe("memory files", () => {
     writeWorkspace("Team ships on Fridays.");
     writeBotMemory(BOT, { user: "Call me Sam.", distilled: "Prefers bullet lists." });
     insertMemoryRow({ botId: BOT, type: "fact", text: "Current city is Austin.", now: 5_000 });
-    const composed = composeUserKnowledge({ botId: BOT, now: 5_000 });
+    const composed = composeUserKnowledge({ botId: BOT, now: 5_000, bumpUse: false });
     expect(composed).toContain(USER_KNOWLEDGE_HEADING);
     expect(composed).toContain("Team ships on Fridays.");
     expect(composed).toContain("Call me Sam.");
     expect(composed).toContain("Current city is Austin.");
-    expect(memoryPrompt(BOT)).toBe(composed);
+    expect(composeUserKnowledge({ botId: BOT, now: 5_000, bumpUse: false })).toBe(composed);
+  });
+
+  it("inject (memoryPrompt / composeUserKnowledge without query) increments useCount on this bot's injected row docs", () => {
+    const now = 5_000;
+    const mine = insertMemoryRow({ botId: BOT, type: "fact", text: "Current city is Austin.", now });
+    const other = insertMemoryRow({ botId: "bot-other", type: "fact", text: "Ops alias is pager-lee in Austin.", now });
+    expect(listMemoryRows(BOT)[0]?.useCount).toBe(0);
+    expect(listMemoryRows("bot-other")[0]?.useCount).toBe(0);
+
+    const prompt = memoryPrompt(BOT, now);
+    expect(prompt).toContain("Current city is Austin.");
+    expect(prompt).not.toContain("pager-lee");
+    expect(listMemoryRows(BOT).find((r) => r.id === mine.id)?.useCount).toBe(1);
+    expect(listMemoryRows("bot-other").find((r) => r.id === other.id)?.useCount).toBe(0);
+
+    composeUserKnowledge({ botId: BOT, now });
+    expect(listMemoryRows(BOT).find((r) => r.id === mine.id)?.useCount).toBe(2);
+    expect(listMemoryRows("bot-other").find((r) => r.id === other.id)?.useCount).toBe(0);
+
+    composeUserKnowledge({ botId: BOT, now, bumpUse: false });
+    expect(listMemoryRows(BOT).find((r) => r.id === mine.id)?.useCount).toBe(2);
+  });
+
+  it("inject bump swallows store errors and cannot throw out of the turn", () => {
+    const inner = createTestRowStore();
+    configureMemoryStore({
+      ...inner,
+      update() {
+        throw new Error("store down");
+      },
+    });
+    insertMemoryRow({ botId: BOT, type: "fact", text: "Current city is Austin.", now: 1 });
+    expect(() => memoryPrompt(BOT, 1)).not.toThrow();
+    expect(() => composeUserKnowledge({ botId: BOT, now: 1 })).not.toThrow();
+    expect(memoryPrompt(BOT, 1)).toContain("Current city is Austin.");
+  });
+
+  it("decay evicts unconfirmed idle rows and never deletes pinned or other botId", () => {
+    const now = UNCONFIRMED_IDLE_MS + 1_000;
+    const stale = insertMemoryRow({ botId: BOT, type: "fact", text: "Stale unused fact.", now: 0 });
+    const pinned = insertMemoryRow({
+      botId: BOT,
+      type: "preference",
+      text: "Call me Sam.",
+      pinned: true,
+      now: 0,
+    });
+    const used = insertMemoryRow({ botId: BOT, type: "workflow", text: "Check PRs weekdays.", useCount: 1, now: 0 });
+    const fresh = insertMemoryRow({ botId: BOT, type: "fact", text: "Just written.", now });
+    const other = insertMemoryRow({ botId: "bot-other", type: "fact", text: "Other bot stale.", now: 0 });
+
+    composeUserKnowledge({ botId: BOT, now, bumpUse: false });
+    const mine = listMemoryRows(BOT);
+    expect(mine.map((r) => r.id)).not.toContain(stale.id);
+    expect(mine.find((r) => r.id === pinned.id)).toMatchObject({ pinned: true, text: "Call me Sam." });
+    expect(mine.find((r) => r.id === used.id)?.text).toBe("Check PRs weekdays.");
+    expect(mine.find((r) => r.id === fresh.id)?.text).toBe("Just written.");
+    expect(listMemoryRows("bot-other").map((r) => r.id)).toEqual([other.id]);
+
+    decayUnconfirmedRows("bot-other", now);
+    expect(listMemoryRows("bot-other")).toEqual([]);
+    expect(listMemoryRows(BOT).find((r) => r.id === pinned.id)?.pinned).toBe(true);
   });
 
   it("BM25 top-10 includes the right fact, excludes stale, excludes other botId", () => {
@@ -281,5 +345,7 @@ describe("memory files", () => {
     expect(impl).toMatch(/must not log the prompt/);
     expect(turns).toMatch(/if \(event\.ok\) \{[\s\S]*extractMemory/);
     expect(turns).toMatch(/void \(async \(\) => \{[\s\S]*extractMemory/);
+    expect(turns).toMatch(/suggestionItemsFromRepeatedWorkflows/);
+    expect(turns).toMatch(/memoryPrompt\(bot\.id\)/);
   });
 });

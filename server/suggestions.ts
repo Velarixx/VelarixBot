@@ -3,6 +3,13 @@
 // accepts. Dismiss persists the card state and nothing else (not an
 // Allow-always rule). Workflow accept reuses createRoutine; fact and
 // preference accept reuse insertMemoryRow. No second scheduler.
+//
+// 2026-08-18 [VERIFY]: extract is still suggestions only. A workflow
+// row that has been injected enough times (useCount after bump ≥
+// WORKFLOW_ROUTINE_PROMPT_USE_COUNT) also emits this same
+// requestType: "suggestion" card via suggestionCardsFor. Accept still
+// goes through isSuggestionAccept / acceptSuggestion / PATCH
+// /api/bots/:id/cards/:messageId. Never startTurn / runRoutines.
 import { insertMemoryRow, type MemoryRow, type MemoryRowType } from "./memory.ts";
 import type { CreateRoutineInput } from "./services/routines.ts";
 import type { OptionCardData, RoutineRecord } from "./store.ts";
@@ -11,6 +18,12 @@ export const SUGGESTION_REQUEST_TYPE = "suggestion" as const;
 export const SUGGESTION_ACCEPT_WORKFLOW = "Save as routine";
 export const SUGGESTION_ACCEPT_MEMORY = "Remember";
 export const DEFAULT_WORKFLOW_SCHEDULE = { kind: "weekdays" as const, time: "09:00" };
+
+/** A type==="workflow" row earns a "Save as a routine?" card once
+ * useCount (after inject bump) reaches this threshold. One-shot LLM
+ * extract remains allowed; it is not a substitute for this path.
+ * 2026-08-18: pinned at 3. Never auto-runs the routine. */
+export const WORKFLOW_ROUTINE_PROMPT_USE_COUNT = 3;
 
 export type SuggestionKind = MemoryRowType;
 
@@ -58,8 +71,28 @@ export function isSuggestionAccept(card: OptionCardData, answer: string): boolea
   return answer.trim() === suggestionAcceptLabel(card.suggestion.type);
 }
 
-/** Drop notes this bot already has, and unanswered cards already on the
- * thread. Other botIds never become cards here. */
+/** Workflow rows this bot has already injected enough times. Other
+ * botIds never appear. Caller feeds these into suggestionCardsFor
+ * (omit existingRows — the row is the source, not a duplicate note). */
+export function suggestionItemsFromRepeatedWorkflows(
+  botId: string,
+  rows: Array<{ botId: string; type: string; text: string; useCount: number }>,
+): Array<{ type: "workflow"; text: string }> {
+  const out: Array<{ type: "workflow"; text: string }> = [];
+  for (const row of rows) {
+    if (row.botId !== botId) continue;
+    if (row.type !== "workflow") continue;
+    if (row.useCount < WORKFLOW_ROUTINE_PROMPT_USE_COUNT) continue;
+    const text = row.text.trim();
+    if (!text) continue;
+    out.push({ type: "workflow", text });
+  }
+  return out;
+}
+
+/** Drop notes this bot already has, and suggestion cards already on the
+ * thread (pending, accepted, or dismissed) so we do not re-nag.
+ * Other botIds never become cards here. */
 export function suggestionCardsFor(
   botId: string,
   items: Array<{ type: MemoryRowType; text: string }>,
@@ -71,7 +104,7 @@ export function suggestionCardsFor(
     seen.add(normalizeNote(row.text));
   }
   for (const card of opts.existingCards ?? []) {
-    if (!isSuggestionCard(card) || card.dismissed || !card.suggestion) continue;
+    if (!isSuggestionCard(card) || !card.suggestion) continue;
     if (card.suggestion.botId !== botId) continue;
     seen.add(normalizeNote(card.suggestion.text));
   }

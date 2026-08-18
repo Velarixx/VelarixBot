@@ -42,7 +42,7 @@ import {
   turnTextFromMessages,
   memoryPrompt,
 } from "../memory.ts";
-import { suggestionCardsFor } from "../suggestions.ts";
+import { suggestionCardsFor, suggestionItemsFromRepeatedWorkflows } from "../suggestions.ts";
 import { agentsCommsPrompt } from "../chief-of-staff.ts";
 import { bindCommsStore, mirrorReply } from "../comms-visibility.ts";
 import { discardDelegations, drainDelegations } from "../delegations.ts";
@@ -865,16 +865,24 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           void (async () => {
             await distillMemory({ botId: bot.id, turnText, generateText });
             const extracted = await extractMemory({ botId: bot.id, turnText, generateText });
-            if (!extracted.length) return;
+            // 2026-08-18 [VERIFY]: extract stays suggestions-only. Repeated
+            // workflow rows (useCount after inject bump ≥ N) emit the same
+            // requestType: "suggestion" card. LLM extract is not a substitute.
+            const existingRows = listMemoryRows(bot.id);
+            const fromUse = suggestionItemsFromRepeatedWorkflows(bot.id, existingRows);
+            if (!extracted.length && !fromUse.length) return;
             const existingCards = store
               .messagesFor(bot.threadId)
               .map((m) => m.card)
               .filter((c): c is NonNullable<typeof c> => !!c);
-            const cards = suggestionCardsFor(bot.id, extracted, {
-              existingRows: listMemoryRows(bot.id),
+            const extractCards = suggestionCardsFor(bot.id, extracted, {
+              existingRows,
               existingCards,
             });
-            for (const card of cards) {
+            const useCards = suggestionCardsFor(bot.id, fromUse, {
+              existingCards: [...existingCards, ...extractCards],
+            });
+            for (const card of [...extractCards, ...useCards]) {
               const message = store.appendMessage(bot.threadId, { role: "bot", kind: "options", card });
               broadcast({ kind: "message", threadId: bot.threadId, message });
             }
@@ -1163,6 +1171,8 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           cwd: ensureBotWorkspace(bot.id),
           system:
             persona +
+            // 2026-08-18 [VERIFY]: #102 memoryPrompt used bumpUse: false.
+            // Inject now increments useCount on this bot's injected row docs.
             memoryPrompt(bot.id) +
             turnGrounding(instance.driverKind) +
             (shouldAttachResponseOptions(instance.driverKind) ? responseOptionsPrompt : "") +

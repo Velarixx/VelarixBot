@@ -8,6 +8,7 @@ import {
   configureMemoryStore,
   deleteMemoryRow,
   editMemoryRow,
+  decayUnconfirmedRows,
   extractMemory,
   forgetEverything,
   insertMemoryRow,
@@ -15,6 +16,7 @@ import {
   listMemoryRows,
   memoryDecayScore,
   pinMemoryRow,
+  UNCONFIRMED_IDLE_MS,
   readWorkspace,
   rememberNote,
   writeWorkspace,
@@ -90,6 +92,26 @@ describe("memory_rows store", () => {
     const pinned = { pinned: true, useCount: 0, updatedAt: 0 };
     expect(memoryDecayScore(used, now)).toBeGreaterThan(memoryDecayScore(stale, now));
     expect(memoryDecayScore(pinned, now)).toBeGreaterThan(memoryDecayScore(stale, now));
+  });
+
+  // 2026-08-18: unconfirmed = not pinned AND useCount === 0 past
+  // UNCONFIRMED_IDLE_MS (14d). Pin must survive extract and decay.
+  it("pin survives decay of an unconfirmed idle twin", () => {
+    const now = UNCONFIRMED_IDLE_MS + 5_000;
+    const pinned = insertMemoryRow({
+      botId: BOT,
+      type: "preference",
+      text: "Call me Sam.",
+      pinned: true,
+      now: 0,
+    });
+    insertMemoryRow({ botId: BOT, type: "fact", text: "Unused stale note.", now: 0 });
+    insertMemoryRow({ botId: OTHER, type: "fact", text: "Other bot stale.", now: 0 });
+    decayUnconfirmedRows(BOT, now);
+    const after = listMemoryRows(BOT);
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ id: pinned.id, pinned: true, text: "Call me Sam.", useCount: 0 });
+    expect(listMemoryRows(OTHER)).toHaveLength(1);
   });
 
   it("pin survives extract that would rewrite the same note", async () => {

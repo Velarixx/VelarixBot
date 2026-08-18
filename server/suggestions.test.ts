@@ -13,7 +13,9 @@ import {
   configureMemoryStore,
   editMemoryRow,
   extractMemory,
+  insertMemoryRow,
   listMemoryRows,
+  memoryPrompt,
   pinMemoryRow,
 } from "./memory.ts";
 import { createRepositories, type Repositories } from "./repositories/index.ts";
@@ -24,9 +26,12 @@ import {
   acceptSuggestion,
   cardAnswerStartsTurn,
   isSuggestionAccept,
+  suggestionItemsFromRepeatedWorkflows,
   SUGGESTION_ACCEPT_MEMORY,
   SUGGESTION_ACCEPT_WORKFLOW,
+  SUGGESTION_REQUEST_TYPE,
   suggestionCardsFor,
+  WORKFLOW_ROUTINE_PROMPT_USE_COUNT,
 } from "./suggestions.ts";
 
 const selection = () => ({ instanceId: "claude", model: "claude-sonnet-5" });
@@ -242,6 +247,117 @@ describe("PRO suggestion cards", () => {
       expect(cross.status).toBe(404);
       expect(listMemoryRows(b.id)).toEqual([]);
       expect(startedTurns).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("high-useCount workflow after inject bump emits the existing suggestion card; accept creates a routine; dismiss no-ops", async () => {
+    const a = bots.createBot();
+    const b = bots.createBot();
+    const now = 9_000;
+    insertMemoryRow({
+      botId: a.id,
+      type: "workflow",
+      text: "Check PRs every weekday morning.",
+      useCount: WORKFLOW_ROUTINE_PROMPT_USE_COUNT - 1,
+      now,
+    });
+    insertMemoryRow({
+      botId: a.id,
+      type: "fact",
+      text: "Lives in Austin.",
+      useCount: WORKFLOW_ROUTINE_PROMPT_USE_COUNT,
+      now,
+    });
+    insertMemoryRow({
+      botId: b.id,
+      type: "workflow",
+      text: "Page Lee on-call at 3am.",
+      useCount: 99,
+      now,
+    });
+
+    expect(suggestionItemsFromRepeatedWorkflows(a.id, listMemoryRows(a.id))).toEqual([]);
+    const prompt = memoryPrompt(a.id, now);
+    expect(prompt).toContain("Check PRs every weekday morning.");
+    expect(prompt).not.toContain("Page Lee");
+    expect(listMemoryRows(a.id).find((r) => r.type === "workflow")?.useCount).toBe(WORKFLOW_ROUTINE_PROMPT_USE_COUNT);
+    expect(listMemoryRows(b.id)[0]?.useCount).toBe(99);
+
+    const fromUse = suggestionItemsFromRepeatedWorkflows(a.id, [
+      ...listMemoryRows(a.id),
+      ...listMemoryRows(b.id),
+    ]);
+    expect(fromUse).toEqual([{ type: "workflow", text: "Check PRs every weekday morning." }]);
+
+    const cards = suggestionCardsFor(a.id, fromUse, {
+      existingCards: bots.messagesFor(a.threadId).map((m) => m.card).filter((c): c is NonNullable<typeof c> => !!c),
+    });
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      title: "Save as a routine?",
+      options: [SUGGESTION_ACCEPT_WORKFLOW],
+      requestType: SUGGESTION_REQUEST_TYPE,
+      suggestion: { botId: a.id, type: "workflow", text: "Check PRs every weekday morning." },
+    });
+    expect(cards[0]!.subtitle).not.toMatch(/Page Lee/i);
+    expect(isSuggestionAccept(cards[0]!, SUGGESTION_ACCEPT_WORKFLOW)).toBe(true);
+    expect(cardAnswerStartsTurn(cards[0])).toBe(false);
+
+    const workflowMsg = bots.appendMessage(a.threadId, { role: "bot", kind: "options", card: cards[0] });
+    expect(bots.messagesFor(b.threadId).some((m) => m.card?.requestType === SUGGESTION_REQUEST_TYPE)).toBe(false);
+
+    const accepted = acceptSuggestion({
+      botId: a.id,
+      suggestion: workflowMsg.card!.suggestion!,
+      createRoutine: (input) => routines.createRoutine(input),
+    });
+    expect(accepted.kind).toBe("routine");
+    expect(routines.routines()).toHaveLength(1);
+    expect(routines.routines()[0]).toMatchObject({
+      botId: a.id,
+      prompt: "Check PRs every weekday morning.",
+      schedule: { kind: "weekdays", time: "09:00" },
+    });
+    expect(startedTurns).toEqual([]);
+    expect(listMemoryRows(a.id).filter((r) => r.type === "workflow")).toHaveLength(1);
+    expect(listMemoryRows(b.id).map((r) => r.text)).toEqual(["Page Lee on-call at 3am."]);
+
+    const handler = createBotsRoutes({
+      bots,
+      turns: {} as never,
+      teach: {} as never,
+      routines,
+      registry: {} as never,
+      computers: {} as never,
+      cfg: {} as never,
+      broadcast: () => {},
+    });
+    const { base, close } = await listen((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      void handler({ req, res, url, path: url.pathname, method: req.method ?? "GET" });
+    });
+    try {
+      const dismissCards = suggestionCardsFor(a.id, [{ type: "workflow", text: "Draft the weekly notes." }]);
+      const dismissMsg = bots.appendMessage(a.threadId, { role: "bot", kind: "options", card: dismissCards[0] });
+      const rowsBefore = listMemoryRows(a.id).length;
+      const routinesBefore = routines.routines().length;
+      const res = await fetch(`${base}/api/bots/${a.id}/cards/${dismissMsg.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dismissed: true }),
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { message?: { card?: { dismissed?: boolean } } }).message?.card?.dismissed).toBe(true);
+      expect(listMemoryRows(a.id)).toHaveLength(rowsBefore);
+      expect(routines.routines()).toHaveLength(routinesBefore);
+      expect(startedTurns).toEqual([]);
+
+      const again = suggestionCardsFor(a.id, fromUse, {
+        existingCards: bots.messagesFor(a.threadId).map((m) => m.card).filter((c): c is NonNullable<typeof c> => !!c),
+      });
+      expect(again).toEqual([]);
     } finally {
       await close();
     }
