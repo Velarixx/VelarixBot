@@ -1,6 +1,7 @@
 // Shared 0.x release-version gate for release.yml and tests.
 // Accepts 0.x.x (full unsigned GitHub Release) and 0.x.x-rc.N (prerelease).
-import { appendFileSync } from "node:fs";
+// Hard gate: refuse to tag/publish when the input ≠ package.json version.
+import { appendFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,6 +34,26 @@ export function formatGithubOutput(parsed) {
   return `prerelease=${parsed.prerelease}\nnotes=${releaseNotes(parsed)}\n`;
 }
 
+export function repoPackageJsonPath() {
+  return resolve(fileURLToPath(new URL("../package.json", import.meta.url)));
+}
+
+export function readPackageVersion(pkgPath) {
+  const raw = JSON.parse(readFileSync(pkgPath, "utf8"));
+  const version = typeof raw.version === "string" ? raw.version.trim() : "";
+  if (!version) throw new Error(`package.json has no version: ${pkgPath}`);
+  return version;
+}
+
+/** Fail the release when the workflow input disagrees with the committed version. */
+export function assertReleaseMatchesPackage(inputVersion, packageVersion) {
+  if (String(inputVersion) !== String(packageVersion)) {
+    throw new Error(
+      `Release version ${inputVersion} does not match package.json version ${packageVersion}`,
+    );
+  }
+}
+
 function main(argv) {
   const args = argv.slice(2);
   let githubOutput = false;
@@ -44,6 +65,7 @@ function main(argv) {
   let parsed;
   try {
     parsed = parseReleaseVersion(positional[0]);
+    assertReleaseMatchesPackage(parsed.version, readPackageVersion(repoPackageJsonPath()));
   } catch (err) {
     process.stderr.write(`${err.message}\n`);
     process.exitCode = 1;

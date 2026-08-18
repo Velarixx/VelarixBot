@@ -7,10 +7,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   FULL_RELEASE_NOTES,
   RC_RELEASE_NOTES,
+  assertReleaseMatchesPackage,
   formatGithubOutput,
   ghReleaseCreateExtras,
   parseReleaseVersion,
+  readPackageVersion,
   releaseNotes,
+  repoPackageJsonPath,
 } from "../scripts/release-version.mjs";
 
 const root = join(import.meta.dirname, "..");
@@ -50,21 +53,39 @@ describe("release version gate", () => {
     expect(RC_RELEASE_NOTES).toContain("INTERNAL_INSTALL.md");
   });
 
+  it("refuses to release when the input disagrees with package.json", () => {
+    expect(readPackageVersion(repoPackageJsonPath())).toBe("0.2.3");
+    expect(() => assertReleaseMatchesPackage("0.2.3", "0.2.3")).not.toThrow();
+    expect(() => assertReleaseMatchesPackage("0.2.2", "0.2.3")).toThrow(
+      /does not match package\.json version/,
+    );
+    expect(() => assertReleaseMatchesPackage("0.2.3-rc.1", "0.2.3")).toThrow(
+      /does not match package\.json version/,
+    );
+  });
+
   it("writes GitHub Actions outputs without a shell", () => {
     scratch = mkdtempSync(join(tmpdir(), "omb-release-version-"));
     const out = join(scratch, "github-output");
     writeFileSync(out, "");
-    const result = spawnSync(process.execPath, [helper, "--github-output", "0.2.0"], {
+    const committed = readPackageVersion(repoPackageJsonPath());
+    const result = spawnSync(process.execPath, [helper, "--github-output", committed], {
       encoding: "utf8",
       env: { ...process.env, GITHUB_OUTPUT: out },
     });
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(readFileSync(out, "utf8")).toBe(formatGithubOutput(parseReleaseVersion("0.2.0")));
+    expect(readFileSync(out, "utf8")).toBe(formatGithubOutput(parseReleaseVersion(committed)));
 
     const rejected = spawnSync(process.execPath, [helper, "1.0.0"], { encoding: "utf8" });
     expect(rejected.status).not.toBe(0);
     expect(rejected.stderr).toMatch(/Invalid 0\.x version/);
+
+    const mismatch = spawnSync(process.execPath, [helper, "0.9.9"], { encoding: "utf8" });
+    expect(mismatch.status).not.toBe(0);
+    expect(mismatch.stderr).toMatch(/does not match package\.json version/);
+    expect(read("scripts/release-version.mjs")).toContain("assertReleaseMatchesPackage");
+    expect(read("scripts/release-version.mjs")).not.toMatch(/--skip-package/);
   });
 
   it("is the release.yml version gate and keeps artifacts on the input version", () => {

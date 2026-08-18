@@ -91,13 +91,13 @@ export interface DiagnosticsService {
 }
 
 function detectAppVersion(): string {
-  if (process.env.OMB_APP_VERSION) return process.env.OMB_APP_VERSION;
+  if (process.env.VELARIX_APP_VERSION) return process.env.VELARIX_APP_VERSION;
   try {
     // dev / CI: the repo root package.json two levels up from server/services
     const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version?: string };
     if (typeof pkg.version === "string") return pkg.version;
   } catch {
-    /* packaged installs pass OMB_APP_VERSION instead */
+    /* packaged installs pass VELARIX_APP_VERSION instead */
   }
   return "unknown";
 }

@@ -89,7 +89,7 @@ async function startServerOn(port) {
       OMB_PORT: String(port),
       OMB_USER_DATA: app.getPath("userData"),
       // diagnostics export: the packaged server has no package.json to read
-      OMB_APP_VERSION: app.getVersion(),
+      VELARIX_APP_VERSION: app.getVersion(),
       OMB_LOCAL_CUA_SUPPORTED: packagedLocalCuaSupported(process.platform),
       VELARIX_API_TOKEN: API_TOKEN,
       VELARIX_SAFE_STORAGE: safeStorageReady ? "1" : "0",
