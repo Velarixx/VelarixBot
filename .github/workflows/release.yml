@@ -168,9 +168,24 @@ jobs:
           if [ "$RELEASE_PRERELEASE" = "true" ]; then
             extra+=(--prerelease)
           fi
+          tag="v${{ inputs.version }}"
+          sha="${{ github.sha }}"
+          # Tag the built SHA first. `gh release create --target SHA` 403s when
+          # main has moved and the range to HEAD includes workflow-file changes;
+          # GITHUB_TOKEN cannot be granted workflows scope. An existing tag lets
+          # the release attach without --target.
+          if existing="$(gh api "repos/${{ github.repository }}/git/ref/tags/${tag}" --jq .object.sha 2>/dev/null)"; then
+            if [ "$existing" != "$sha" ]; then
+              echo "Tag ${tag} already points at ${existing}, expected ${sha}" >&2
+              exit 1
+            fi
+          else
+            gh api --method POST "repos/${{ github.repository }}/git/refs" \
+              -f ref="refs/tags/${tag}" \
+              -f sha="${sha}"
+          fi
           gh release create "v${{ inputs.version }}" release-assets/* \
             --repo "${{ github.repository }}" \
-            --target "${{ github.sha }}" \
             --title "VelarixBot v${{ inputs.version }}" \
             "${extra[@]}" \
             --generate-notes \
