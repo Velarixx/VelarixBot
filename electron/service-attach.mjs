@@ -130,26 +130,35 @@ export function shouldForkHarness(decision) {
 
 const GUI_BOOT_SAFE = { fork: false, mintToken: false, writeSidecar: false };
 
-/** Packaged GUI boot steps. Leftover → stop health.pid, recycle the
- * service host (sc start alone is a no-op on a live empty host), then
- * attach. Never fork, never mint, never write the sidecar. */
-export function planPackagedGuiBoot(decision) {
+/** Packaged GUI boot steps. Leftover → stop health.pid, then ensure the
+ * user-session host (register / sc start / exe --harness-service when
+ * the Windows service is missing). Empty ports + missing service is
+ * ensure-host, not ERROR_PAGE. Never fork, never mint, never write the
+ * sidecar. */
+export function planPackagedGuiBoot(decision, { serviceMissing = false } = {}) {
   if (decision?.action === "attach") {
-    return { ...GUI_BOOT_SAFE, steps: ["attach"], page: "app", stopCard: false };
+    return { ...GUI_BOOT_SAFE, steps: ["attach"], page: "app", stopCard: false, serviceMissing };
   }
   if (decision?.action === "replace") {
     return {
       ...GUI_BOOT_SAFE,
-      steps: ["stop-occupant", "restart-service", "attach"],
+      steps: ["stop-occupant", "ensure-host", "attach"],
       pid: decision.pid,
       page: "stop-card",
       stopCard: true,
+      serviceMissing,
     };
   }
   if (decision?.action === "start-service") {
-    return { ...GUI_BOOT_SAFE, steps: ["start-service", "attach"], page: "app", stopCard: false };
+    return {
+      ...GUI_BOOT_SAFE,
+      steps: ["ensure-host", "attach"],
+      page: "app",
+      stopCard: false,
+      serviceMissing,
+    };
   }
-  return { ...GUI_BOOT_SAFE, steps: ["error-page"], page: "error-page", stopCard: false };
+  return { ...GUI_BOOT_SAFE, steps: ["error-page"], page: "error-page", stopCard: false, serviceMissing };
 }
 
 /** Service host boot steps. Leftover → kill health.pid then spawn so
@@ -167,19 +176,19 @@ export function planServiceHostBoot(decision) {
   return { steps: ["idle-conflict"], fork: false, idleEmpty: true };
 }
 
-export async function runPackagedGuiBoot(decision, { stopOccupant, restartService, startService, attach } = {}) {
-  const plan = planPackagedGuiBoot(decision);
+export async function runPackagedGuiBoot(
+  decision,
+  { stopOccupant, ensureHost, attach, serviceMissing = false } = {},
+) {
+  const plan = planPackagedGuiBoot(decision, { serviceMissing });
   const log = [];
   for (const step of plan.steps) {
     if (step === "stop-occupant") {
       if (typeof stopOccupant === "function") await stopOccupant(plan.pid);
       log.push({ step, pid: plan.pid });
-    } else if (step === "restart-service") {
-      if (typeof restartService === "function") await restartService();
-      log.push({ step });
-    } else if (step === "start-service") {
-      if (typeof startService === "function") await startService();
-      log.push({ step });
+    } else if (step === "ensure-host") {
+      if (typeof ensureHost === "function") await ensureHost({ serviceMissing: plan.serviceMissing });
+      log.push({ step, serviceMissing: plan.serviceMissing });
     } else if (step === "attach") {
       const found = typeof attach === "function" ? await attach() : null;
       log.push({ step });

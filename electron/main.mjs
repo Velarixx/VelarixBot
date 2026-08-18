@@ -24,16 +24,21 @@ import {
   waitForAttachable,
 } from "./service-attach.mjs";
 import {
+  applyHarnessHostLaunch,
   applyOccupantStop,
   applyServicePlan,
   isHarnessServiceArgv,
+  isWindowsServiceMissing,
   parseServiceEnabledPref,
+  planHarnessHostLaunch,
   planOccupantStop,
   planServiceInstall,
   planServiceStart,
   planServiceStop,
   planServiceUninstall,
+  queryWindowsService,
   removeLaunchAgentPlist,
+  runEnsureUserSessionHost,
   writeLaunchAgentPlist,
 } from "./service-control.mjs";
 import { shouldKillServerOnBeforeQuit } from "./service-quit.mjs";
@@ -232,10 +237,35 @@ function stopLeftoverOccupant(pid) {
   applyOccupantStop(planOccupantStop({ pid, platform: process.platform }));
 }
 
-function restartUserSessionService() {
+async function ensureUserSessionHost({ recycle = false } = {}) {
+  const exe = process.execPath;
   const uid = sessionUid();
-  applyServicePlan(planServiceStop({ running: true, platform: process.platform, uid }));
-  enableUserSessionService();
+  const platform = process.platform;
+  const queried = platform === "win32" ? queryWindowsService() : null;
+  const serviceMissing = platform === "win32" ? isWindowsServiceMissing(queried) : false;
+  let startedOk = false;
+  await runEnsureUserSessionHost(
+    { platform, exePath: exe, uid, serviceMissing, recycle },
+    {
+      register: (plan) => {
+        if (!plan || plan.action === "unsupported") return;
+        if (plan.plist) writeLaunchAgentPlist({ exePath: exe, destPath: plan.plistPath });
+        if (plan.bootstrap) applyServicePlan(plan.bootstrap);
+        else applyServicePlan(plan);
+      },
+      osStop: (plan) => applyServicePlan(plan),
+      osStart: (plan) => {
+        const result = applyServicePlan(plan);
+        startedOk = Boolean(result?.ok);
+        return result;
+      },
+      launchHost: (plan) =>
+        applyHarnessHostLaunch(plan ?? planHarnessHostLaunch({ exePath: exe }), { spawnFn: spawn }),
+    },
+  );
+  if (!serviceMissing && !startedOk) {
+    applyHarnessHostLaunch(planHarnessHostLaunch({ exePath: exe }), { spawnFn: spawn });
+  }
 }
 
 async function preparePackagedGuiServer() {
@@ -243,8 +273,8 @@ async function preparePackagedGuiServer() {
   leftoverStopCard = decision.action === "replace";
   const { found } = await runPackagedGuiBoot(decision, {
     stopOccupant: stopLeftoverOccupant,
-    restartService: restartUserSessionService,
-    startService: enableUserSessionService,
+    ensureHost: ({ serviceMissing } = {}) =>
+      ensureUserSessionHost({ recycle: decision.action === "replace" && !serviceMissing }),
     attach: attachToRunningService,
   });
   return found;
@@ -553,7 +583,7 @@ ipcMain.handle("login:set", (_event, enabled) => {
   serviceEnabled = enabled === true;
   savePrefs({ serviceEnabled });
   if (app.isPackaged) {
-    if (serviceEnabled) enableUserSessionService();
+    if (serviceEnabled) void ensureUserSessionHost();
     else disableUserSessionService();
   }
   return serviceEnabled;

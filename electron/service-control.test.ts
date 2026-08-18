@@ -10,10 +10,13 @@ import {
   SERVICE_FLAG,
   WINDOWS_SERVICE_NAME,
   WINDOWS_SERVICE_TYPE,
+  applyHarnessHostLaunch,
   applyOccupantStop,
   applyServicePlan,
   assertUserSessionLaunchAgent,
+  harnessHostLaunchEnv,
   isScServiceStop,
+  isWindowsServiceMissing,
   isHarnessServiceArgv,
   isUserSessionWindowsService,
   launchAgentPlistPath,
@@ -21,6 +24,8 @@ import {
   macBootoutArgs,
   macKickstartArgs,
   parseServiceEnabledPref,
+  planEnsureUserSessionHost,
+  planHarnessHostLaunch,
   planOccupantStop,
   planServiceInstall,
   planServiceStart,
@@ -29,6 +34,7 @@ import {
   renderLaunchAgentPlist,
   windowsCreateArgs,
   windowsDeleteArgs,
+  windowsQueryArgs,
   windowsStartArgs,
   windowsStopArgs,
 } from "./service-control.mjs";
@@ -96,6 +102,85 @@ describe("user-session service control", () => {
     expect(windowsStartArgs({ sc: "sc.exe" }).args).toEqual(["start", WINDOWS_SERVICE_NAME]);
     expect(windowsStopArgs({ sc: "sc.exe" }).args).toEqual(["stop", WINDOWS_SERVICE_NAME]);
     expect(windowsDeleteArgs({ sc: "sc.exe" }).args).toEqual(["delete", WINDOWS_SERVICE_NAME]);
+    expect(windowsQueryArgs({ sc: "sc.exe" }).args).toEqual(["query", WINDOWS_SERVICE_NAME]);
+  });
+
+  it("treats sc query 1060 as a missing user service, not a port conflict", () => {
+    expect(isWindowsServiceMissing(null)).toBe(true);
+    expect(isWindowsServiceMissing({ status: 1060, stdout: "", stderr: "" })).toBe(true);
+    expect(
+      isWindowsServiceMissing({
+        status: 1,
+        stdout: "",
+        stderr: "The specified service does not exist as an installed service.\r\n",
+      }),
+    ).toBe(true);
+    expect(isWindowsServiceMissing({ status: 0, stdout: "STATE : 4 RUNNING" })).toBe(false);
+  });
+
+  it("launches exe --harness-service without a token and without LocalSystem", () => {
+    const launch = planHarnessHostLaunch({ exePath: EXE_WIN });
+    expect(launch).toEqual({
+      action: "launch-host",
+      reason: "harness-service-process",
+      command: EXE_WIN,
+      args: [SERVICE_FLAG],
+      detached: true,
+    });
+    expect(launch.args.join(" ")).not.toMatch(/LocalSystem|node\.exe/i);
+    const env = harnessHostLaunchEnv({
+      PATH: "C:\\Windows\\System32",
+      VELARIX_API_TOKEN: "ab".repeat(32),
+    });
+    expect(env.VELARIX_HARNESS_SERVICE).toBe("1");
+    expect(env).not.toHaveProperty("VELARIX_API_TOKEN");
+    const spawned: Array<[string, string[], { shell?: boolean; detached?: boolean; env?: Record<string, string> }]> =
+      [];
+    const child = {
+      pid: 4242,
+      unref() {
+        return undefined;
+      },
+    };
+    const result = applyHarnessHostLaunch(launch, {
+      env: { PATH: "C:\\Windows\\System32", VELARIX_API_TOKEN: "ab".repeat(32) },
+      spawnFn: (command: string, args: string[], opts: { shell?: boolean; detached?: boolean; env?: Record<string, string> }) => {
+        spawned.push([command, args, opts]);
+        return child;
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0][0]).toBe(EXE_WIN);
+    expect(spawned[0][1]).toEqual(["--harness-service"]);
+    expect(spawned[0][2].shell).toBe(false);
+    expect(spawned[0][2].detached).toBe(true);
+    expect(spawned[0][2].env).not.toHaveProperty("VELARIX_API_TOKEN");
+    expect(spawned[0][2].env?.VELARIX_HARNESS_SERVICE).toBe("1");
+  });
+
+  it("empty + missing Windows service plans register then launch-host, not sc stop only", () => {
+    const missing = planEnsureUserSessionHost({
+      platform: "win32",
+      exePath: EXE_WIN,
+      serviceMissing: true,
+      env: { SystemRoot: "C:\\Windows" },
+    });
+    expect(missing.steps).toEqual(["register", "launch-host"]);
+    expect(isUserSessionWindowsService(missing.register)).toBe(true);
+    expect(missing.launch.args).toEqual([SERVICE_FLAG]);
+    expect(missing.fork).toBe(false);
+    expect(missing.mintToken).toBe(false);
+    expect(missing.writeSidecar).toBe(false);
+
+    const present = planEnsureUserSessionHost({
+      platform: "win32",
+      exePath: EXE_WIN,
+      serviceMissing: false,
+      env: { SystemRoot: "C:\\Windows" },
+    });
+    expect(present.steps).toEqual(["register", "os-start"]);
+    expect(present.osStart.args).toEqual(["start", WINDOWS_SERVICE_NAME]);
   });
 
   it("start/stop are idempotent — already-running start and already-stopped stop do not spawn", () => {

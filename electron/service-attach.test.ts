@@ -22,7 +22,15 @@ import {
   waitForAttachable,
 } from "./service-attach.mjs";
 import { healthWithoutSecrets, readServiceAuth, writeServiceAuth } from "./service-auth.mjs";
-import { applyOccupantStop, isScServiceStop, planOccupantStop, windowsStopArgs } from "./service-control.mjs";
+import {
+  applyOccupantStop,
+  isScServiceStop,
+  isUserSessionWindowsService,
+  planEnsureUserSessionHost,
+  planOccupantStop,
+  runEnsureUserSessionHost,
+  windowsStopArgs,
+} from "./service-control.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
@@ -78,7 +86,7 @@ describe("attach vs spawn", () => {
     expect(host).toEqual({ action: "replace", port: 8799, reason: "velarixbot-leftover", pid: 8800 });
     expect(shouldForkHarness(host)).toBe(false);
     const guiPlan = planPackagedGuiBoot(gui);
-    expect(guiPlan.steps).toEqual(["stop-occupant", "restart-service", "attach"]);
+    expect(guiPlan.steps).toEqual(["stop-occupant", "ensure-host", "attach"]);
     expect(guiPlan.fork).toBe(false);
     expect(guiPlan.mintToken).toBe(false);
     expect(guiPlan.writeSidecar).toBe(false);
@@ -112,6 +120,15 @@ describe("attach vs spawn", () => {
     });
     const empty = probeResultsFromMap({}, null);
     expect(decidePackagedGuiAction(empty)).toEqual({ action: "start-service", reason: "empty" });
+    expect(planPackagedGuiBoot(decidePackagedGuiAction(empty), { serviceMissing: true })).toEqual(
+      expect.objectContaining({
+        steps: ["ensure-host", "attach"],
+        page: "app",
+        fork: false,
+        mintToken: false,
+        writeSidecar: false,
+      }),
+    );
     expect(shouldForkHarness(decidePackagedGuiAction(empty))).toBe(false);
     const host = decideServiceHostAction(empty);
     expect(host).toEqual({ action: "spawn", port: 8799, reason: "empty" });
@@ -188,8 +205,14 @@ describe("attach vs spawn", () => {
     expect(main).toContain("leftoverStopCard");
     expect(main).toContain("stopLeftoverOccupant");
     expect(main).toContain("planOccupantStop");
+    expect(main).toContain("ensureUserSessionHost");
+    expect(main).toContain("runEnsureUserSessionHost");
+    expect(main).toContain("applyHarnessHostLaunch");
+    expect(main).toContain("planHarnessHostLaunch");
+    expect(main).toContain("isWindowsServiceMissing");
     expect(main).toContain("runPackagedGuiBoot");
     expect(main).toContain("runServiceHostBoot");
+    expect(main).toMatch(/spawnFn:\s*spawn/);
     expect(main).toMatch(/utilityProcess\.fork\(entry, \[\], \{/);
     expect(main).not.toMatch(/fork\([^)]*VELARIX_API_TOKEN/);
     expect(main).not.toMatch(/Access-Control-Allow-Origin/i);
@@ -209,6 +232,15 @@ describe("attach vs spawn", () => {
     expect(prepareFn).not.toContain("writeServiceAuth");
     expect(prepareFn).not.toContain("mintApiToken");
     expect(prepareFn).not.toContain("utilityProcess.fork");
+    const ensureFn = main.slice(
+      main.indexOf("async function ensureUserSessionHost"),
+      main.indexOf("async function preparePackagedGuiServer"),
+    );
+    expect(ensureFn).not.toContain("writeServiceAuth");
+    expect(ensureFn).not.toContain("mintApiToken");
+    expect(ensureFn).not.toContain("utilityProcess.fork");
+    expect(ensureFn).toContain("applyHarnessHostLaunch");
+    expect(ensureFn).toContain("queryWindowsService");
   });
 
   it("leftover replace stops health.pid then attaches; sc stop is not the occupant stop", async () => {
@@ -221,21 +253,18 @@ describe("attach vs spawn", () => {
       stopOccupant: (pid: number) => {
         killed.push(pid);
       },
-      restartService: () => {
-        serviceSteps.push("restart");
-      },
-      startService: () => {
-        serviceSteps.push("start-only");
+      ensureHost: () => {
+        serviceSteps.push("ensure-host");
       },
       attach: () => attached,
     });
     expect(killed).toEqual([8800]);
-    expect(serviceSteps).toEqual(["restart"]);
+    expect(serviceSteps).toEqual(["ensure-host"]);
     expect(result.found).toEqual(attached);
     expect(result.plan.fork).toBe(false);
     expect(result.plan.mintToken).toBe(false);
     expect(result.plan.writeSidecar).toBe(false);
-    expect(result.log.map((row) => row.step)).toEqual(["stop-occupant", "restart-service", "attach"]);
+    expect(result.log.map((row) => row.step)).toEqual(["stop-occupant", "ensure-host", "attach"]);
 
     const host = await runServiceHostBoot(decideServiceHostAction(probeResultsFromMap({ 8799: health }, null)), {
       stopOccupant: (pid: number) => {
@@ -258,6 +287,64 @@ describe("attach vs spawn", () => {
     expect(applyOccupantStop(scStop).reason).toBe("sc-stop-not-occupant");
   });
 
+  it("empty ports + missing Windows user service register/launch --harness-service then attach", async () => {
+    const empty = decidePackagedGuiAction(probeResultsFromMap({}, null));
+    expect(empty).toEqual({ action: "start-service", reason: "empty" });
+    const guiPlan = planPackagedGuiBoot(empty, { serviceMissing: true });
+    expect(guiPlan.steps).toEqual(["ensure-host", "attach"]);
+    expect(guiPlan.page).not.toBe("error-page");
+    expect(guiPlan.fork).toBe(false);
+    expect(guiPlan.mintToken).toBe(false);
+    expect(guiPlan.writeSidecar).toBe(false);
+    expect(shouldForkHarness(empty)).toBe(false);
+
+    const exe = "C:\\Users\\Dyon\\AppData\\Local\\Programs\\VelarixBot\\VelarixBot.exe";
+    const hostPlan = planEnsureUserSessionHost({
+      platform: "win32",
+      exePath: exe,
+      serviceMissing: true,
+      env: { SystemRoot: "C:\\Windows" },
+    });
+    expect(hostPlan.steps).toEqual(["register", "launch-host"]);
+    expect(hostPlan.steps).not.toContain("os-stop");
+    expect(isUserSessionWindowsService(hostPlan.register)).toBe(true);
+    expect(JSON.stringify(hostPlan.register)).not.toMatch(/LocalSystem|perMachine|NSSM/i);
+    expect(hostPlan.launch.args).toEqual(["--harness-service"]);
+    expect(hostPlan.launch.command).toBe(exe);
+    expect(JSON.stringify(hostPlan)).not.toMatch(/VELARIX_API_TOKEN/);
+    expect(hostPlan.fork).toBe(false);
+    expect(hostPlan.mintToken).toBe(false);
+    expect(hostPlan.writeSidecar).toBe(false);
+
+    const launched: string[][] = [];
+    const result = await runPackagedGuiBoot(empty, {
+      serviceMissing: true,
+      ensureHost: async () => {
+        await runEnsureUserSessionHost(
+          { platform: "win32", exePath: exe, serviceMissing: true, env: { SystemRoot: "C:\\Windows" } },
+          {
+            register: (plan) => {
+              launched.push(["register", ...(plan.args ?? [])]);
+            },
+            launchHost: (plan) => {
+              launched.push(["launch-host", ...(plan.args ?? [])]);
+            },
+            osStart: () => {
+              launched.push(["os-start"]);
+            },
+          },
+        );
+      },
+      attach: () => ({ port: 8799, health: oursHealth(9001), sidecar: sidecar(9001) }),
+    });
+    expect(launched.map((row) => row[0])).toEqual(["register", "launch-host"]);
+    expect(launched[1]).toEqual(["launch-host", "--harness-service"]);
+    expect(result.found?.port).toBe(8799);
+    expect(result.found?.sidecar?.pid).toBe(9001);
+    expect(result.plan.page).not.toBe("error-page");
+    expect(result.log.map((row) => row.step)).toEqual(["ensure-host", "attach"]);
+  });
+
   it("matching sidecar still attaches without fork or occupant stop", async () => {
     const health = oursHealth(4400);
     const side = sidecar(4400);
@@ -268,7 +355,7 @@ describe("attach vs spawn", () => {
       stopOccupant: (pid: number) => {
         killed.push(pid);
       },
-      restartService: () => {
+      ensureHost: () => {
         killed.push(-1);
       },
       attach: () => ({ port: 8799, health, sidecar: side }),
@@ -294,7 +381,7 @@ describe("attach vs spawn", () => {
       stopOccupant: (pid: number) => {
         killed.push(pid);
       },
-      startService: () => undefined,
+      ensureHost: () => undefined,
       attach: () => ({ port: 18799, sidecar: sidecar(7, 18799) }),
     });
     expect(killed).toEqual([]);
