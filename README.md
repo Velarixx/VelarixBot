@@ -44,7 +44,8 @@ backed by local agent CLIs and optional per-bot cloud computers.
 - **Bring your own agents.** Bots run directly on the `claude`, `codex`, and `grok` CLIs installed on your computer. They use your
   existing CLI login or OAuth session and subscription, no VelarixBot account and no model proxy in the middle.
 - **Local first.** One small harness server on `127.0.0.1` owns every agent process. Transcripts, keys, and
-  events live in `~/.velarixbot`, not a cloud.
+  events live in `~/.velarixbot`, not a cloud. A second client on the **same machine** can attach with the
+  sidecar bearer; a phone or other host cannot — that would need a new public surface, which is out of scope.
 - **Explicit routing.** You choose the provider and model for each bot. If that engine is unavailable, the bot
   reports a blocked state; VelarixBot does not silently fail over to another provider or model.
 - **Agents with hands.** Each bot binds to a computer *provider*: on macOS the local Mac (core, approval-gated),
@@ -282,11 +283,15 @@ pnpm typecheck     # app + server
 pnpm build         # typecheck + production build
 ```
 
-Every `/api/*` route except `/api/health` requires a bearer token. The packaged user-session service mints one,
-hands it to the forked server via env, and writes it to `~/.velarixbot/service-auth.json` (0600) so the GUI can
-attach without a second mint or putting the token in `/api/health`. In dev, export the
-same `VELARIX_DEV_TOKEN` for both `pnpm dev:server` and `pnpm dev` — there is no way to switch auth off: without
-a token in env the server mints one nobody holds and stays locked.
+Every `/api/*` route except `/api/health` requires a bearer token (`GET /api/events` included). The packaged
+user-session service mints one, hands it to the forked server via env (never argv), and writes it to
+`~/.velarixbot/service-auth.json` (directory `0700`, file `0600`) so a second same-machine client — including
+the packaged GUI — can attach by reading that sidecar. The GUI does not mint a second `VELARIX_API_TOKEN` and
+does not write the sidecar. `/api/health` stays unauthenticated and returns only `{app,pid,static,stamp}` (no
+token). A phone or other-LAN host cannot attach: listen is `127.0.0.1`, non-loopback Host/Origin is `403`, and
+there is no CORS. Off-machine reachability is a vulnerability — see [SECURITY.md](SECURITY.md). In dev, export
+the same `VELARIX_DEV_TOKEN` for both `pnpm dev:server` and `pnpm dev` — there is no way to switch auth off:
+without a token in env the server mints one nobody holds and stays locked.
 
 Development requires macOS or Windows, Node 24+, and pnpm. GitHub Actions, not developer machines, builds the
 downloadable release artifacts.

@@ -1,3 +1,7 @@
+import { mkdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -12,7 +16,10 @@ import {
   shouldForkHarness,
   waitForAttachable,
 } from "./service-attach.mjs";
-import { healthWithoutSecrets } from "./service-auth.mjs";
+import { healthWithoutSecrets, readServiceAuth, writeServiceAuth } from "./service-auth.mjs";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
 
 const TOKEN = `${"ab".repeat(16)}${"cd".repeat(16)}`;
 
@@ -141,5 +148,38 @@ describe("attach vs spawn", () => {
 
   it("pins the candidate ports the packaged probe still walks", () => {
     expect(CANDIDATE_PORTS).toEqual([8799, 18799, 28799]);
+  });
+
+  it("packaged GUI attaches via readServiceAuth and does not mint or write the sidecar", () => {
+    const main = read("electron/main.mjs");
+    expect(main).toMatch(/isService \? mintApiToken\(\) : ""/);
+    expect(main).toContain("readSidecar: () => readServiceAuth()");
+    expect(main).toContain("API_TOKEN = found.sidecar.token");
+    const attachFn = main.slice(
+      main.indexOf("async function attachToRunningService"),
+      main.indexOf("function enableUserSessionService"),
+    );
+    expect(attachFn).toContain("readServiceAuth");
+    expect(attachFn).not.toContain("writeServiceAuth");
+    expect(attachFn).not.toContain("mintApiToken");
+    expect(main).toMatch(/utilityProcess\.fork\(entry, \[\], \{/);
+    expect(main).not.toMatch(/fork\([^)]*VELARIX_API_TOKEN/);
+    expect(main).not.toMatch(/Access-Control-Allow-Origin/i);
+  });
+
+  it("second local client reads the sidecar and attaches without minting", () => {
+    const home = join(tmpdir(), `velarix-second-client-${process.pid}-${Date.now()}`);
+    mkdirSync(join(home, ".velarixbot"), { recursive: true, mode: 0o700 });
+    const health = oursHealth(4400);
+    writeServiceAuth({ pid: 4400, port: 8799, token: TOKEN }, home);
+    const sidecar = readServiceAuth(home);
+    expect(sidecar?.token).toBe(TOKEN);
+    expect(isAttachableOurs(health, sidecar)).toBe(true);
+    expect(decidePackagedGuiAction(probeResultsFromMap({ 8799: health }, sidecar))).toEqual({
+      action: "attach",
+      port: 8799,
+      reason: "sidecar-pid",
+    });
+    expect(JSON.stringify(healthWithoutSecrets(health))).not.toContain(TOKEN);
   });
 });

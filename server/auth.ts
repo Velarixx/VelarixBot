@@ -37,7 +37,10 @@ export function isAuthExempt(path: string): boolean {
   return path === "/api/health";
 }
 
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+/** Loopback Host/Origin names only. Do not grow this set — a LAN or
+ * phone origin here would be a new public surface. Exported so tests
+ * can pin the exact membership. */
+export const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 /** DNS-rebinding guard: the Host header must name the loopback bind (any
  * loopback literal, port matching the bound port when present). */
