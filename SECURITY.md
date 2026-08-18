@@ -8,9 +8,16 @@ response as soon as possible, normally within a few days.
 
 ## Scope notes for researchers
 
-- The harness server binds **127.0.0.1 only** and has no authentication by design — it trusts the
-  local user. Anything that makes it reachable from off-machine, or lets one local *unprivileged
-  other user* drive it, is a vulnerability.
+- The harness server binds **127.0.0.1 only**. Every `/api/*` route except `/api/health` requires a
+  per-launch bearer token (`Authorization: Bearer`). The user-session service writes that token to
+  `~/.velarixbot/service-auth.json` (directory `0700`, file `0600`). The packaged GUI and any other
+  **same-machine** client attach by reading that sidecar — they do not mint a second token.
+  `/api/health` is unauthenticated and returns only `{app,pid,static,stamp}` (no token). A second
+  local client on `127.0.0.1` with the sidecar bearer can subscribe to `GET /api/events`. A phone
+  or other host on another LAN cannot attach without a new public surface (listen is loopback-only;
+  non-loopback Host/Origin is `403`; there is no CORS); that surface is out of scope. Anything that
+  makes the API reachable from off-machine, or lets one local *unprivileged other user* drive it, is
+  a vulnerability.
 - API keys are write-only through the API (`configured` booleans out, never values) and are sealed
   into `~/.velarixbot/secrets.json` — OS keychain via Electron `safeStorage` in the desktop app, a
   0600 base64 fallback when headless; `~/.velarixbot/config.json` holds only `secret://` references.

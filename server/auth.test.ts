@@ -2,11 +2,31 @@
 // an e2e leg against the real harness server (401 without / with a wrong or
 // stale token, SSE requires the token, /api/health stays open and minimal,
 // Host and Origin hardening, and COMMS_TOKEN staying a separate credential).
+//
+// Local-first continuity (this WP): a second same-machine client attaches
+// with the existing sidecar bearer. Listen stays 127.0.0.1; LOOPBACK_HOSTS
+// stays loopback-only; /api/health stays four keys and unauthenticated;
+// every other /api/* including GET /api/events requires Bearer.
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { hostAllowed, isAuthExempt, originAllowed, requireApiAuth, resolveApiToken, tokenMatches } from "./auth.ts";
-import { bootHarness, type BootedHarness } from "./testing/harness.ts";
+import {
+  hostAllowed,
+  isAuthExempt,
+  LOOPBACK_HOSTS,
+  originAllowed,
+  requireApiAuth,
+  resolveApiToken,
+  tokenMatches,
+} from "./auth.ts";
+import { readServiceAuth, writeServiceAuth } from "../electron/service-auth.mjs";
+import { connectSse, bootHarness, type BootedHarness } from "./testing/harness.ts";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
 
 describe("resolveApiToken", () => {
   it("prefers the injected token, then the dev token, else mints 256 bits", () => {
@@ -38,6 +58,18 @@ describe("tokenMatches", () => {
 });
 
 describe("host and origin hardening", () => {
+  it("LOOPBACK_HOSTS stays the three loopback names — no LAN, no phone, no CORS origin", () => {
+    expect([...LOOPBACK_HOSTS].sort()).toEqual(["127.0.0.1", "[::1]", "localhost"]);
+    expect(LOOPBACK_HOSTS.size).toBe(3);
+    expect(LOOPBACK_HOSTS.has("0.0.0.0")).toBe(false);
+    expect(LOOPBACK_HOSTS.has("::")).toBe(false);
+    expect(LOOPBACK_HOSTS.has("192.168.1.1")).toBe(false);
+    expect(LOOPBACK_HOSTS.has("10.0.0.1")).toBe(false);
+    const authSrc = read("server/auth.ts");
+    expect(authSrc).not.toMatch(/Access-Control-Allow-Origin/i);
+    expect(authSrc).toMatch(/new Set\(\["127\.0\.0\.1", "localhost", "\[::1\]"\]\)/);
+  });
+
   it("hostAllowed pins the loopback bind (DNS-rebinding guard)", () => {
     expect(hostAllowed("127.0.0.1:8799", 8799)).toBe(true);
     expect(hostAllowed("localhost:8799", 8799)).toBe(true);
@@ -46,6 +78,10 @@ describe("host and origin hardening", () => {
     expect(hostAllowed("127.0.0.1:9999", 8799)).toBe(false);
     expect(hostAllowed("evil.example:8799", 8799)).toBe(false);
     expect(hostAllowed("velarix.attacker.tld", 8799)).toBe(false);
+    expect(hostAllowed("192.168.1.10:8799", 8799)).toBe(false);
+    expect(hostAllowed("10.0.0.5:8799", 8799)).toBe(false);
+    expect(hostAllowed("0.0.0.0:8799", 8799)).toBe(false);
+    expect(hostAllowed("[::]:8799", 8799)).toBe(false);
     expect(hostAllowed(undefined, 8799)).toBe(false);
   });
 
@@ -53,10 +89,35 @@ describe("host and origin hardening", () => {
     expect(originAllowed(undefined)).toBe(true); // node clients / same-origin fetch
     expect(originAllowed("http://127.0.0.1:8799")).toBe(true);
     expect(originAllowed("http://localhost:5199")).toBe(true);
+    expect(originAllowed("http://[::1]:8799")).toBe(true);
     expect(originAllowed("https://evil.example")).toBe(false);
+    expect(originAllowed("http://192.168.1.10:8799")).toBe(false);
+    expect(originAllowed("http://10.0.0.5:5199")).toBe(false);
     expect(originAllowed("null")).toBe(false);
     expect(originAllowed("file://x")).toBe(false);
     expect(originAllowed("not a url")).toBe(false);
+  });
+
+  it("pins server.listen host to 127.0.0.1 with no host-env bind", () => {
+    const src = read("server/index.ts");
+    expect(src).toMatch(/server\.listen\(PORT, "127\.0\.0\.1"/);
+    expect(src).not.toMatch(/0\.0\.0\.0/);
+    expect(src).not.toMatch(/listen\([^)]*process\.env/);
+    expect(src).not.toMatch(/Access-Control-Allow-Origin/i);
+  });
+
+  it("SECURITY.md keeps off-machine reachability a vulnerability and documents sidecar bearer", () => {
+    const security = read("SECURITY.md");
+    expect(security).toMatch(/off-machine/);
+    expect(security).toMatch(/vulnerability/);
+    expect(security).toMatch(/Authorization: Bearer/);
+    expect(security).toMatch(/service-auth\.json/);
+    expect(security).not.toMatch(/no authentication by design/);
+    expect(security).toMatch(/phone\s+or other host/);
+    expect(security).toMatch(/out of scope/);
+    for (const tree of ["ios", "android", "mobile", "companion", "tailscale", "ngrok", "cloudflared"]) {
+      expect(existsSync(join(ROOT, tree))).toBe(false);
+    }
   });
 });
 
@@ -64,12 +125,20 @@ describe("requireApiAuth", () => {
   const TOKEN = "tok-123";
   const ok = { authorization: `Bearer ${TOKEN}`, host: "127.0.0.1:8799" };
 
-  it("exempts only /api/health", () => {
+  it("exempts only /api/health — SSE and every other /api/* stay gated", () => {
     expect(isAuthExempt("/api/health")).toBe(true);
     expect(isAuthExempt("/api/bots")).toBe(false);
     expect(isAuthExempt("/api/routines")).toBe(false);
     expect(isAuthExempt("/api/webhooks")).toBe(false);
+    expect(isAuthExempt("/api/events")).toBe(false);
+    expect(isAuthExempt("/api/events/snapshot")).toBe(false);
+    expect(isAuthExempt("/api/instances")).toBe(false);
+    expect(isAuthExempt("/api/config")).toBe(false);
     expect(requireApiAuth({ path: "/api/health", method: "GET", headers: {} }, TOKEN, 8799)).toBeNull();
+    expect(
+      requireApiAuth({ path: "/api/events", method: "GET", headers: { host: ok.host } }, TOKEN, 8799),
+    ).toMatchObject({ status: 401 });
+    expect(requireApiAuth({ path: "/api/events", method: "GET", headers: ok }, TOKEN, 8799)).toBeNull();
   });
 
   it("401s a missing/wrong token and 403s a bad host or origin", () => {
@@ -152,20 +221,86 @@ describe("API auth e2e (real harness server)", () => {
   it("keeps /api/health open and minimal (port-fallback identity probe)", async () => {
     const res = await fetch(`${h.base}/api/health`);
     expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
     const body = (await res.json()) as Record<string, unknown>;
     expect(Object.keys(body).sort()).toEqual(["app", "pid", "stamp", "static"]);
     expect(body.app).toBe("velarixbot");
+    expect(body).not.toHaveProperty("token");
+    expect(JSON.stringify(body)).not.toContain(h.token);
+    expect(JSON.stringify(body)).not.toMatch(/Bearer|VELARIX_API_TOKEN|service-auth/i);
   });
 
-  it("requires the token on the SSE stream", async () => {
-    const denied = await fetch(`${h.base}/api/events`);
-    expect(denied.status).toBe(401);
+  it("requires the token on every /api/* other than /api/health, including SSE", async () => {
+    const gated = [
+      "/api/bots",
+      "/api/routines",
+      "/api/instances",
+      "/api/config",
+      "/api/events",
+      "/api/events/snapshot",
+      "/api/diagnostics/export",
+    ];
+    for (const path of gated) {
+      const denied = await fetch(`${h.base}${path}`);
+      expect(denied.status, path).toBe(401);
+      expect(denied.headers.get("access-control-allow-origin")).toBeNull();
+    }
     const allowed = await fetch(`${h.base}/api/events`, {
       headers: { authorization: `Bearer ${h.token}` },
     });
     expect(allowed.status).toBe(200);
     expect(allowed.headers.get("content-type")).toContain("text/event-stream");
+    expect(allowed.headers.get("access-control-allow-origin")).toBeNull();
     await allowed.body?.cancel();
+  });
+
+  it("second same-machine client attaches via sidecar bearer (health + SSE)", async () => {
+    expect(h.base.startsWith("http://127.0.0.1:")).toBe(true);
+    const healthRes = await fetch(`${h.base}/api/health`);
+    expect(healthRes.status).toBe(200);
+    const health = (await healthRes.json()) as { app: string; pid: number; static: boolean; stamp: string };
+    expect(Object.keys(health).sort()).toEqual(["app", "pid", "stamp", "static"]);
+    expect(JSON.stringify(health)).not.toContain(h.token);
+
+    const port = Number(new URL(h.base).port);
+    const sidecarPath = join(h.home, ".velarixbot", "service-auth.json");
+    writeFileSync(
+      sidecarPath,
+      `${JSON.stringify({ app: "velarixbot", pid: health.pid, port, token: h.token }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    const sidecar = JSON.parse(readFileSync(sidecarPath, "utf8")) as {
+      app: string;
+      pid: number;
+      port: number;
+      token: string;
+    };
+    expect(sidecar).toEqual({ app: "velarixbot", pid: health.pid, port, token: h.token });
+
+    // second client: probe health (no auth), then subscribe with the sidecar token
+    const probe = await fetch(`${h.base}/api/health`);
+    expect(probe.status).toBe(200);
+    const probeBody = (await probe.json()) as Record<string, unknown>;
+    expect(Object.keys(probeBody).sort()).toEqual(["app", "pid", "stamp", "static"]);
+    expect(JSON.stringify(probeBody)).not.toContain(sidecar!.token);
+
+    const denied = await fetch(`${h.base}/api/events`);
+    expect(denied.status).toBe(401);
+
+    const sse = await connectSse(h.base, sidecar.token);
+    const hello = await sse.until((f) => f.kind === "hello");
+    expect(hello.kind).toBe("hello");
+    expect(JSON.stringify(hello)).not.toContain(sidecar.token);
+    expect(JSON.stringify(hello)).not.toMatch(/Bearer|VELARIX_API_TOKEN/i);
+    expect(hello).not.toHaveProperty("token");
+    sse.close();
+
+    // pin the packaged sidecar helpers against this HOME (256-bit hex, not COMMS)
+    const hex = `${"ab".repeat(16)}${"cd".repeat(16)}`;
+    writeServiceAuth({ pid: health.pid, port, token: hex }, h.home);
+    expect(readServiceAuth(h.home)).toEqual({ app: "velarixbot", pid: health.pid, port, token: hex });
+    expect(hex).not.toBe(COMMS_TOKEN);
+    expect(hex).not.toBe(h.token);
   });
 
   it("rejects a spoofed Host (403) and a browser Origin on state changes (403)", async () => {
@@ -181,6 +316,7 @@ describe("API auth e2e (real harness server)", () => {
   });
 
   it("keeps COMMS_TOKEN and the API token as separate credentials", async () => {
+    expect(COMMS_TOKEN).not.toBe(h.token);
     // the public token never opens the internal surface …
     const internal = await h.api("GET", "/api/internal/agents?self=x");
     expect(internal.status).toBe(401);

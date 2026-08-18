@@ -72,9 +72,10 @@ describe("service-auth sidecar", () => {
   });
 
   const posixOnly = process.platform === "win32" ? it.skip : it;
-  posixOnly("keeps service-auth.json 0600 — POSIX-only: Windows has no Unix 0600 mode bits", () => {
+  posixOnly("keeps sidecar dir 0700 and service-auth.json 0600 — POSIX-only: Windows has no Unix mode bits", () => {
     const home = tempHome("mode");
     writeServiceAuth({ pid: 1, port: 8799, token: canaryToken() }, home);
+    expect(statSync(join(home, ".velarixbot")).mode & 0o777).toBe(0o700);
     expect(statSync(serviceAuthPath(home)).mode & 0o777).toBe(0o600);
   });
 

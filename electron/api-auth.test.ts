@@ -19,6 +19,7 @@ describe("api-auth helpers", () => {
     expect(serverUrlFilter(8799)).toEqual(["http://127.0.0.1:8799/*"]);
     expect(serverUrlFilter(18799)).toEqual(["http://127.0.0.1:18799/*"]);
     expect(serverUrlFilter(28799)).toEqual(["http://127.0.0.1:28799/*"]);
+    expect(serverUrlFilter(8799).join("")).not.toMatch(/0\.0\.0\.0|192\.168|10\./);
   });
 
   it("injects the Authorization header without dropping existing headers", () => {
