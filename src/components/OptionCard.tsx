@@ -1,10 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 import { api, useStore, type Message } from "@/state/store";
 import { shouldOfferDesktop } from "../../server/handoff";
 import { cn } from "@/lib/cn";
 
 const LETTERS = ["A", "B", "C", "D", "E", "F"];
+
+type CardResponse = {
+  answer: string;
+  always?: boolean;
+  persistScope?: "bot" | "workspace";
+  secret?: string;
+  dismiss?: boolean;
+};
 
 export function OptionCard({
   botId,
@@ -16,7 +24,12 @@ export function OptionCard({
   const { state, dispatch } = useStore();
   const [custom, setCustom] = useState("");
   const [joining, setJoining] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [responseError, setResponseError] = useState<string | null>(null);
+  const [retainedResponse, setRetainedResponse] = useState<CardResponse | null>(null);
   const openedDesktop = useRef(false);
+  const submittingRef = useRef(false);
+  const headingId = useId();
   const card = message.card;
   const permission = card?.requestType === "permission" || (!card?.requestType && !!card?.requestId && card.title === "Approval needed");
   const credential = card?.requestType === "credential";
@@ -45,41 +58,96 @@ export function OptionCard({
 
   if (!card || card.dismissed) return null;
 
-  const answer = (text: string) => {
-    if (!text.trim()) return;
-    dispatch({ type: "answerCard", botId, messageId: message.id, answer: text.trim() });
+  const submitResponse = (response: CardResponse) => {
+    if (!card.requestId) {
+      if (response.dismiss) {
+        dispatch({ type: "dismissCard", botId, messageId: message.id });
+      } else {
+        dispatch({ type: "answerCard", botId, messageId: message.id, ...response });
+      }
+      if (response.secret) setCustom("");
+      return;
+    }
+    if (submittingRef.current) return;
+
+    submittingRef.current = true;
+    setSubmitting(true);
+    setResponseError(null);
+    setRetainedResponse(response);
+    const onSuccess = () => {
+      submittingRef.current = false;
+      setSubmitting(false);
+      setResponseError(null);
+      setRetainedResponse(null);
+      if (response.secret) setCustom("");
+    };
+    const onError = (error: string) => {
+      submittingRef.current = false;
+      setSubmitting(false);
+      setResponseError(error);
+    };
+    if (response.dismiss) {
+      dispatch({ type: "dismissCard", botId, messageId: message.id, onSuccess, onError });
+    } else {
+      dispatch({ type: "answerCard", botId, messageId: message.id, ...response, onSuccess, onError });
+    }
+  };
+
+  const answer = (text: string, response: Omit<CardResponse, "answer"> = {}) => {
+    const answer = text.trim();
+    if (!answer) return;
+    submitResponse({ answer, ...response });
   };
 
   const answerSecret = () => {
     if (!custom.trim()) return;
-    dispatch({
-      type: "answerCard",
-      botId,
-      messageId: message.id,
-      answer: "••••",
-      secret: custom,
-    });
-    setCustom("");
+    answer("••••", { secret: custom });
   };
 
   return (
-    <div className="w-full max-w-[840px] rounded-2xl border border-hairline/50 bg-card p-4">
+    <div
+      role="group"
+      aria-labelledby={headingId}
+      aria-busy={submitting}
+      className="w-full max-w-[840px] rounded-2xl border border-hairline/50 bg-card p-4"
+    >
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-[16px] font-semibold text-ink">{card.title}</div>
+          <div id={headingId} className="text-[16px] font-semibold text-ink">{card.title}</div>
           <div className="mt-0.5 text-[14px] text-ink-secondary">
             {card.subtitle}
           </div>
         </div>
         <button
-          onClick={() =>
-            dispatch({ type: "dismissCard", botId, messageId: message.id })
-          }
-          className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
+          type="button"
+          aria-label={card.requestId ? "Deny and dismiss request" : "Dismiss card"}
+          disabled={submitting}
+          onClick={() => submitResponse({ answer: "Dismissed", dismiss: true })}
+          className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <X size={16} />
+          <X size={16} aria-hidden="true" />
         </button>
       </div>
+
+      {submitting && (
+        <div role="status" aria-live="polite" className="mt-3 text-[13px] text-ink-secondary">
+          Submitting response…
+        </div>
+      )}
+
+      {responseError && retainedResponse && (
+        <div role="alert" className="mt-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2.5 text-[13px] text-ink">
+          <div className="font-medium">Couldn’t send your response.</div>
+          <div className="mt-0.5 text-ink-secondary">{responseError}</div>
+          <button
+            type="button"
+            onClick={() => submitResponse(retainedResponse)}
+            className="mt-2 font-medium text-danger hover:underline"
+          >
+            Retry response
+          </button>
+        </div>
+      )}
 
       {offerDesktop && !card.answered && (
         <button
@@ -107,12 +175,12 @@ export function OptionCard({
         {card.options.map((opt, i) => (
           <button
             key={opt}
-            disabled={!!card.answered}
+            disabled={submitting || !!card.answered}
             onClick={() => answer(opt)}
             className={cn(
               "flex w-full items-center gap-3 px-3 py-3 text-left text-[15px] text-ink",
               i > 0 && "border-t border-hairline/40",
-              card.answered === opt
+              card.answered === opt || retainedResponse?.answer === opt
                 ? "bg-raised"
                 : "hover:bg-raised/60 disabled:hover:bg-transparent",
             )}
@@ -139,14 +207,16 @@ export function OptionCard({
             autoComplete="off"
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
+            disabled={submitting}
             placeholder="Value stays off the transcript"
             className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-secondary focus:outline-none focus:border-hairline"
           />
           <button
             type="submit"
-            className="mt-2 w-full rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white"
+            disabled={submitting || !custom.trim()}
+            className="mt-2 w-full rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Submit
+            {submitting ? "Submitting…" : "Submit"}
           </button>
         </form>
       )}
@@ -155,7 +225,8 @@ export function OptionCard({
         <input
           value={custom}
           onChange={(e) => setCustom(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && answer(custom)}
+          disabled={submitting}
+          onKeyDown={(e) => e.key === "Enter" && !submitting && answer(custom)}
           placeholder="Type your own answer"
           className="mt-3 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 text-[15px] text-ink placeholder:text-ink-secondary focus:outline-none focus:border-hairline"
         />
@@ -164,25 +235,18 @@ export function OptionCard({
       {!card.answered && permission && (
         <div className="mt-3 flex flex-col items-start gap-1.5">
           <button
-            onClick={() =>
-              dispatch({ type: "answerCard", botId, messageId: message.id, answer: "Allow once", always: true })
-            }
-            className="text-[13px] text-ink-secondary hover:text-ink"
+            type="button"
+            disabled={submitting}
+            onClick={() => answer("Allow once", { always: true })}
+            className="text-[13px] text-ink-secondary hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
             Always allow for this bot
           </button>
           <button
-            onClick={() =>
-              dispatch({
-                type: "answerCard",
-                botId,
-                messageId: message.id,
-                answer: "Allow once",
-                always: true,
-                persistScope: "workspace",
-              })
-            }
-            className="text-[12px] text-ink-secondary/70 hover:text-ink"
+            type="button"
+            disabled={submitting}
+            onClick={() => answer("Allow once", { always: true, persistScope: "workspace" })}
+            className="text-[12px] text-ink-secondary/70 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
             Advanced: always allow for all bots
           </button>

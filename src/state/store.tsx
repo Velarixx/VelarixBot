@@ -274,8 +274,16 @@ type Action =
       /** Rule scope when always is set; defaults to this bot on the server. */
       persistScope?: "bot" | "workspace";
       secret?: string;
+      onSuccess?: () => void;
+      onError?: (message: string) => void;
     }
-  | { type: "dismissCard"; botId: string; messageId: string }
+  | {
+      type: "dismissCard";
+      botId: string;
+      messageId: string;
+      onSuccess?: () => void;
+      onError?: (message: string) => void;
+    }
   | { type: "newBot"; name: string; title?: string; description?: string; model?: string; color?: string }
   | { type: "toggleCreateBot"; open?: boolean }
   | { type: "botAdded"; bot: Bot; select?: boolean }
@@ -782,8 +790,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const dispatch = useMemo(() => {
     const showError = (e: unknown) => {
-      rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
+      const message = e instanceof Error ? e.message : String(e);
+      rawDispatch({ type: "error", message });
       setTimeout(() => rawDispatch({ type: "error", message: null }), 6000);
+      return message;
     };
     // fire-and-forget card persistence; the route is optional server-side
     const persistCard = (botId: string, messageId: string, patch: Partial<OptionCardData>) => {
@@ -841,33 +851,66 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         postMessage(action.botId, next.text, next.attachments, next.mentionSkillIds);
         return;
       }
+      if (action.type === "answerCard") {
+        const bot = stateRef.current.bots.find((b) => b.id === action.botId);
+        const card = bot?.messages.find((m) => m.id === action.messageId)?.card;
+        if (card?.requestId) {
+          const credential = card.requestType === "credential";
+          const behavior = credential
+            ? /deny|dismiss|cancel/i.test(action.answer)
+              ? "deny"
+              : "allow"
+            : action.answer === "Allow once" || action.answer === "Allow"
+              ? "allow"
+              : action.answer === "Deny"
+                ? "deny"
+                : "answer";
+          api(`/api/bots/${action.botId}/respond`, {
+            method: "POST",
+            body: JSON.stringify({
+              requestId: card.requestId,
+              behavior,
+              message: action.secret ?? (behavior === "answer" ? action.answer : undefined),
+              always: action.always === true,
+              ...(action.always === true ? { persistScope: action.persistScope ?? "bot" } : {}),
+            }),
+          })
+            .then(() => {
+              rawDispatch(action);
+              action.onSuccess?.();
+            })
+            .catch((error) => {
+              const message = showError(error);
+              action.onError?.(message);
+            });
+          return;
+        }
+      }
+      if (action.type === "dismissCard") {
+        const bot = stateRef.current.bots.find((b) => b.id === action.botId);
+        const card = bot?.messages.find((m) => m.id === action.messageId)?.card;
+        if (card?.requestId) {
+          api(`/api/bots/${action.botId}/respond`, {
+            method: "POST",
+            body: JSON.stringify({ requestId: card.requestId, behavior: "deny", message: "Dismissed by user." }),
+          })
+            .then(() => {
+              rawDispatch(action);
+              action.onSuccess?.();
+            })
+            .catch((error) => {
+              const message = showError(error);
+              action.onError?.(message);
+            });
+          return;
+        }
+      }
       rawDispatch(action);
       switch (action.type) {
         case "answerCard": {
           const bot = stateRef.current.bots.find((b) => b.id === action.botId);
           const card = bot?.messages.find((m) => m.id === action.messageId)?.card;
-          if (card?.requestId) {
-            const credential = card.requestType === "credential";
-            const behavior = credential
-              ? /deny|dismiss|cancel/i.test(action.answer)
-                ? "deny"
-                : "allow"
-              : action.answer === "Allow once" || action.answer === "Allow"
-                ? "allow"
-                : action.answer === "Deny"
-                  ? "deny"
-                  : "answer";
-            api(`/api/bots/${action.botId}/respond`, {
-              method: "POST",
-              body: JSON.stringify({
-                requestId: card.requestId,
-                behavior,
-                message: action.secret ?? (behavior === "answer" ? action.answer : undefined),
-                always: action.always === true,
-                ...(action.always === true ? { persistScope: action.persistScope ?? "bot" } : {}),
-              }),
-            }).catch(showError);
-          } else if (card?.requestType === "suggestion" || card?.requestType === "setup") {
+          if (card?.requestType === "suggestion" || card?.requestType === "setup") {
             persistCard(action.botId, action.messageId, { answered: action.answer });
           } else {
             persistCard(action.botId, action.messageId, { answered: action.answer });
@@ -879,16 +922,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "dismissCard": {
-          const bot = stateRef.current.bots.find((b) => b.id === action.botId);
-          const card = bot?.messages.find((m) => m.id === action.messageId)?.card;
-          if (card?.requestId) {
-            api(`/api/bots/${action.botId}/respond`, {
-              method: "POST",
-              body: JSON.stringify({ requestId: card.requestId, behavior: "deny", message: "Dismissed by user." }),
-            }).catch(() => {});
-          } else {
-            persistCard(action.botId, action.messageId, { dismissed: true });
-          }
+          persistCard(action.botId, action.messageId, { dismissed: true });
           break;
         }
         case "newBot":
