@@ -245,6 +245,46 @@ export function applyServicePlan(plan, { spawnSyncFn = spawnSync, env } = {}) {
   return { ok: result.status === 0, status: result.status, plan };
 }
 
+/** Stop a leftover occupant by health.pid. sc.exe stop velarixbot-harness
+ * is not this — a 0.2.2 GUI-forked server is not the user-session service. */
+export function planOccupantStop({ pid, platform } = {}) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return { action: "noop", reason: "invalid-pid" };
+  if (platform === "win32") {
+    return {
+      action: "stop-occupant",
+      reason: "leftover-health-pid",
+      command: "taskkill",
+      args: ["/pid", String(n), "/T", "/F"],
+    };
+  }
+  return { action: "stop-occupant", reason: "leftover-health-pid", pid: n, signal: "SIGTERM" };
+}
+
+export function isScServiceStop(plan) {
+  const args = plan?.args ?? [];
+  const command = String(plan?.command ?? "");
+  return /sc(?:\.exe)?$/i.test(command) && args[0] === "stop" && args.includes(WINDOWS_SERVICE_NAME);
+}
+
+export function applyOccupantStop(plan, { spawnSyncFn = spawnSync, killFn = process.kill } = {}) {
+  if (!plan || plan.action === "noop") return { ok: true, skipped: true, plan };
+  if (isScServiceStop(plan)) return { ok: false, reason: "sc-stop-not-occupant", plan };
+  if (plan.action !== "stop-occupant") return { ok: false, reason: "not-occupant-stop", plan };
+  if (plan.command === "taskkill") {
+    const result = runArgv(plan.command, plan.args ?? [], { spawnSyncFn });
+    return { ok: result.status === 0, status: result.status, plan };
+  }
+  if (!plan.pid) return { ok: false, reason: "invalid-pid", plan };
+  try {
+    killFn(plan.pid, plan.signal);
+    return { ok: true, plan };
+  } catch (err) {
+    if (err && (err.code === "ESRCH" || err.code === "EINVAL")) return { ok: true, alreadyGone: true, plan };
+    return { ok: false, plan };
+  }
+}
+
 export function writeLaunchAgentPlist({ exePath, destPath, home = homedir() } = {}) {
   const dest = destPath || launchAgentPlistPath(home);
   mkdirSync(dirnameSafe(dest), { recursive: true, mode: 0o700 });
