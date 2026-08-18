@@ -1,23 +1,52 @@
-import { describe, expect, it } from "vitest";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   SETUP_ENGINE_OPTIONS,
   SWITCH_MODEL_OPTION,
-  absoluteCliMissing,
+  cliMissing,
   engineSetupCard,
   isMachineStateCode,
   isSpawnFailure,
   normalizeBotColor,
   normalizeBotName,
+  setCliSearchPathForTests,
   userFacingBlock,
 } from "./engine-setup.ts";
 
-describe("absoluteCliMissing", () => {
-  it("is true only for an absolute path that is not on disk", () => {
-    expect(absoluteCliMissing("/definitely-not-a-velarix-engine")).toBe(true);
-    expect(absoluteCliMissing("claude")).toBe(false);
-    expect(absoluteCliMissing(undefined)).toBe(false);
-    expect(absoluteCliMissing(process.execPath)).toBe(false);
+afterEach(() => {
+  setCliSearchPathForTests(undefined);
+});
+
+describe("cliMissing", () => {
+  it("is true for an absolute path that is not on disk", () => {
+    expect(cliMissing("/definitely-not-a-velarix-engine")).toBe(true);
+    expect(cliMissing(undefined)).toBe(false);
+    expect(cliMissing(process.execPath)).toBe(false);
+  });
+
+  it("treats a bare PATH name as missing when it is not on the search path", () => {
+    expect(cliMissing("claude", "")).toBe(true);
+    expect(cliMissing("codex", "")).toBe(true);
+    expect(cliMissing("grok", "")).toBe(true);
+    expect(cliMissing("gemini", "")).toBe(true);
+    setCliSearchPathForTests("");
+    expect(cliMissing("claude")).toBe(true);
+  });
+
+  it("finds a bare name when a dummy binary is on the search path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-cli-path-"));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, "#!/bin/sh\n");
+    try {
+      chmodSync(bin, 0o755);
+    } catch {
+      /* Windows */
+    }
+    expect(cliMissing("claude", dir)).toBe(false);
+    expect(cliMissing("codex", dir)).toBe(true);
   });
 });
 
@@ -57,6 +86,16 @@ describe("userFacingBlock", () => {
     expect(blocked.stateCode).toBe("spawn_error");
     expect(blocked.stateDetail).toContain("ENOENT");
     expect(blocked.stateDetail).not.toBe("spawn_error");
+    expect(blocked.stateDetail).not.toMatch(/The selected engine CLI is not available/);
+  });
+
+  it("prefers a prior human snapshot reason over the generic spawn_error fallback", () => {
+    const blocked = userFacingBlock({
+      stopReason: "spawn_error",
+      snapshotReason: "`claude` CLI not found",
+      runtimeMessage: "spawn failed: spawn ENOENT claude",
+    });
+    expect(blocked.stateDetail).toBe("`claude` CLI not found");
   });
 
   it("zero engines is a dedicated non-hanging copy", () => {

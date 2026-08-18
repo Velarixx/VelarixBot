@@ -28,6 +28,8 @@ describe("VelarixBot branding", () => {
     expect(bots).toContain('name: "Chief of Staff"');
     expect(bots).not.toMatch(/name:\s*"Milind"/);
     expect(read("README.md")).not.toMatch(/SupaMaus/);
+    expect(read("public/app-icon.svg")).not.toMatch(/SupaMaus/);
+    expect(read("build/icon.svg")).not.toMatch(/SupaMaus/);
     expect(read("server/drivers/agents-proxy.ts")).toContain('name: "velarixbot-agents"');
     expect(read("server/drivers/agents-proxy.ts")).not.toContain("opengrokbot-agents");
   });

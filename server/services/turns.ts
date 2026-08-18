@@ -50,7 +50,7 @@ import { createPeerQueue } from "../peer-queue.ts";
 import type { Proactive } from "../proactive.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "../response-options.ts";
-import { absoluteCliMissing, engineSetupCard, isSpawnFailure, normalizeBotColor, normalizeBotName, userFacingBlock } from "../engine-setup.ts";
+import { cliMissing, engineSetupCard, isMachineStateCode, isSpawnFailure, normalizeBotColor, normalizeBotName, userFacingBlock } from "../engine-setup.ts";
 import { enabledSkillIds, LAST_BOT_ERROR, listenerScheduleFromArgs, mentionedBots, uniqueSkillIds, wouldEmptyWorkspace, type Message, type Usage } from "../store.ts";
 import { deleteSkillsForBot, getSkill, saveSkill, skillSystemNote, skillsForTurn } from "../teach.ts";
 import type { Broadcast } from "./events.ts";
@@ -625,6 +625,10 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
   const turnUsage = new Map<string, Usage>();
   const responseOptionsByTurn = new Map<string, string[]>();
+  /** Last runtime.error text for this thread. turn.completed only has
+   * stopReason (often "spawn_error") and used to overwrite the concrete
+   * spawn detail with the generic fallback. */
+  const lastRuntimeMessage = new Map<string, string>();
 
   function maybeAppendSetupCard(threadId: string, blocked: { stateCode: string; stateDetail: string }) {
     if (
@@ -670,7 +674,8 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         break;
       case "turn.started":
         if (event.turnId) turnUsage.delete(event.turnId);
-        bots.patchBot(bot.id, { busy: true, state: "RUNNING", stateDetail: undefined });
+        lastRuntimeMessage.delete(event.threadId);
+        bots.patchBot(bot.id, { busy: true, state: "RUNNING", stateDetail: undefined, stateCode: undefined });
         proactive.noteState(bot.id, "RUNNING");
         broadcastBot(bot.id);
         break;
@@ -772,6 +777,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       }
       case "runtime.error": {
         if (event.turnId) responseOptionsByTurn.delete(event.turnId);
+        if (event.message) lastRuntimeMessage.set(event.threadId, event.message);
         releaseComputerLease(bot.id);
         const blocked = userFacingBlock({ runtimeMessage: event.message, stopReason: isSpawnFailure(undefined, event.message) ? "spawn_error" : undefined });
         pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${blocked.stateDetail.slice(0, 160)}`, ok: false } });
@@ -805,9 +811,17 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
             },
           });
         }
+        const priorDetail = bot.stateDetail?.trim();
+        const snapshotReason = priorDetail && !isMachineStateCode(priorDetail) ? priorDetail : undefined;
+        const runtimeMessage = lastRuntimeMessage.get(event.threadId);
+        lastRuntimeMessage.delete(event.threadId);
         const blocked = event.ok
           ? null
-          : userFacingBlock({ stopReason: event.stopReason });
+          : userFacingBlock({
+              stopReason: event.stopReason,
+              snapshotReason,
+              runtimeMessage,
+            });
         if (blocked) maybeAppendSetupCard(event.threadId, blocked);
         bots.patchBot(bot.id, {
           busy: false,
@@ -1032,14 +1046,15 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     void (async () => {
       try {
         // [VERIFY] 2026-08-18: skip spawn synchronously when the selected
-        // (or every) instance points at an absolute CLI path that is not
-        // on disk. Must not await describe() here — #98 drain/ask_bot and
-        // unattended listener tests fire-and-forget startTurn and expect
-        // sendTurn on the same tick as a 2–3 microtask flush.
+        // (or every) instance's CLI is missing — absolute path not on disk
+        // OR a bare PATH name (claude/codex/grok/gemini) that findOnPath
+        // cannot resolve. API/fake instances have no cli and stay
+        // spawnable so #98 drain/ask_bot still calls sendTurn on the same
+        // tick. Must not await describe() here.
         {
           const live = registry.instances();
-          const spawnable = live.filter((inst) => !absoluteCliMissing(inst.cli));
-          const selectedMissing = absoluteCliMissing(instance.cli);
+          const spawnable = live.filter((inst) => !cliMissing(inst.cli));
+          const selectedMissing = cliMissing(instance.cli);
           if (spawnable.length === 0 || selectedMissing) {
             await settleUnavailableTurn(bot, userMessage.id, {
               zeroEngines: spawnable.length === 0,

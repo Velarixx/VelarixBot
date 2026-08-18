@@ -10,17 +10,53 @@
 // (`\`claude\` CLI not found`). Zero available engines must not spawn.
 
 import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 
+import { augmentedPath } from "./env-path.ts";
 import { COLORS, type MausColor, type OptionCardData } from "./store.ts";
 
-/** Sync pre-spawn check: an absolute CLI path that is not on disk must
- * never be spawned (ENOENT hang / spawn_error). Bare names (`claude`)
- * and API/fake instances (no cli) are left to the driver — #98 drain
- * tests fire-and-forget startTurn and cannot absorb an extra await. */
-export function absoluteCliMissing(cli: string | undefined | null): boolean {
+/** Test-only PATH for cliMissing. Production always uses augmentedPath(). */
+let cliSearchPathOverride: string | undefined;
+
+export function setCliSearchPathForTests(path: string | undefined): void {
+  cliSearchPathOverride = path;
+}
+
+export function cliSearchPath(): string {
+  return cliSearchPathOverride ?? augmentedPath();
+}
+
+function findOnPath(name: string, pathEnv: string): boolean {
+  const names =
+    process.platform === "win32"
+      ? [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`, `${name}.com`]
+      : [name];
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
+    for (const candidate of names) {
+      try {
+        if (existsSync(join(dir, candidate))) return true;
+      } catch {
+        /* unreadable PATH entry */
+      }
+    }
+  }
+  return false;
+}
+
+/** Sync pre-spawn check. API/fake instances (no cli) are spawnable so #98
+ * drain still calls sendTurn on the same tick. Absolute/relative paths use
+ * existsSync. Bare names (`claude`) walk PATH — including augmentedPath
+ * so a GUI launch still finds ~/.local/bin. */
+export function cliMissing(cli: string | undefined | null, pathEnv: string = cliSearchPath()): boolean {
   if (!cli) return false;
-  return isAbsolute(cli) && !existsSync(cli);
+  if (isAbsolute(cli) || /[\\/]/.test(cli)) return !existsSync(cli);
+  return !findOnPath(cli, pathEnv);
+}
+
+/** @deprecated use cliMissing — kept for a release so older tests compile. */
+export function absoluteCliMissing(cli: string | undefined | null): boolean {
+  return cliMissing(cli);
 }
 
 /** Machine-readable turn stop / block codes. Never copy these into

@@ -408,12 +408,27 @@ export function reducer(state: AppState, action: Action): AppState {
         (b) => ({ ...b, unread: false }),
       );
     // optimistic card settle; the server's message.patch confirms it later
-    case "answerCard":
-      return withMascotMotion(
+    case "answerCard": {
+      const card = state.bots.find((b) => b.id === action.botId)?.messages.find((m) => m.id === action.messageId)?.card;
+      const next = withMascotMotion(
         patchCard(state, action.botId, action.messageId, { answered: action.answer }),
         action.botId,
         "working",
       );
+      // Setup card: open the model picker. Duplicate the label — server
+      // engine-setup.ts imports node:fs and must not ship in the client.
+      if (card?.requestType === "setup" && action.answer === "Switch model in Settings") {
+        return {
+          ...next,
+          settingsOpen: true,
+          computerOpen: false,
+          appSettingsOpen: false,
+          routinesOpen: false,
+          skillsOpen: false,
+        };
+      }
+      return next;
+    }
     case "dismissCard":
       return patchCard(state, action.botId, action.messageId, { dismissed: true });
     case "botAdded": {
