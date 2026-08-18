@@ -177,7 +177,12 @@ describe("user-session service control", () => {
     expect(nsh).toContain("--harness-service");
     expect(nsh).toMatch(/sc\.exe" stop velarixbot-harness/);
     expect(nsh).toMatch(/sc\.exe" delete velarixbot-harness/);
-    expect(nsh).not.toMatch(/LocalSystem|NSSM|perMachine/i);
+    const nshCommands = nsh
+      .split(/\r?\n/)
+      .filter((line) => !line.trim().startsWith(";"))
+      .join("\n");
+    expect(nshCommands).not.toMatch(/LocalSystem|NSSM/i);
+    expect(nshCommands).toMatch(/type=\s*userown/);
     expect(yml).toMatch(/include:\s*build\/installer\.nsh/);
     expect(yml).toMatch(/perMachine:\s*false/);
     expect(yml).toMatch(/identity:\s*"-"\s*/);

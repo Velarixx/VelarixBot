@@ -1,7 +1,7 @@
-; Per-user user-session harness (not LocalSystem, not perMachine, not NSSM).
-; The binary is the packaged Electron exe + --harness-service so safeStorage
-; (DPAPI) still has a live broker. Token is minted at process start — never
-; written into this installer command.
+; Per-user user-session harness (type=userown). The binary is the packaged
+; Electron exe + --harness-service so safeStorage (DPAPI) still has a live
+; broker. Token is minted at process start — never written into this
+; installer command.
 
 !macro customInstall
   DetailPrint "Registering the VelarixBot user-session harness"
