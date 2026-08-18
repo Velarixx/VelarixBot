@@ -222,6 +222,8 @@ export interface BootedHarness {
   token: string;
   api: ReturnType<typeof apiAt>;
   sse: SseRecorder;
+  /** Restart the real server on the same port and persisted throwaway home. */
+  restart(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -238,12 +240,18 @@ export async function bootHarness(opts: {
   const token = `test-api-token-${port}`;
   writeHarnessConfig(home, opts.instances, opts.config ?? {});
   let stderr = "";
-  const child = spawn(process.execPath, [SERVER_ENTRY], {
-    cwd: join(SERVER_DIR, "..", ".."),
-    env: harnessEnv(home, { OMB_PORT: String(port), VELARIX_DEV_TOKEN: token, ...opts.env }),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  child.stderr!.on("data", (c) => (stderr += c));
+  let child!: ChildProcess;
+  const startChild = () => {
+    stderr = "";
+    child = spawn(process.execPath, [SERVER_ENTRY], {
+      cwd: join(SERVER_DIR, "..", ".."),
+      env: harnessEnv(home, { OMB_PORT: String(port), VELARIX_DEV_TOKEN: token, ...opts.env }),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr!.on("data", (c) => (stderr += c));
+    return child;
+  };
+  startChild();
   try {
     await waitForHealth(base, child, () => stderr);
   } catch (e) {
@@ -251,17 +259,31 @@ export async function bootHarness(opts: {
     bestEffortRm(home);
     throw e;
   }
-  const sse = await connectSse(base, token);
-  return {
+  let sse = await connectSse(base, token);
+  const harness: BootedHarness = {
     base,
     home,
     token,
     api: apiAt(base, token),
     sse,
+    async restart() {
+      sse.close();
+      await stopChild(child);
+      startChild();
+      try {
+        await waitForHealth(base, child, () => stderr);
+        sse = await connectSse(base, token);
+        harness.sse = sse;
+      } catch (e) {
+        await stopChild(child);
+        throw e;
+      }
+    },
     async stop() {
       sse.close();
       await stopChild(child);
       bestEffortRm(home);
     },
   };
+  return harness;
 }

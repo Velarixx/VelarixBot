@@ -1,7 +1,7 @@
-# DHV-5 release acceptance matrix v1.0
+# DHV-5 release acceptance matrix v1.1
 
-- Version: 1.0
-- Evidence date: 2026-08-18
+- Version: 1.1
+- Evidence date: 2026-08-19
 - Scope: the repository's current local primary workflow and explicit failure
   states; this is not a production-readiness declaration.
 - Sources: `docs/product/dhv-5-baseline.md`,
@@ -28,8 +28,9 @@ open, `Medium` should be scheduled, and `None` is outside this release decision.
 | Connection-loss feedback and draft preservation | After a previously connected stream reports an error, a persistent reconnecting notice is visible, Enter does not dispatch, and the local draft remains. | Focused smoke delegates to the real harness EventSource and deterministically emits its `error` lifecycle event; visible banner, zero rendered prompt, and retained input value are asserted. `src/components/ConnectionExperience.test.ts` and `src/state/store.test.ts` provide component/state evidence. | Covered | Test/Release Engineer | Blocker |
 | Recovered connection and delayed send | After the stream reports recovery, the notice clears, the preserved draft remains, and it can then be sent successfully. | Focused smoke emits the EventSource `open` lifecycle event, asserts the banner clears and draft remains, then completes the fake-engine turn. | Covered | Test/Release Engineer | Blocker |
 | Real socket drop and SSE replay | A transport-level disconnect reconnects without lost or duplicated persisted frames. | `server/sse-resume.test.ts` covers forced disconnect, cursor replay, dedupe, and snapshot folding at server/API level. The browser smoke controls lifecycle events rather than timing a real socket failure. | Partial | Founding Engineer + Test/Release Engineer | High |
-| Reload/restart hydration | A created bot and completed transcript survive renderer reload and server/app restart with the right selected state. | `server/sse-resume.test.ts` covers snapshot/replay mechanics. No deterministic browser reload plus process-restart journey is included in this smoke. | Partial | Founding Engineer + Test/Release Engineer | High |
-| Approval request, allow, and deny | A risky tool request is visible; allow/deny works once; persistence scope is explicit and safe. | `server/approvals.test.ts` covers rule safety and persistence; `eval/flow.mjs` has browser selectors but requires live provider credentials. No secret-free deterministic browser approval journey is evidenced here. | Partial | Founding Engineer + Test/Release Engineer | High |
+| Reload/restart hydration | A created bot and completed transcript survive renderer reload and server restart without duplicating the bot, user message, or assistant response. | Focused smoke completes a fake-Claude turn, restarts the real harness server on the same isolated home, reloads the page, selects the restored bot, and asserts exactly one bot/prompt/response in both the UI and persisted snapshot. | Covered | Test/Release Engineer | Blocker |
+| Visible approval request and deny | A risky tool request is visibly identified; deny is accepted once; the turn settles; no allow rule is persisted. | Focused smoke uses `server/testing/fake-codex-app-server.ts` in `approval` mode, asserts `Approval needed` plus `rm -rf scratch`, clicks the visible Deny option, observes one completed response, and verifies the bot has zero approval rules. | Covered | Test/Release Engineer | Blocker |
+| Approval allow-once and persistent scopes | Allow-once works without persistence; explicit bot/workspace persistence is safe and accurately labelled. | `server/approvals.test.ts` and provider/service tests cover rule safety and allow decisions. The deterministic browser smoke covers deny only, so browser evidence for the allow variants remains absent. | Partial | Founding Engineer + Test/Release Engineer | High |
 | Provider unavailable / turn failure | The user gets a concrete, actionable failure and can choose a valid recovery without silent failover. | `server/engine-unavailable-turns.test.ts` covers fake-driver service behavior. No visible browser assertion is in the focused smoke. | Partial | Founding Engineer | High |
 | Launch-token protection | API and SSE are inaccessible without the per-launch token and the desktop shell injects it only for the local server origin. | `server/auth.test.ts`, `electron/api-auth.test.ts`; focused smoke uses a unique harness token in browser headers. Packaged Electron injection is not exercised by this browser smoke. | Partial | Founding Engineer | High |
 | Backup and restore | A verified backup restores into an empty profile without secrets leaking or user data silently disappearing. | `server/db/backup.test.ts` covers verified archive/restore into isolated profiles. No packaged desktop/manual restore evidence is attached to DHV-8. | Partial | Founding Engineer + Test/Release Engineer | High |
@@ -64,22 +65,33 @@ corepack pnpm typecheck:smoke
 Exit code: 0
 ```
 
-Repeatability runs, each from a newly created harness home and browser context:
+Focused approval-only stabilization check:
+
+```text
+corepack pnpm exec playwright test e2e/fake-engine-smoke.spec.ts --workers=1 --reporter=line --grep "shows a fake approval"
+1 passed (3.1s); exit code 0
+```
+
+Repeatability runs, each scenario using a newly created harness home and browser
+context:
 
 ```text
 corepack pnpm test:smoke
 > vite build && playwright test e2e/fake-engine-smoke.spec.ts --workers=1 --reporter=line
-Run 1: build passed (2339 modules); 1 passed (2.4s); exit code 0
+Run 1: build passed (2339 modules); 3 passed (6.9s); exit code 0
 
 corepack pnpm test:smoke
 > vite build && playwright test e2e/fake-engine-smoke.spec.ts --workers=1 --reporter=line
-Run 2: build passed (2339 modules); 1 passed (2.3s); exit code 0
+Run 2 (after approval-card commit `063334c`): build passed (2339 modules);
+3 passed (6.8s); exit code 0
 ```
 
-The test has no fixed sleeps. Setup waits for the harness health endpoint; the
-journey waits on visible roles, placeholders, values, and rendered messages.
-Teardown closes the browser context, SSE recorder, server process tree, and
-best-effort removes the unique temporary home.
+The tests have no fixed sleeps. Setup waits for the harness health endpoint;
+the journeys wait on visible roles, placeholders, values, rendered messages,
+and persisted snapshots. The restart case stops and relaunches the real server
+on the same port/home before reloading the page. Teardown closes the browser
+context, SSE recorder, server process tree, and best-effort removes each unique
+temporary home.
 
 ## Stabilization findings and residual risks
 
@@ -92,21 +104,33 @@ best-effort removes the unique temporary home.
 - The first sandboxed build attempt failed with esbuild `Access is denied` while
   resolving `vite.config.ts`; the focused command passed when allowed to launch
   the local build, server, and browser processes.
+- During test stabilization, one run failed because the exact `Deny` role
+  selector did not account for the visible option prefix (`B Deny`), and the
+  next failed because a page-wide response count included both conversation and
+  sidebar preview. The final selectors use the accessible option suffix and
+  scope response counting to `main`; the two complete runs above then passed.
 - Both evidence runs passed on Node 22 but emitted the expected unsupported-engine
   warning. Release evidence still needs one Node 24 run, matching `package.json`
   and CI, before the runtime can be treated as supported.
 - The smoke is Chromium-only and uses the scripted fake engine. It proves the
   bounded UI/harness contract, not packaged desktop or production-provider
   readiness.
+- DHV-10 previously observed three Windows full-suite failures that were not
+  rerun or broadened into this focused issue: POSIX path assertions that do not
+  match Windows paths, temporary SQLite cleanup locks, and ACP closed-stdin
+  timing. They remain pre-existing full-suite risks, not DHV-13 smoke failures.
+- The approval smoke proves one deny path only. Browser coverage for allow-once,
+  explicit persistent allow scopes, failed-response retry, and an approval that
+  is still pending across restart remains open.
 
 ## Recommended follow-ups
 
 1. Founding Engineer: provide or confirm a narrow, non-production harness seam
    for a real browser SSE disconnect/reconnect so the lifecycle adapter can be
    replaced by transport-level evidence.
-2. Founding Engineer and Test/Release Engineer: add restart hydration and a
-   secret-free approval card scenario as separate thin slices; do not broaden
-   this smoke into a general E2E platform.
+2. Founding Engineer and Test/Release Engineer: decide whether browser evidence
+   for allow-once/persistent approval paths and pending-approval restart is
+   required for the next release; keep any addition as a separate thin slice.
 3. Test/Release Engineer: rerun `typecheck:smoke` and `test:smoke` on Node 24 and
    attach the result to the release candidate.
 4. Chief of Staff: confirm whether the provisional `High` gaps above block the
