@@ -20,6 +20,22 @@ function bot(over: Partial<Bot> & Pick<Bot, "id">): Bot {
   };
 }
 
+describe("connection lifecycle", () => {
+  it("distinguishes initial connection from a reconnect without forgetting prior success", () => {
+    const stillStarting = reducer(initialState, { type: "connected", value: false });
+    expect(stillStarting.connected).toBe(false);
+    expect(stillStarting.hasConnected).toBe(false);
+
+    const online = reducer(stillStarting, { type: "connected", value: true });
+    expect(online.connected).toBe(true);
+    expect(online.hasConnected).toBe(true);
+
+    const reconnecting = reducer(online, { type: "connected", value: false });
+    expect(reconnecting.connected).toBe(false);
+    expect(reconnecting.hasConnected).toBe(true);
+  });
+});
+
 describe("composer prompt queue (store path)", () => {
   it("enqueues while busy, then flushQueue drains FIFO once idle", () => {
     let state = reducer(initialState, { type: "hydrate", bots: [bot({ id: "bot-1", busy: true, state: "RUNNING" })] });

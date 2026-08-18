@@ -241,6 +241,8 @@ interface AppState {
   /** bots whose cloud computer is being provisioned */
   provisioning: Record<string, boolean>;
   connected: boolean;
+  /** True after the event stream has opened at least once this session. */
+  hasConnected: boolean;
   error: string | null;
   mascotMotion: {
     botId: string;
@@ -568,7 +570,11 @@ export function reducer(state: AppState, action: Action): AppState {
     case "setModel":
       return updateBot(state, action.botId, (b) => ({ ...b, modelSelection: action.selection }));
     case "connected":
-      return { ...state, connected: action.value };
+      return {
+        ...state,
+        connected: action.value,
+        hasConnected: state.hasConnected || action.value,
+      };
     case "error":
       return {
         ...(action.message && state.selectedId
@@ -714,6 +720,7 @@ export const initialState: AppState = {
   screens: {},
   provisioning: {},
   connected: false,
+  hasConnected: false,
   error: null,
   mascotMotion: null,
   queued: {},

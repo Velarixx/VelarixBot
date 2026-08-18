@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Loader2, Sparkles } from "lucide-react";
+import { Loader2, Sparkles, WifiOff } from "lucide-react";
 import { StoreProvider, useStore } from "@/state/store";
 import { Onboarding } from "@/components/Onboarding";
 import { onboardingComplete } from "@/lib/product";
@@ -25,6 +25,20 @@ function Shell() {
     <div className="flex h-full flex-col">
       {/* fixed-position popup, bottom-left — outside the layout flow */}
       <UpdateBanner />
+      {!state.connected && (state.bots.length > 0 || state.groups.length > 0) && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center justify-center gap-2 border-b border-warning/25 bg-warning/10 px-4 py-2 text-[12.5px] text-warning"
+        >
+          {state.hasConnected ? <WifiOff size={14} /> : <Loader2 size={14} className="animate-spin" />}
+          <span>
+            {state.hasConnected
+              ? "Connection lost. Reconnecting — drafts stay here until you can send."
+              : "Connecting to the bot server — drafts stay here until you can send."}
+          </span>
+        </div>
+      )}
       <div className="relative flex min-h-0 flex-1">
       <Sidebar />
       {group ? (

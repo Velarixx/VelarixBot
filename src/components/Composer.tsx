@@ -104,6 +104,9 @@ export function Composer({ bot }: { bot: Bot }) {
   };
 
   const send = () => {
+    // Keep the local draft intact while the SSE/API connection is down.
+    // Clearing before a failed POST makes recovery feel like data loss.
+    if (!state.connected) return;
     const payload = sendPayload(text, chips);
     const mentionSkills = skillChips.map((chip) => chip.id);
     const routineSend = routineSendFromText(payload.text, state.routines, state.bots);
@@ -466,7 +469,13 @@ export function Composer({ bot }: { bot: Bot }) {
             if (e.key === "Escape" && recording) setRecording(false);
           }}
           placeholder={
-            recording ? "Listening…" : bot.busy ? `Queue a follow-up for ${bot.name}` : `Message ${bot.name}`
+            recording
+              ? "Listening…"
+              : !state.connected
+                ? `Draft a message for ${bot.name} — reconnecting to send`
+                : bot.busy
+                  ? `Queue a follow-up for ${bot.name}`
+                  : `Message ${bot.name}`
           }
           className="w-full bg-transparent text-[15px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
