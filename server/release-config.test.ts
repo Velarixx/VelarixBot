@@ -46,6 +46,25 @@ describe("internal desktop releases", () => {
     expect(workflow).toContain('CSC_IDENTITY_AUTO_DISCOVERY: "false"');
   });
 
+  it("pre-creates the release tag at github.sha and does not pass --target", () => {
+    const workflow = read(".github/workflows/release.yml");
+    const release = workflow.slice(workflow.indexOf("  release:"));
+    const commands = release
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+    expect(release).toContain("contents: write");
+    expect(release).not.toMatch(/workflows:\s*write/);
+    expect(commands).not.toMatch(/--target/);
+    expect(release).toContain('gh api --method POST "repos/${{ github.repository }}/git/refs"');
+    expect(release).toContain('ref="refs/tags/${tag}"');
+    expect(release).toContain('sha="${sha}"');
+    expect(release).toContain('tag="v${{ inputs.version }}"');
+    expect(release).toContain('sha="${{ github.sha }}"');
+    expect(release).toContain("gh release create");
+    expect(release).toContain("GH_TOKEN: ${{ github.token }}");
+  });
+
   it("checks GitHub Releases from the packaged updater without baking a token", () => {
     const updater = read("electron/updater.mjs");
     const feed = read("electron/update-feed.mjs");
