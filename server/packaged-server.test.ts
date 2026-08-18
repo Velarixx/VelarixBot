@@ -51,6 +51,10 @@ describe("packaged server entry", () => {
     const main = read("electron/main.mjs");
     expect(packagedServerForkFromMain(main)).toBe(RESOURCES_SERVER_ENTRY_REL);
     expect(MAIN_FORK_RE.test(main)).toBe(true);
+    expect(main).toContain("attachToRunningService");
+    expect(main).toContain("shouldKillServerOnBeforeQuit");
+    expect(main).toContain("service-auth.json");
+    expect(main).toMatch(/isService \? mintApiToken\(\) : ""/);
     const builder = read("electron-builder.yml");
     expect(builder).toMatch(/from:\s*dist-server/);
     expect(builder).toMatch(/to:\s*server/);

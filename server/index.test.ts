@@ -1115,7 +1115,7 @@ describe("harness HTTP API", () => {
     );
     expect(github.status).toBe(200);
     expect(github.body.text).toMatch(/listener github/);
-    expect(github.body.text).toMatch(/runs while VelarixBot is open/);
+    expect(github.body.text).toMatch(/runs while the local harness service is running/);
     const listedListeners = await api("GET", "/api/routines");
     const prs = listedListeners.body.routines.find((r: { name: string }) => r.name === "PRs");
     expect(prs.schedule).toMatchObject({
