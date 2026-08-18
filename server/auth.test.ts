@@ -113,7 +113,7 @@ describe("host and origin hardening", () => {
     expect(security).toMatch(/Authorization: Bearer/);
     expect(security).toMatch(/service-auth\.json/);
     expect(security).not.toMatch(/no authentication by design/);
-    expect(security).toMatch(/phone or other host/);
+    expect(security).toMatch(/phone\s+or other host/);
     expect(security).toMatch(/out of scope/);
     for (const tree of ["ios", "android", "mobile", "companion", "tailscale", "ngrok", "cloudflared"]) {
       expect(existsSync(join(ROOT, tree))).toBe(false);
