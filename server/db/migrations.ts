@@ -300,6 +300,29 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // SaaS computer/workspace ownership is intentionally separate from the
+    // legacy bot-keyed desktop cache. There is no safe account-claim rule for
+    // existing computer_bindings rows, so this migration creates an empty
+    // user-keyed seam and leaves every legacy row untouched.
+    version: 10,
+    name: "user-workspace-bindings",
+    up(db) {
+      db.exec(`
+        CREATE TABLE user_workspace_bindings(
+          user_id TEXT PRIMARY KEY NOT NULL
+            REFERENCES users(id) ON DELETE RESTRICT,
+          provider_kind TEXT NOT NULL
+            CHECK(typeof(provider_kind) = 'text' AND length(provider_kind) > 0),
+          machine_id TEXT NOT NULL
+            CHECK(typeof(machine_id) = 'text' AND length(machine_id) > 0),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(provider_kind, machine_id)
+        );
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

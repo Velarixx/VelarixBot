@@ -26,6 +26,7 @@ const MANDATED_TABLES = [
   "groups",
   "users",
   "sessions",
+  "user_workspace_bindings",
 ];
 
 describe("database + migrations", () => {
@@ -100,7 +101,7 @@ describe("database + migrations", () => {
       ownerId,
     );
 
-    expect(migrate(db)).toEqual(["thread-user-ownership", "group-user-ownership"]);
+    expect(migrate(db)).toEqual(["thread-user-ownership", "group-user-ownership", "user-workspace-bindings"]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM bots WHERE id = ?").get("legacy-bot")).toEqual({
       owner_id: null,
     });
@@ -145,7 +146,7 @@ describe("database + migrations", () => {
       }),
     );
 
-    expect(migrate(db)).toEqual(["group-user-ownership"]);
+    expect(migrate(db)).toEqual(["group-user-ownership", "user-workspace-bindings"]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM groups WHERE id = ?").get("legacy-group")).toEqual({
       owner_id: null,
     });
@@ -158,6 +159,26 @@ describe("database + migrations", () => {
         .all()
         .map(({ name }) => name),
     ).toEqual(["groups_owner_seq", "groups_owner_thread"]);
+    expect(migrate(db)).toEqual([]);
+  });
+
+  it("adds an empty user workspace seam without claiming legacy desktop bindings", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    db = new (loadBetterSqlite3())(join(DATA_DIR, "pre-user-workspace.db"));
+    migrate(db, MIGRATIONS.slice(0, 9));
+    db.prepare(
+      "INSERT INTO computer_bindings(bot_id, box_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    ).run("legacy-bot", "legacy-machine", 1_000, 2_000);
+
+    expect(migrate(db)).toEqual(["user-workspace-bindings"]);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM user_workspace_bindings").get()?.n).toBe(0);
+    expect(
+      db
+        .prepare<{ bot_id: string; box_id: string; created_at: number; updated_at: number }>(
+          "SELECT bot_id, box_id, created_at, updated_at FROM computer_bindings",
+        )
+        .all(),
+    ).toEqual([{ bot_id: "legacy-bot", box_id: "legacy-machine", created_at: 1_000, updated_at: 2_000 }]);
     expect(migrate(db)).toEqual([]);
   });
 

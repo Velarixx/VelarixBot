@@ -11,6 +11,10 @@ import { createMessagesRepository, type MessagesRepository } from "./messages.ts
 import { createMemoryRowsRepository } from "./memory-rows.ts";
 import { createRoutinesRepository, type RoutinesRepository } from "./routines.ts";
 import { createSnapshotsRepository, type SnapshotsRepository } from "./snapshots.ts";
+import {
+  createUserWorkspaceBindingsRepository,
+  type UserWorkspaceBindingsRepository,
+} from "./user-workspace-bindings.ts";
 import type { MemoryRowsStore } from "../memory.ts";
 
 export interface Repositories {
@@ -21,6 +25,7 @@ export interface Repositories {
   routines: RoutinesRepository;
   eventLog: EventLogRepository;
   computerBindings: ComputerBindingsRepository;
+  userWorkspaceBindings: UserWorkspaceBindingsRepository;
   snapshots: SnapshotsRepository;
   memoryRows: MemoryRowsStore;
   /** Delete a bot and everything hanging off it in ONE transaction:
@@ -38,6 +43,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
   const routines = createRoutinesRepository(db);
   const eventLog = createEventLogRepository(db);
   const computerBindings = createComputerBindingsRepository(db);
+  const userWorkspaceBindings = createUserWorkspaceBindingsRepository(db);
   const snapshots = createSnapshotsRepository(db);
   const memoryRows = createMemoryRowsRepository(db);
   const deleteBotRow = db.prepare("DELETE FROM bots WHERE id = ?");
@@ -61,6 +67,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     routines,
     eventLog,
     computerBindings,
+    userWorkspaceBindings,
     snapshots,
     memoryRows,
     deleteBotCascade(botId) {
