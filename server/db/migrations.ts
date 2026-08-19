@@ -285,6 +285,21 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Groups need the same explicit ownership seam as bots before their
+    // threads can be exposed to tenant-scoped message APIs. Legacy desktop
+    // groups stay unowned; account claiming is a separate product decision.
+    version: 9,
+    name: "group-user-ownership",
+    up(db) {
+      db.exec(`
+        ALTER TABLE groups ADD COLUMN owner_id TEXT
+          REFERENCES users(id) ON DELETE RESTRICT;
+        CREATE INDEX groups_owner_seq ON groups(owner_id, seq DESC);
+        CREATE INDEX groups_owner_thread ON groups(owner_id, thread_id);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

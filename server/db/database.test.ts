@@ -100,7 +100,7 @@ describe("database + migrations", () => {
       ownerId,
     );
 
-    expect(migrate(db)).toEqual(["thread-user-ownership"]);
+    expect(migrate(db)).toEqual(["thread-user-ownership", "group-user-ownership"]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM bots WHERE id = ?").get("legacy-bot")).toEqual({
       owner_id: null,
     });
@@ -124,6 +124,41 @@ describe("database + migrations", () => {
     expect(migrate(db)).toEqual([]);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()?.n).toBe(2);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()?.n).toBe(4);
+  });
+
+  it("adds group ownership without claiming legacy groups or their threads", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    db = new (loadBetterSqlite3())(join(DATA_DIR, "pre-group-ownership.db"));
+    migrate(db, MIGRATIONS.slice(0, 8));
+    db.prepare("INSERT INTO threads(id, bot_id, created_at) VALUES (?, NULL, ?)").run("legacy-group-thread", 1_000);
+    db.prepare("INSERT INTO groups(id, thread_id, created_at, data) VALUES (?, ?, ?, ?)").run(
+      "legacy-group",
+      "legacy-group-thread",
+      1_000,
+      JSON.stringify({
+        id: "legacy-group",
+        threadId: "legacy-group-thread",
+        name: "Legacy",
+        memberIds: [],
+        unread: false,
+        createdAt: 1_000,
+      }),
+    );
+
+    expect(migrate(db)).toEqual(["group-user-ownership"]);
+    expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM groups WHERE id = ?").get("legacy-group")).toEqual({
+      owner_id: null,
+    });
+    expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM threads WHERE id = ?").get("legacy-group-thread")).toEqual({
+      owner_id: null,
+    });
+    expect(
+      db
+        .prepare<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'groups_owner_%' ORDER BY name")
+        .all()
+        .map(({ name }) => name),
+    ).toEqual(["groups_owner_seq", "groups_owner_thread"]);
+    expect(migrate(db)).toEqual([]);
   });
 
   it("backfills legacy routine_runs rows: open rows close as interrupted", () => {
