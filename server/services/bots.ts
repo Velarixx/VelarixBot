@@ -18,6 +18,7 @@ import { botWorkspaceDir, type AppConfig } from "../config.ts";
 import { deleteBlob, readBlob } from "../db/blobs.ts";
 import { newId, type ModelSelection } from "../contracts.ts";
 import type { Repositories } from "../repositories/index.ts";
+import type { TenantBotRecord } from "../repositories/bots.ts";
 import type { TenantMessagesRepository } from "../repositories/messages.ts";
 import { normalizeBotColor } from "../engine-setup.ts";
 import {
@@ -40,6 +41,7 @@ import {
 /** Wire-safe bot: allowlist of BotRecord fields plus transcript. Never
  * resumeCursors (session tokens) or any other non-public field. */
 export type PublicBot = Omit<BotRecord, "resumeCursors"> & { messages: Message[]; hasMore?: boolean };
+export type TenantPublicBot = PublicBot & { publicHandle: string };
 
 /** `messages` omitted = full transcript (desktop back-compat). Present =
  * newest n, slim screens, and `hasMore`. */
@@ -146,30 +148,39 @@ export interface BotsService {
   readAvatar(id: string, hash?: string | null): { bytes: Buffer; mime: string } | null;
 }
 
+function hydrateTenantBot(
+  messages: MessageReads,
+  bot: TenantBotRecord,
+  hydrate?: HydrateMessages,
+): TenantPublicBot {
+  return { ...hydrateBot(messages, bot, hydrate), publicHandle: bot.publicHandle };
+}
+
 /**
  * Owner-scoped application API. Process-wide maintenance, recovery, resume
  * cursors, usage accounting, and raw repositories are deliberately absent.
  */
 export interface OwnerBotsService {
-  bots(): BotRecord[];
+  bots(): TenantBotRecord[];
   count(): number;
-  bot(id: string): BotRecord | null;
-  botByThread(threadId: string): BotRecord | null;
-  publicBot(id: string, hydrate?: HydrateMessages): PublicBot | null;
-  publicBots(hydrate?: HydrateMessages): PublicBot[];
+  bot(id: string): TenantBotRecord | null;
+  botByThread(threadId: string): TenantBotRecord | null;
+  botByPublicHandle(publicHandle: string): TenantBotRecord | null;
+  publicBot(id: string, hydrate?: HydrateMessages): TenantPublicBot | null;
+  publicBots(hydrate?: HydrateMessages): TenantPublicBot[];
   pageMessages(threadId: string, opts: { limit: number; before?: string | null }):
     | { ok: true; messages: Message[]; hasMore: boolean }
     | { ok: false; status: 404; error: string };
   readMessageImage(threadId: string, messageId: string):
     | { ok: true; bytes: Buffer; mime: string }
     | { ok: false; status: 404; error: string };
-  createBot(): BotRecord;
+  createBot(): TenantBotRecord;
   /** Count, create, and onboarding inserts share one synchronous SQLite
    * transaction so concurrent HTTP requests cannot race past the limit. */
   createBotWithinQuota(limit: number):
-    | { ok: true; bot: BotRecord; onboardingMessages: Message[] }
+    | { ok: true; bot: TenantBotRecord; onboardingMessages: Message[] }
     | { ok: false; reason: "quota" };
-  patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null;
+  patchBot(id: string, patch: Partial<BotRecord>): TenantBotRecord | null;
   deleteBot(id: string): boolean;
   messagesFor(threadId: string): Message[];
   appendMessage(threadId: string, message: Omit<Message, "id" | "at"> & { at?: number }): Message;
@@ -513,7 +524,7 @@ function createOwnerBotsService(
   const ownsConversation = (threadId: string): boolean =>
     bots.getByThread(threadId) !== null || groups.getByThread(threadId) !== null;
 
-  const insertDefaultBot = (): { bot: BotRecord; onboardingMessages: Message[] } => {
+  const insertDefaultBot = (): { bot: TenantBotRecord; onboardingMessages: Message[] } => {
     const id = newId();
     const face = seedAvatar({ botId: id, nonce: 0 });
     const bot: BotRecord = {
@@ -535,7 +546,7 @@ function createOwnerBotsService(
       usage: zeroUsage(),
       createdAt: Date.now(),
     };
-    bots.insert(bot);
+    const ownedBot = bots.insert(bot);
     const onboardingMessages = [
       messages.append(bot.threadId, {
         role: "bot",
@@ -544,7 +555,7 @@ function createOwnerBotsService(
       }),
       messages.append(bot.threadId, { role: "bot", kind: "options", card: onboardingCard() }),
     ];
-    return { bot, onboardingMessages };
+    return { bot: ownedBot, onboardingMessages };
   };
 
   // This is deliberately service-local: only the owner-bound facade can
@@ -562,12 +573,13 @@ function createOwnerBotsService(
     count: () => bots.count(),
     bot: (id) => bots.get(id),
     botByThread: (threadId) => bots.getByThread(threadId),
+    botByPublicHandle: (publicHandle) => bots.getByPublicHandle(publicHandle),
     publicBot(id, hydrate) {
       const bot = bots.get(id);
-      return bot ? hydrateBot(messages, bot, hydrate) : null;
+      return bot ? hydrateTenantBot(messages, bot, hydrate) : null;
     },
     publicBots(hydrate) {
-      return bots.list().map((bot) => hydrateBot(messages, bot, hydrate));
+      return bots.list().map((bot) => hydrateTenantBot(messages, bot, hydrate));
     },
     pageMessages(threadId, pageOpts) {
       if (!ownsConversation(threadId)) {
@@ -588,7 +600,8 @@ function createOwnerBotsService(
     createBot: createOwnedBot,
     createBotWithinQuota: createOwnedBotWithinQuota,
     patchBot(id, patch) {
-      return validatedMutations.patchBot(id, patch);
+      const patched = validatedMutations.patchBot(id, patch);
+      return patched ? bots.get(id) : null;
     },
     deleteBot(id) {
       const bot = bots.get(id);

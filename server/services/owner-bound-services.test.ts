@@ -6,6 +6,8 @@ import { putBlob } from "../db/blobs.ts";
 import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { IdentitySessions } from "../identity.ts";
+import { PUBLIC_BOT_HANDLE_LENGTH, PUBLIC_BOT_HANDLE_PATTERN } from "../public-bot-handle.ts";
+import { createBotsRepository } from "../repositories/bots.ts";
 import { createRepositories, type Repositories } from "../repositories/index.ts";
 import { createBotsService, type BotsService, type OwnerBotsService } from "./bots.ts";
 import { createGroupsService, type GroupsService, type OwnerGroupsService } from "./groups.ts";
@@ -65,13 +67,19 @@ describe("owner-bound bot and group services", () => {
     expect(ownerABots.bots().map((bot) => bot.id)).toEqual([botA.id]);
     expect(ownerABots.bot(botB.id)).toBeNull();
     expect(ownerABots.bot(legacy.id)).toBeNull();
+    expect(botA.publicHandle).toMatch(PUBLIC_BOT_HANDLE_PATTERN);
+    expect(ownerABots.botByPublicHandle(botA.publicHandle)?.id).toBe(botA.id);
+    expect(ownerBBots.botByPublicHandle(botA.publicHandle)).toBeNull();
+    expect(ownerABots.botByPublicHandle(botB.publicHandle)).toBeNull();
+    expect(ownerABots.botByPublicHandle("malformed")).toBeNull();
     expect(ownerABots.botByThread(botB.threadId)).toBeNull();
     expect(ownerABots.botByThread(legacy.threadId)).toBeNull();
     expect(ownerABots.publicBot(botB.id, { messages: 1 })).toBeNull();
     expect(ownerABots.publicBot(legacy.id)).toBeNull();
     expect(ownerABots.publicBots({ messages: 1 })).toMatchObject([
-      { id: botA.id, messages: [{ text: "a-private" }], hasMore: true },
+      { id: botA.id, publicHandle: botA.publicHandle, messages: [{ text: "a-private" }], hasMore: true },
     ]);
+    expect(ownerABots.patchBot(botA.id, { name: "renamed" })?.publicHandle).toBe(botA.publicHandle);
     expect(ownerABots.pageMessages(botB.threadId, { limit: 20 })).toMatchObject({ ok: false, status: 404 });
     expect(ownerABots.pageMessages(legacy.threadId, { limit: 20 })).toMatchObject({ ok: false, status: 404 });
     expect(JSON.stringify(ownerABots.publicBots())).not.toContain("b-private");
@@ -158,6 +166,30 @@ describe("owner-bound bot and group services", () => {
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()?.n).toBe(0);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()?.n).toBe(0);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()?.n).toBe(0);
+  });
+
+  it("reports a handle collision without partial bot, thread, or onboarding writes", () => {
+    const ownerId = db.prepare<{ id: string }>("SELECT id FROM users WHERE github_id = 101").get()!.id;
+    const fixedHandle = "C".repeat(PUBLIC_BOT_HANDLE_LENGTH);
+    const collisionRepos: Repositories = {
+      ...repos,
+      bots: createBotsRepository(db, { generatePublicHandle: () => fixedHandle }),
+    };
+    const collisionService = createBotsService({ repos: collisionRepos, defaultSelection: selection });
+    const first = collisionService.forOwner(ownerId).createBot();
+    expect(first.publicHandle).toBe(fixedHandle);
+    expect(collisionService.forOwner(ownerId).deleteBot(first.id)).toBe(true);
+    const before = {
+      bots: db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()!.n,
+      threads: db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()!.n,
+      messages: db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()!.n,
+    };
+
+    expect(() => collisionService.forOwner(ownerId).createBotWithinQuota(5)).toThrow(/UNIQUE/i);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()!.n).toBe(before.bots);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()!.n).toBe(before.threads);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()!.n).toBe(before.messages);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM public_bot_handles").get()!.n).toBe(1);
   });
 
   it("isolates group reads/hydration and rejects cross-owner membership injection", () => {

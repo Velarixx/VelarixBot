@@ -6,6 +6,8 @@ import type { InternalUserPrincipal } from "../auth.ts";
 import { openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { IdentitySessions } from "../identity.ts";
+import { PUBLIC_BOT_HANDLE_LENGTH, PUBLIC_BOT_HANDLE_PATTERN } from "../public-bot-handle.ts";
+import { createBotsRepository } from "../repositories/bots.ts";
 import { createRepositories, type Repositories } from "../repositories/index.ts";
 import { createBotsService, type BotsService } from "../services/bots.ts";
 import type { RouteHandler } from "./context.ts";
@@ -99,6 +101,8 @@ describe("SaaS bot catalog route", () => {
     expect(a.status).toBe(200);
     expect(a.body.bots.map((bot: { name: string }) => bot.name)).toEqual(["Alpha"]);
     expect(b.body.bots.map((bot: { name: string }) => bot.name)).toEqual(["Beta"]);
+    expect(a.body.bots[0].publicHandle).toBe(botA.publicHandle);
+    expect(b.body.bots[0].publicHandle).toBe(botB.publicHandle);
     expect(JSON.stringify([a.body, b.body])).not.toMatch(/Legacy Global/);
     expect(a.headers["cache-control"]).toBe("private, no-store");
   });
@@ -163,7 +167,7 @@ describe("SaaS bot catalog route", () => {
     expect(response.status).toBe(200);
     expect(response.body.bots).toHaveLength(1);
     expect(Object.keys(response.body.bots[0]).sort()).toEqual(
-      ["color", "description", "hasMore", "messages", "name", "title"].sort(),
+      ["color", "description", "hasMore", "messages", "name", "publicHandle", "title"].sort(),
     );
     expect(response.body.bots[0]).toMatchObject({
       name: "Safe Catalog Name",
@@ -208,9 +212,10 @@ describe("SaaS bot catalog route", () => {
     expect(response.headers["cache-control"]).toBe("private, no-store");
     expect(Object.keys(response.body)).toEqual(["bot"]);
     expect(Object.keys(response.body.bot).sort()).toEqual(
-      ["color", "description", "hasMore", "messages", "name", "title"].sort(),
+      ["color", "description", "hasMore", "messages", "name", "publicHandle", "title"].sort(),
     );
     expect(response.body.bot).toMatchObject({
+      publicHandle: expect.stringMatching(PUBLIC_BOT_HANDLE_PATTERN),
       name: "New Bot",
       title: "",
       description: "",
@@ -244,6 +249,7 @@ describe("SaaS bot catalog route", () => {
     ["scalar", "true"],
     ["non-exact whitespace", "{ }"],
     ["semantic field", '{"name":"caller-controlled"}'],
+    ["caller-supplied handle", '{"publicHandle":"caller-controlled"}'],
     ["oversized", " ".repeat(SAAS_BOT_CREATE_BODY_MAX_BYTES + 1)],
   ])("rejects %s create payloads generically without writes", async (_label, rawBody) => {
     const before = db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()?.n;
@@ -311,5 +317,35 @@ describe("SaaS bot catalog route", () => {
     );
     expect(writeFailure).toMatchObject({ status: 500, body: { error: "internal server error" } });
     expect(JSON.stringify(writeFailure.body)).not.toMatch(/provider|workspace|database|secret/i);
+  });
+
+  it("converts a retained-handle collision to a generic error with no partial writes", async () => {
+    const fixedHandle = "D".repeat(PUBLIC_BOT_HANDLE_LENGTH);
+    const collisionRepos: Repositories = {
+      ...repos,
+      bots: createBotsRepository(db, { generatePublicHandle: () => fixedHandle }),
+    };
+    const collisionBots = createBotsService({ repos: collisionRepos, defaultSelection: selection });
+    const first = collisionBots.forOwner(ownerA.user.id).createBot();
+    expect(collisionBots.forOwner(ownerA.user.id).deleteBot(first.id)).toBe(true);
+    const before = {
+      bots: db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()!.n,
+      threads: db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()!.n,
+      messages: db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()!.n,
+    };
+
+    const response = await invokeRoute(
+      createSaasBotCatalogRoutes({ bots: collisionBots }),
+      "/api/bots",
+      ownerA,
+      {},
+      "POST",
+      "{}",
+    );
+    expect(response).toMatchObject({ status: 500, body: { error: "internal server error" } });
+    expect(JSON.stringify(response.body)).not.toMatch(/unique|constraint|handle|database/i);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()!.n).toBe(before.bots);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()!.n).toBe(before.threads);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()!.n).toBe(before.messages);
   });
 });

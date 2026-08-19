@@ -3,6 +3,10 @@
 // suite is idempotent — re-running applies nothing and rewrites nothing.
 // Data migrations (the legacy-JSON import) record themselves in the same
 // table under version 0 so a rerun is a no-op without needing extra tables.
+import {
+  generatePublicBotHandle,
+  PUBLIC_BOT_HANDLE_GENERATION_ATTEMPTS,
+} from "../public-bot-handle.ts";
 import type { SqliteDatabase } from "./sqlite-native.ts";
 
 export interface Migration {
@@ -554,6 +558,89 @@ export const MIGRATIONS: Migration[] = [
         );
         CREATE INDEX desktop_access_grants_owner_expiry
           ON desktop_access_grants(owner_id, expires_at, token_digest);
+      `);
+    },
+  },
+  {
+    // Public handles are opaque routing identifiers, never authorization.
+    // The retained ledger makes a handle unavailable forever even after its
+    // bot is deleted. Legacy desktop rows stay NULL; only already-owned rows
+    // are backfilled.
+    version: 14,
+    name: "tenant-bot-public-handles",
+    up(db) {
+      db.exec(`
+        CREATE TABLE public_bot_handles(
+          handle TEXT PRIMARY KEY NOT NULL
+            CHECK(length(handle) = 22 AND handle NOT GLOB '*[^A-Za-z0-9_-]*'),
+          bot_id TEXT NOT NULL UNIQUE,
+          created_at INTEGER NOT NULL
+            CHECK(typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 9007199254740991)
+        );
+        ALTER TABLE bots ADD COLUMN public_handle TEXT
+          REFERENCES public_bot_handles(handle) ON DELETE RESTRICT;
+        CREATE UNIQUE INDEX bots_public_handle
+          ON bots(public_handle) WHERE public_handle IS NOT NULL;
+      `);
+
+      const owned = db.prepare<{ id: string; created_at: number }>(
+        "SELECT id, created_at FROM bots WHERE owner_id IS NOT NULL AND public_handle IS NULL ORDER BY seq",
+      ).all();
+      const reserve = db.prepare(
+        "INSERT INTO public_bot_handles(handle, bot_id, created_at) VALUES (?, ?, ?)",
+      );
+      const isReserved = db.prepare("SELECT 1 FROM public_bot_handles WHERE handle = ?");
+      const assign = db.prepare("UPDATE bots SET public_handle = ? WHERE id = ?");
+      for (const bot of owned) {
+        let handle: string | null = null;
+        for (let attempt = 0; attempt < PUBLIC_BOT_HANDLE_GENERATION_ATTEMPTS; attempt++) {
+          const candidate = generatePublicBotHandle();
+          if (!isReserved.get(candidate)) {
+            handle = candidate;
+            break;
+          }
+        }
+        // Exhaustion fails the enclosing migration transaction instead of
+        // producing a partial backfill. A rerun then starts clean.
+        if (!handle) throw new Error("could not reserve a unique public bot handle");
+        reserve.run(handle, bot.id, bot.created_at);
+        assign.run(handle, bot.id);
+      }
+
+      db.exec(`
+        CREATE TRIGGER owned_bot_public_handle_required_insert
+          BEFORE INSERT ON bots
+          WHEN NEW.owner_id IS NOT NULL AND NEW.public_handle IS NULL
+          BEGIN
+            SELECT RAISE(ABORT, 'owned bot public handle is required');
+          END;
+        CREATE TRIGGER owned_bot_public_handle_required_update
+          BEFORE UPDATE OF owner_id, public_handle ON bots
+          WHEN NEW.owner_id IS NOT NULL AND NEW.public_handle IS NULL
+          BEGIN
+            SELECT RAISE(ABORT, 'owned bot public handle is required');
+          END;
+        CREATE TRIGGER legacy_bot_public_handle_forbidden_insert
+          BEFORE INSERT ON bots
+          WHEN NEW.owner_id IS NULL AND NEW.public_handle IS NOT NULL
+          BEGIN
+            SELECT RAISE(ABORT, 'legacy bot public handle is forbidden');
+          END;
+        CREATE TRIGGER bot_public_handle_assignment_matches_insert
+          BEFORE INSERT ON bots
+          WHEN NEW.public_handle IS NOT NULL AND NOT EXISTS(
+            SELECT 1 FROM public_bot_handles h
+            WHERE h.handle = NEW.public_handle AND h.bot_id = NEW.id
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'bot public handle reservation mismatch');
+          END;
+        CREATE TRIGGER bot_public_handle_immutable
+          BEFORE UPDATE OF public_handle ON bots
+          WHEN OLD.public_handle IS NOT NEW.public_handle
+          BEGIN
+            SELECT RAISE(ABORT, 'bot public handle is immutable');
+          END;
       `);
     },
   },

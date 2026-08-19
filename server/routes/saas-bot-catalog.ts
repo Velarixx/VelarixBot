@@ -4,7 +4,7 @@
 // state, usage, cursors, or any other tenant-internal relationship data.
 import type { IncomingMessage } from "node:http";
 
-import type { BotsService, PublicBot } from "../services/bots.ts";
+import type { BotsService, PublicBot, TenantPublicBot } from "../services/bots.ts";
 import type { Message } from "../store.ts";
 import { json, type RouteHandler } from "./context.ts";
 
@@ -20,6 +20,7 @@ export interface SaasBotCatalogMessage {
 }
 
 export interface SaasBotCatalogItem {
+  publicHandle: string;
   name: string;
   title: string;
   description: string;
@@ -48,10 +49,14 @@ function catalogMessage(message: Message): SaasBotCatalogMessage {
   };
 }
 
-type CatalogSource = Pick<PublicBot, "name" | "title" | "description" | "color" | "messages" | "hasMore">;
+type CatalogSource = Pick<
+  TenantPublicBot,
+  "publicHandle" | "name" | "title" | "description" | "color" | "messages" | "hasMore"
+>;
 
 function catalogItem(bot: CatalogSource): SaasBotCatalogItem {
   return {
+    publicHandle: bot.publicHandle,
     name: bot.name,
     title: bot.title,
     description: bot.description,

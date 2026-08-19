@@ -8,6 +8,12 @@ import { DATA_DIR } from "../config.ts";
 import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { IdentitySessions } from "../identity.ts";
+import {
+  PUBLIC_BOT_HANDLE_ENTROPY_BITS,
+  PUBLIC_BOT_HANDLE_LENGTH,
+  PUBLIC_BOT_HANDLE_PATTERN,
+  generatePublicBotHandle,
+} from "../public-bot-handle.ts";
 import { zeroUsage, type BotRecord } from "../store.ts";
 import { createBotsRepository } from "./bots.ts";
 import { createRepositories } from "./index.ts";
@@ -92,20 +98,31 @@ describe("bots repository", () => {
     expect(bots.recoverInterrupted()).toBe(0); // idempotent
   });
 
+  it("defines a bounded URL-safe handle with at least 128 bits of entropy", () => {
+    const handle = generatePublicBotHandle();
+    expect(PUBLIC_BOT_HANDLE_ENTROPY_BITS).toBeGreaterThanOrEqual(128);
+    expect(handle).toHaveLength(PUBLIC_BOT_HANDLE_LENGTH);
+    expect(handle).toMatch(PUBLIC_BOT_HANDLE_PATTERN);
+  });
+
   it("isolates every tenant-scoped lookup and update from other owners and legacy rows", () => {
     const identity = new IdentitySessions(db);
     const userA = identity.upsertGithubIdentity({ githubId: 101, login: "tenant-a" }, 1_000);
     const userB = identity.upsertGithubIdentity({ githubId: 202, login: "tenant-b" }, 1_000);
-    const bots = createBotsRepository(db);
+    const generatedHandles = ["B".repeat(22), "C".repeat(22), "D".repeat(22)];
+    const bots = createBotsRepository(db, { generatePublicHandle: () => generatedHandles.shift()! });
     const legacy = makeBot({ name: "Legacy", createdAt: 1_000 });
     const botA = makeBot({ name: "A", createdAt: 2_000 });
     const botASecond = makeBot({ name: "A second", createdAt: 3_000 });
     const botB = makeBot({ name: "B", createdAt: 4_000 });
 
     bots.insert(legacy);
-    bots.forOwner(userA.id).insert(botA);
-    bots.forOwner(userA.id).insert(botASecond);
-    bots.forOwner(userB.id).insert(botB);
+    const insertedA = bots.forOwner(userA.id).insert(botA);
+    const insertedASecond = bots.forOwner(userA.id).insert(botASecond);
+    const insertedB = bots.forOwner(userB.id).insert(botB);
+
+    expect(new Set([insertedA.publicHandle, insertedASecond.publicHandle, insertedB.publicHandle]).size).toBe(3);
+    expect(insertedA.publicHandle).toMatch(PUBLIC_BOT_HANDLE_PATTERN);
 
     expect(
       db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM threads WHERE id = ?").get(botA.threadId),
@@ -125,6 +142,10 @@ describe("bots repository", () => {
     expect(tenantB.count()).toBe(1);
     expect(tenantA.get(botA.id)?.name).toBe("A");
     expect(tenantA.getByThread(botA.threadId)?.id).toBe(botA.id);
+    expect(tenantA.getByPublicHandle(insertedA.publicHandle)?.id).toBe(botA.id);
+    expect(tenantB.getByPublicHandle(insertedA.publicHandle)).toBeNull();
+    expect(tenantA.getByPublicHandle(insertedB.publicHandle)).toBeNull();
+    expect(tenantA.getByPublicHandle("malformed")).toBeNull();
     expect(tenantA.get(botB.id)).toBeNull();
     expect(tenantA.getByThread(botB.threadId)).toBeNull();
     expect(tenantA.get(legacy.id)).toBeNull();
@@ -134,13 +155,43 @@ describe("bots repository", () => {
     expect(tenantA.get(botA.id)?.name).toBe("A");
     expect(tenantB.update({ ...botB, threadId: botA.threadId, name: "thread collision" })).toBe(false);
     expect(tenantB.get(botB.id)).toMatchObject({ name: "B", threadId: botB.threadId });
-    expect(tenantA.update({ ...botA, name: "A updated" })).toBe(true);
+    expect(tenantA.update({ ...insertedA, name: "A updated" })).toBe(true);
     expect(tenantA.get(botA.id)?.name).toBe("A updated");
+    expect(db.prepare<{ data: string }>("SELECT data FROM bots WHERE id = ?").get(botA.id)?.data)
+      .not.toContain("publicHandle");
 
     // The explicitly unscoped desktop API remains backward-compatible and
     // visible as such; it is not evidence of tenant safety.
     expect(bots.count()).toBe(4);
     expect(bots.get(legacy.id)?.name).toBe("Legacy");
+    expect(db.prepare<{ public_handle: string | null }>("SELECT public_handle FROM bots WHERE id = ?").get(legacy.id))
+      .toEqual({ public_handle: null });
+  });
+
+  it("persists an owned handle across reopen", () => {
+    const identity = new IdentitySessions(db);
+    const owner = identity.upsertGithubIdentity({ githubId: 250, login: "stable-owner" }, 1_000);
+    const inserted = createBotsRepository(db).forOwner(owner.id).insert(makeBot());
+    db.close();
+    db = openDatabase(defaultDbPath());
+    expect(createBotsRepository(db).forOwner(owner.id).get(inserted.id)?.publicHandle).toBe(inserted.publicHandle);
+  });
+
+  it("never reuses a reserved handle and rolls back a colliding owned insert", () => {
+    const identity = new IdentitySessions(db);
+    const owner = identity.upsertGithubIdentity({ githubId: 251, login: "handle-collision" }, 1_000);
+    const fixedHandle = "A".repeat(PUBLIC_BOT_HANDLE_LENGTH);
+    const bots = createBotsRepository(db, { generatePublicHandle: () => fixedHandle });
+    const first = bots.forOwner(owner.id).insert(makeBot());
+    expect(first.publicHandle).toBe(fixedHandle);
+    db.prepare("DELETE FROM bots WHERE id = ?").run(first.id);
+    db.prepare("DELETE FROM threads WHERE id = ?").run(first.threadId);
+
+    const colliding = makeBot();
+    expect(() => bots.forOwner(owner.id).insert(colliding)).toThrow(/UNIQUE/i);
+    expect(bots.forOwner(owner.id).get(colliding.id)).toBeNull();
+    expect(db.prepare("SELECT 1 FROM threads WHERE id = ?").get(colliding.threadId)).toBeUndefined();
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM public_bot_handles").get()?.n).toBe(1);
   });
 
   it("rejects malformed and nonexistent owners without leaving bot or thread rows", () => {

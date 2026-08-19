@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "../config.ts";
+import { PUBLIC_BOT_HANDLE_LENGTH, PUBLIC_BOT_HANDLE_PATTERN } from "../public-bot-handle.ts";
 import { defaultDbPath, openDatabase } from "./database.ts";
 import { appliedMigrations, isApplied, migrate, MIGRATIONS, recordApplied } from "./migrations.ts";
 import { loadBetterSqlite3, type SqliteDatabase } from "./sqlite-native.ts";
@@ -30,6 +31,7 @@ const MANDATED_TABLES = [
   "user_workspace_binding_generations",
   "github_oauth_transactions",
   "desktop_access_grants",
+  "public_bot_handles",
 ];
 
 describe("database + migrations", () => {
@@ -111,6 +113,7 @@ describe("database + migrations", () => {
       "github-oauth-transactions",
       "desktop-access-grants",
       "workspace-binding-authorization-generations",
+      "tenant-bot-public-handles",
     ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM bots WHERE id = ?").get("legacy-bot")).toEqual({
       owner_id: null,
@@ -135,6 +138,47 @@ describe("database + migrations", () => {
     expect(migrate(db)).toEqual([]);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()?.n).toBe(2);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()?.n).toBe(4);
+  });
+
+  it("idempotently backfills stable handles only for existing tenant bots", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    const path = join(DATA_DIR, "pre-public-handles.db");
+    db = new (loadBetterSqlite3())(path);
+    migrate(db, MIGRATIONS.slice(0, 13));
+    const ownerId = "11111111-1111-4111-8111-111111111111";
+    db.prepare(
+      "INSERT INTO users(id, github_id, github_login, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run(ownerId, 101, "owner", 1_000, 1_000);
+    for (const [id, owner] of [["legacy-bot", null], ["owned-a", ownerId], ["owned-b", ownerId]] as const) {
+      const threadId = `${id}-thread`;
+      db.prepare("INSERT INTO threads(id, bot_id, created_at, owner_id) VALUES (?, ?, ?, ?)")
+        .run(threadId, id, 1_000, owner);
+      db.prepare("INSERT INTO bots(id, thread_id, created_at, data, owner_id) VALUES (?, ?, ?, ?, ?)")
+        .run(id, threadId, 1_000, JSON.stringify({ id, threadId }), owner);
+    }
+
+    expect(migrate(db)).toEqual(["tenant-bot-public-handles"]);
+    const rows = db.prepare<{ id: string; public_handle: string | null }>(
+      "SELECT id, public_handle FROM bots ORDER BY id",
+    ).all();
+    expect(rows.find((row) => row.id === "legacy-bot")?.public_handle).toBeNull();
+    const handles = rows
+      .filter((row) => row.id.startsWith("owned-"))
+      .map((row) => row.public_handle);
+    expect(handles).toHaveLength(2);
+    expect(new Set(handles).size).toBe(2);
+    for (const handle of handles) {
+      expect(handle).toHaveLength(PUBLIC_BOT_HANDLE_LENGTH);
+      expect(handle).toMatch(PUBLIC_BOT_HANDLE_PATTERN);
+    }
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM public_bot_handles").get()?.n).toBe(2);
+    expect(migrate(db)).toEqual([]);
+
+    db.close();
+    db = openDatabase(path);
+    expect(
+      db.prepare<{ public_handle: string }>("SELECT public_handle FROM bots WHERE id = 'owned-a'").get()?.public_handle,
+    ).toBe(handles[0]);
   });
 
   it("adds group ownership without claiming legacy groups or their threads", () => {
@@ -162,6 +206,7 @@ describe("database + migrations", () => {
       "github-oauth-transactions",
       "desktop-access-grants",
       "workspace-binding-authorization-generations",
+      "tenant-bot-public-handles",
     ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM groups WHERE id = ?").get("legacy-group")).toEqual({
       owner_id: null,
@@ -191,6 +236,7 @@ describe("database + migrations", () => {
       "github-oauth-transactions",
       "desktop-access-grants",
       "workspace-binding-authorization-generations",
+      "tenant-bot-public-handles",
     ]);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM user_workspace_bindings").get()?.n).toBe(0);
     expect(
@@ -222,7 +268,10 @@ describe("database + migrations", () => {
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     ).run("a".repeat(64), ownerId, "fake", "machine-a", "desktop:view", 1_000, 2_000, 2_010);
 
-    expect(migrate(db)).toEqual(["workspace-binding-authorization-generations"]);
+    expect(migrate(db)).toEqual([
+      "workspace-binding-authorization-generations",
+      "tenant-bot-public-handles",
+    ]);
     expect(
       db.prepare<{ authorization_generation: number }>(
         "SELECT authorization_generation FROM user_workspace_bindings WHERE user_id = ?",

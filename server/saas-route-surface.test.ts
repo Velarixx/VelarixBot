@@ -443,9 +443,13 @@ describe("SaaS route exposure matrix", () => {
     const createdBody = await created.json() as { bot: Record<string, unknown> };
     expect(Object.keys(createdBody)).toEqual(["bot"]);
     expect(Object.keys(createdBody.bot).sort()).toEqual(
-      ["color", "description", "hasMore", "messages", "name", "title"].sort(),
+      ["color", "description", "hasMore", "messages", "name", "publicHandle", "title"].sort(),
     );
-    expect(createdBody.bot).toMatchObject({ name: "New Bot", messages: expect.any(Array) });
+    expect(createdBody.bot).toMatchObject({
+      name: "New Bot",
+      publicHandle: expect.any(String),
+      messages: expect.any(Array),
+    });
     for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
 
     const signOut = await fetch(`${base}/api/auth/sign-out`, {
