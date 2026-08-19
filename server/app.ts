@@ -75,8 +75,8 @@ export interface CreateApplicationInput {
   clock?: Clock;
   port: number;
   apiToken: string;
-  /** Desktop is the default. SaaS exposes only its identity probe until
-   * owner-bound business-route composition is approved separately. */
+  /** Desktop is the default. SaaS mounts only identity/OAuth, health, and
+   * the owner-bound catalog (GET plus quota-bound default creation). */
   auth?:
     | { mode: "desktop" }
     | { mode: "saas"; applicationOrigin: string; oauthProvider: GithubOAuthProvider };

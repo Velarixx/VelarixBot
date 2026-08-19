@@ -164,6 +164,11 @@ export interface OwnerBotsService {
     | { ok: true; bytes: Buffer; mime: string }
     | { ok: false; status: 404; error: string };
   createBot(): BotRecord;
+  /** Count, create, and onboarding inserts share one synchronous SQLite
+   * transaction so concurrent HTTP requests cannot race past the limit. */
+  createBotWithinQuota(limit: number):
+    | { ok: true; bot: BotRecord; onboardingMessages: Message[] }
+    | { ok: false; reason: "quota" };
   patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null;
   deleteBot(id: string): boolean;
   messagesFor(threadId: string): Message[];
@@ -508,6 +513,50 @@ function createOwnerBotsService(
   const ownsConversation = (threadId: string): boolean =>
     bots.getByThread(threadId) !== null || groups.getByThread(threadId) !== null;
 
+  const insertDefaultBot = (): { bot: BotRecord; onboardingMessages: Message[] } => {
+    const id = newId();
+    const face = seedAvatar({ botId: id, nonce: 0 });
+    const bot: BotRecord = {
+      id,
+      threadId: newId(),
+      name: "New Bot",
+      title: "",
+      description: "",
+      notifications: true,
+      color: face.color,
+      iconShape: face.iconShape,
+      avatarNonce: 0,
+      unread: false,
+      modelSelection: defaultSelection(),
+      resumeCursors: {},
+      computer: "off",
+      busy: false,
+      state: "IDLE",
+      usage: zeroUsage(),
+      createdAt: Date.now(),
+    };
+    bots.insert(bot);
+    const onboardingMessages = [
+      messages.append(bot.threadId, {
+        role: "bot",
+        kind: "text",
+        text: "Hey — I'm your new bot. Nice to meet you.",
+      }),
+      messages.append(bot.threadId, { role: "bot", kind: "options", card: onboardingCard() }),
+    ];
+    return { bot, onboardingMessages };
+  };
+
+  // This is deliberately service-local: only the owner-bound facade can
+  // combine its owner-filtered count with creation, and nested repository
+  // transactions become SQLite savepoints under this all-or-nothing unit.
+  const createOwnedBot = repos.db.transaction(() => insertDefaultBot().bot);
+  const createOwnedBotWithinQuota = repos.db.transaction((limit: number) => {
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new TypeError("bot quota must be a positive integer");
+    if (bots.count() >= limit) return { ok: false as const, reason: "quota" as const };
+    return { ok: true as const, ...insertDefaultBot() };
+  });
+
   const service: OwnerBotsService = {
     bots: () => bots.list(),
     count: () => bots.count(),
@@ -536,33 +585,8 @@ function createOwnerBotsService(
       if (!image) return { ok: false, status: 404, error: "no image on that message" };
       return { ok: true, ...image };
     },
-    createBot() {
-      const id = newId();
-      const face = seedAvatar({ botId: id, nonce: 0 });
-      const bot: BotRecord = {
-        id,
-        threadId: newId(),
-        name: "New Bot",
-        title: "",
-        description: "",
-        notifications: true,
-        color: face.color,
-        iconShape: face.iconShape,
-        avatarNonce: 0,
-        unread: false,
-        modelSelection: defaultSelection(),
-        resumeCursors: {},
-        computer: "off",
-        busy: false,
-        state: "IDLE",
-        usage: zeroUsage(),
-        createdAt: Date.now(),
-      };
-      bots.insert(bot);
-      messages.append(bot.threadId, { role: "bot", kind: "text", text: "Hey — I'm your new bot. Nice to meet you." });
-      messages.append(bot.threadId, { role: "bot", kind: "options", card: onboardingCard() });
-      return bot;
-    },
+    createBot: createOwnedBot,
+    createBotWithinQuota: createOwnedBotWithinQuota,
     patchBot(id, patch) {
       return validatedMutations.patchBot(id, patch);
     },

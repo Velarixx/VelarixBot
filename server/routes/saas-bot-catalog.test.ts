@@ -1,5 +1,5 @@
-import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { InternalUserPrincipal } from "../auth.ts";
@@ -11,19 +11,26 @@ import { createBotsService, type BotsService } from "../services/bots.ts";
 import type { RouteHandler } from "./context.ts";
 import {
   createSaasBotCatalogRoutes,
+  SAAS_BOT_CREATE_BODY_MAX_BYTES,
   SAAS_BOT_CATALOG_MESSAGE_MAX,
+  SAAS_BOT_OWNER_QUOTA,
 } from "./saas-bot-catalog.ts";
 
 const selection = () => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
-function invokeGet(
+function invokeRoute(
   handler: RouteHandler,
   path: string,
   principal?: InternalUserPrincipal,
   headers: Record<string, string> = {},
+  method = "GET",
+  rawBody?: string,
 ): Promise<{ status: number; body: any; headers: Record<string, string> }> {
   return new Promise((resolve, reject) => {
-    const req = Object.assign(new EventEmitter(), { headers }) as IncomingMessage;
+    const req = Object.assign(
+      Readable.from(rawBody === undefined ? [] : [Buffer.from(rawBody)]),
+      { headers },
+    ) as IncomingMessage;
     let status = 200;
     const responseHeaders: Record<string, string> = {};
     const chunks: Buffer[] = [];
@@ -48,7 +55,7 @@ function invokeGet(
     } as unknown as ServerResponse;
     const url = new URL(`http://127.0.0.1${path}`);
     Promise.resolve(
-      handler({ req, res, url, path: url.pathname, method: "GET", ...(principal ? { principal } : {}) }),
+      handler({ req, res, url, path: url.pathname, method, ...(principal ? { principal } : {}) }),
     ).catch(reject);
   });
 }
@@ -86,8 +93,8 @@ describe("SaaS bot catalog route", () => {
     bots.forOwner(ownerB.user.id).patchBot(botB.id, { name: "Beta" });
 
     const handler = createSaasBotCatalogRoutes({ bots });
-    const a = await invokeGet(handler, "/api/bots", ownerA);
-    const b = await invokeGet(handler, "/api/bots", ownerB);
+    const a = await invokeRoute(handler, "/api/bots", ownerA);
+    const b = await invokeRoute(handler, "/api/bots", ownerB);
 
     expect(a.status).toBe(200);
     expect(a.body.bots.map((bot: { name: string }) => bot.name)).toEqual(["Alpha"]);
@@ -106,7 +113,7 @@ describe("SaaS bot catalog route", () => {
       bots: { forOwner, publicBots: globalPublicBots } as unknown as Pick<BotsService, "forOwner">,
     });
 
-    const response = await invokeGet(
+    const response = await invokeRoute(
       handler,
       `/api/bots?ownerId=${ownerB.user.id}&user=${ownerB.user.id}&messages=999`,
       ownerA,
@@ -123,7 +130,7 @@ describe("SaaS bot catalog route", () => {
     "rejects malformed or ambiguous hydration deterministically: %s",
     async (value) => {
       const handler = createSaasBotCatalogRoutes({ bots });
-      const response = await invokeGet(handler, `/api/bots?messages=${value}`, ownerA);
+      const response = await invokeRoute(handler, `/api/bots?messages=${value}`, ownerA);
       expect(response).toMatchObject({
         status: 400,
         body: { error: "messages must be one non-negative whole number" },
@@ -152,7 +159,7 @@ describe("SaaS bot catalog route", () => {
       from: { botId: bot.id, name: "hidden-sender" },
     });
 
-    const response = await invokeGet(createSaasBotCatalogRoutes({ bots }), "/api/bots?messages=20", ownerA);
+    const response = await invokeRoute(createSaasBotCatalogRoutes({ bots }), "/api/bots?messages=20", ownerA);
     expect(response.status).toBe(200);
     expect(response.body.bots).toHaveLength(1);
     expect(Object.keys(response.body.bots[0]).sort()).toEqual(
@@ -185,8 +192,96 @@ describe("SaaS bot catalog route", () => {
     expect(serialized).not.toMatch(/resumeCursors|ownerId|threadId|computer|workspace|machine|cookie|token/i);
   });
 
+  it("creates one principal-owned default bot and returns only the catalog projection", async () => {
+    const legacy = bots.createBot();
+    const foreign = bots.forOwner(ownerB.user.id).createBot();
+    const response = await invokeRoute(
+      createSaasBotCatalogRoutes({ bots }),
+      `/api/bots?ownerId=${ownerB.user.id}&botId=${foreign.id}`,
+      ownerA,
+      { "x-owner-id": ownerB.user.id, "content-type": "application/json" },
+      "POST",
+      "{}",
+    );
+
+    expect(response.status).toBe(201);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+    expect(Object.keys(response.body)).toEqual(["bot"]);
+    expect(Object.keys(response.body.bot).sort()).toEqual(
+      ["color", "description", "hasMore", "messages", "name", "title"].sort(),
+    );
+    expect(response.body.bot).toMatchObject({
+      name: "New Bot",
+      title: "",
+      description: "",
+      hasMore: false,
+      messages: [
+        { role: "bot", kind: "text" },
+        { role: "bot", kind: "options" },
+      ],
+    });
+
+    const created = bots.forOwner(ownerA.user.id).bots();
+    expect(created).toHaveLength(1);
+    expect(bots.forOwner(ownerA.user.id).messagesFor(created[0].threadId)).toHaveLength(2);
+    expect(bots.forOwner(ownerB.user.id).messagesFor(created[0].threadId)).toEqual([]);
+    expect(
+      db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM threads WHERE id = ?").get(created[0].threadId),
+    ).toEqual({ owner_id: ownerA.user.id });
+
+    const serialized = JSON.stringify(response.body);
+    for (const internal of [created[0].id, created[0].threadId, legacy.id, foreign.id, ownerA.user.id, ownerB.user.id]) {
+      expect(serialized).not.toContain(internal);
+    }
+    expect(serialized).not.toMatch(/modelSelection|computer|provider|approval|usage|cursor|token|secret/i);
+  });
+
+  it.each([
+    ["empty", ""],
+    ["malformed", "{"],
+    ["array", "[]"],
+    ["null", "null"],
+    ["scalar", "true"],
+    ["non-exact whitespace", "{ }"],
+    ["semantic field", '{"name":"caller-controlled"}'],
+    ["oversized", " ".repeat(SAAS_BOT_CREATE_BODY_MAX_BYTES + 1)],
+  ])("rejects %s create payloads generically without writes", async (_label, rawBody) => {
+    const before = db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()?.n;
+    const response = await invokeRoute(
+      createSaasBotCatalogRoutes({ bots }),
+      "/api/bots",
+      ownerA,
+      { "content-type": "application/json" },
+      "POST",
+      rawBody,
+    );
+    expect(response).toMatchObject({ status: 400, body: { error: "invalid request" } });
+    expect(bots.forOwner(ownerA.user.id).count()).toBe(0);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()?.n).toBe(before);
+  });
+
+  it("counts only the principal's bots and returns a stable no-write quota conflict", async () => {
+    bots.createBot();
+    bots.createBot();
+    bots.forOwner(ownerB.user.id).createBot();
+    for (let index = 1; index < SAAS_BOT_OWNER_QUOTA; index++) {
+      bots.forOwner(ownerA.user.id).createBot();
+    }
+
+    const handler = createSaasBotCatalogRoutes({ bots });
+    const success = await invokeRoute(handler, "/api/bots", ownerA, {}, "POST", "{}");
+    expect(success.status).toBe(201);
+    expect(bots.forOwner(ownerA.user.id).count()).toBe(SAAS_BOT_OWNER_QUOTA);
+    const beforeMessages = db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()?.n;
+
+    const conflict = await invokeRoute(handler, "/api/bots", ownerA, {}, "POST", "{}");
+    expect(conflict).toMatchObject({ status: 409, body: { error: "bot quota reached" } });
+    expect(bots.forOwner(ownerA.user.id).count()).toBe(SAAS_BOT_OWNER_QUOTA);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()?.n).toBe(beforeMessages);
+  });
+
   it("fails closed without a principal and converts service failures to a generic error", async () => {
-    const missing = await invokeGet(createSaasBotCatalogRoutes({ bots }), "/api/bots");
+    const missing = await invokeRoute(createSaasBotCatalogRoutes({ bots }), "/api/bots");
     expect(missing).toMatchObject({ status: 401, body: { error: "unauthorized" } });
 
     const throwing = createSaasBotCatalogRoutes({
@@ -196,8 +291,25 @@ describe("SaaS bot catalog route", () => {
         },
       },
     });
-    const failed = await invokeGet(throwing, "/api/bots", ownerA);
+    const failed = await invokeRoute(throwing, "/api/bots", ownerA);
     expect(failed).toMatchObject({ status: 500, body: { error: "internal server error" } });
     expect(JSON.stringify(failed.body)).not.toMatch(/database|cookie|token|session|secret/i);
+
+    const writeFailure = await invokeRoute(
+      createSaasBotCatalogRoutes({
+        bots: {
+          forOwner() {
+            throw new Error("raw provider workspace database secret");
+          },
+        },
+      }),
+      "/api/bots",
+      ownerA,
+      {},
+      "POST",
+      "{}",
+    );
+    expect(writeFailure).toMatchObject({ status: 500, body: { error: "internal server error" } });
+    expect(JSON.stringify(writeFailure.body)).not.toMatch(/provider|workspace|database|secret/i);
   });
 });

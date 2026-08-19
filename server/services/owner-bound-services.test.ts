@@ -124,6 +124,42 @@ describe("owner-bound bot and group services", () => {
     expect(desktopBots.bot(botA.id)).toBeNull();
   });
 
+  it("atomically enforces an owner-only creation quota", async () => {
+    desktopBots.createBot();
+    desktopBots.createBot();
+    ownerBBots.createBot();
+
+    const outcomes = await Promise.all(
+      Array.from({ length: 6 }, async () => ownerABots.createBotWithinQuota(2)),
+    );
+    expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(2);
+    expect(outcomes.filter((outcome) => !outcome.ok)).toHaveLength(4);
+    expect(ownerABots.count()).toBe(2);
+    expect(ownerBBots.count()).toBe(1);
+    expect(desktopBots.count()).toBe(5);
+    for (const bot of ownerABots.bots()) {
+      expect(ownerABots.messagesFor(bot.threadId)).toHaveLength(2);
+      expect(ownerBBots.messagesFor(bot.threadId)).toEqual([]);
+    }
+  });
+
+  it("rolls back the bot, thread, and first onboarding message when onboarding fails", () => {
+    db.exec(`
+      CREATE TRIGGER fail_second_onboarding
+      BEFORE INSERT ON messages
+      WHEN (SELECT count(*) FROM messages WHERE thread_id = NEW.thread_id) >= 1
+      BEGIN
+        SELECT RAISE(ABORT, 'forced onboarding failure');
+      END
+    `);
+
+    expect(() => ownerABots.createBotWithinQuota(5)).toThrow(/forced onboarding failure/);
+    expect(ownerABots.count()).toBe(0);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()?.n).toBe(0);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()?.n).toBe(0);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()?.n).toBe(0);
+  });
+
   it("isolates group reads/hydration and rejects cross-owner membership injection", () => {
     const legacyBot = desktopBots.createBot();
     const botA = ownerABots.createBot();

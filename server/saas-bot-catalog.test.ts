@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { openDatabase } from "./db/database.ts";
 import { IdentitySessions, SESSION_COOKIE_NAME } from "./identity.ts";
 import { createRepositories } from "./repositories/index.ts";
+import { SAAS_BOT_OWNER_QUOTA } from "./routes/saas-bot-catalog.ts";
 import { createBotsService } from "./services/bots.ts";
 import {
   bestEffortRm,
@@ -135,6 +136,59 @@ describe("SaaS bot catalog application composition", () => {
     }
     const shell = await fetch(`${base}/`);
     expect(shell.status).toBe(404);
+  });
+
+  it("requires session plus exact Origin for creation and cannot race past the owner quota", async () => {
+    const denied = [
+      { headers: { origin: applicationOrigin }, status: 401, error: "unauthorized" },
+      {
+        headers: { authorization: "Bearer unused-desktop-token", origin: applicationOrigin },
+        status: 401,
+        error: "unauthorized",
+      },
+      { headers: sessionHeaders(seeded.tokenB), status: 403, error: "forbidden origin" },
+      {
+        headers: { ...sessionHeaders(seeded.tokenB), origin: "https://evil.test" },
+        status: 403,
+        error: "forbidden origin",
+      },
+    ];
+    for (const attempt of denied) {
+      const response = await fetch(`${base}/api/bots`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...attempt.headers },
+        body: "{}",
+      });
+      expect(response.status).toBe(attempt.status);
+      expect(await response.json()).toEqual({ error: attempt.error });
+    }
+    expect((await responseJson(base, "/api/bots", sessionHeaders(seeded.tokenB))).body.bots).toHaveLength(1);
+
+    const attempts = await Promise.all(
+      Array.from({ length: SAAS_BOT_OWNER_QUOTA + 3 }, () =>
+        fetch(`${base}/api/bots`, {
+          method: "POST",
+          headers: {
+            ...sessionHeaders(seeded.tokenB),
+            origin: applicationOrigin,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        })),
+    );
+    expect(attempts.filter((response) => response.status === 201)).toHaveLength(SAAS_BOT_OWNER_QUOTA - 1);
+    expect(attempts.filter((response) => response.status === 409)).toHaveLength(4);
+    for (const response of attempts) {
+      expect([201, 409]).toContain(response.status);
+      const body = await response.json();
+      if (response.status === 409) expect(body).toEqual({ error: "bot quota reached" });
+    }
+
+    const a = await responseJson(base, "/api/bots", sessionHeaders(seeded.tokenA));
+    const b = await responseJson(base, "/api/bots", sessionHeaders(seeded.tokenB));
+    expect(a.body.bots.map((bot: { name: string }) => bot.name)).toEqual(["Alpha SaaS"]);
+    expect(b.body.bots).toHaveLength(SAAS_BOT_OWNER_QUOTA);
+    expect(JSON.stringify([a.body, b.body])).not.toContain(seeded.legacyId);
   });
 });
 

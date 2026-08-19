@@ -55,7 +55,6 @@ function deniedRoutes(botId: string): DeniedRoute[] {
     route("approvals", "PATCH", `/api/bots/${botId}/approvals/${ruleId}`),
     route("approvals", "DELETE", `/api/bots/${botId}/approvals/${ruleId}`),
 
-    route("bot detail/mutation", "POST", "/api/bots"),
     route("bot detail/mutation", "GET", `/api/bots/${botId}`),
     route("bot detail/mutation", "PATCH", `/api/bots/${botId}`),
     route("bot detail/mutation", "DELETE", `/api/bots/${botId}`),
@@ -143,6 +142,7 @@ describe("SaaS route exposure matrix", () => {
   let base: string;
   let app: Application;
   let sessionToken: string;
+  let expiredSessionToken: string;
   let userId: string;
   let botId: string;
   let providerRegistry: ProviderRegistry;
@@ -160,6 +160,7 @@ describe("SaaS route exposure matrix", () => {
     const user = sessions.upsertGithubIdentity({ githubId: 36, login: "route-surface" }, NOW);
     userId = user.id;
     sessionToken = sessions.createSession(user.id, { now: NOW, maxAgeSeconds: 3_600 }).token;
+    expiredSessionToken = sessions.createSession(user.id, { now: NOW - 10_000, maxAgeSeconds: 1 }).token;
 
     const cfg: AppConfig = { box: { token: "local-fake-token" } };
     computer = await BoxComputerProviderFactory.create({ id: "box", config: {}, appConfig: cfg });
@@ -269,9 +270,10 @@ describe("SaaS route exposure matrix", () => {
   });
 
   it("uniformly rejects the matrix without a SaaS session or with a desktop bearer", async () => {
-    for (const testCase of deniedRoutes(botId)) {
+    for (const testCase of [...deniedRoutes(botId), route("approved bot create", "POST", "/api/bots")]) {
       const credentials: Record<string, string>[] = [
         { origin: APPLICATION_ORIGIN },
+        { cookie: `${SESSION_COOKIE_NAME}=${expiredSessionToken}`, origin: APPLICATION_ORIGIN },
         { authorization: `Bearer ${DESKTOP_TOKEN}`, origin: APPLICATION_ORIGIN },
       ];
       for (const headers of credentials) {
@@ -280,6 +282,19 @@ describe("SaaS route exposure matrix", () => {
         expect(result.body).toEqual({ error: "unauthorized" });
       }
     }
+  });
+
+  it("rejects missing or wrong Origin on the sole SaaS write without changes", async () => {
+    const beforeChanges = totalChanges(db);
+    for (const origin of [undefined, "https://evil.test"] as const) {
+      const result = await jsonRequest(base, { method: "POST", path: "/api/bots" }, {
+        cookie: `${SESSION_COOKIE_NAME}=${sessionToken}`,
+        ...(origin ? { origin } : {}),
+      });
+      expect(result.response.status).toBe(403);
+      expect(result.body).toEqual({ error: "forbidden origin" });
+    }
+    expect(totalChanges(db)).toBe(beforeChanges);
   });
 
   it("keeps internal COMMS inaccessible to both SaaS and desktop credentials", async () => {
@@ -333,6 +348,20 @@ describe("SaaS route exposure matrix", () => {
     const catalog = await fetch(`${base}/api/bots`, { headers: authHeaders });
     expect(catalog.status).toBe(200);
     expect(await catalog.json()).toEqual({ bots: [] });
+
+    const created = await fetch(`${base}/api/bots`, {
+      method: "POST",
+      headers: { ...authHeaders, origin: APPLICATION_ORIGIN, "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json() as { bot: Record<string, unknown> };
+    expect(Object.keys(createdBody)).toEqual(["bot"]);
+    expect(Object.keys(createdBody.bot).sort()).toEqual(
+      ["color", "description", "hasMore", "messages", "name", "title"].sort(),
+    );
+    expect(createdBody.bot).toMatchObject({ name: "New Bot", messages: expect.any(Array) });
+    for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
 
     const signOut = await fetch(`${base}/api/auth/sign-out`, {
       method: "POST",
