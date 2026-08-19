@@ -19,6 +19,7 @@ import {
   trustedClientApplicationMode,
   type ClientApplicationMode,
 } from "@/auth/mode";
+import { CatalogShell } from "@/saas/CatalogShell";
 
 function Shell() {
   const { state, dispatch } = useStore();
@@ -112,9 +113,23 @@ export function InvalidApplicationMode() {
   );
 }
 
+export function SaasApplication() {
+  return (
+    <SessionBoundary
+      renderAuthenticated={({ onSessionLost, onRequestSignOut, signOutTriggerRef }) => (
+        <CatalogShell
+          onSessionLost={onSessionLost}
+          onRequestSignOut={onRequestSignOut}
+          signOutTriggerRef={signOutTriggerRef}
+        />
+      )}
+    />
+  );
+}
+
 export function ApplicationRoot({ mode }: { mode: ClientApplicationMode }) {
   if (mode === "desktop") return <DesktopApplication />;
-  if (mode === "saas") return <SessionBoundary />;
+  if (mode === "saas") return <SaasApplication />;
   return <InvalidApplicationMode />;
 }
 

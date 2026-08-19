@@ -6,8 +6,8 @@ import {
   ApplicationRoot,
   DesktopApplication,
   InvalidApplicationMode,
+  SaasApplication,
 } from "@/App";
-import { SessionBoundary } from "./SessionBoundary";
 import { resolveClientApplicationMode, trustedClientApplicationMode } from "./mode";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -35,7 +35,7 @@ describe("trusted client application mode", () => {
 
   it("selects composition before either boundary mounts", () => {
     expect(ApplicationRoot({ mode: "desktop" }).type).toBe(DesktopApplication);
-    expect(ApplicationRoot({ mode: "saas" }).type).toBe(SessionBoundary);
+    expect(ApplicationRoot({ mode: "saas" }).type).toBe(SaasApplication);
     expect(ApplicationRoot({ mode: "invalid" }).type).toBe(InvalidApplicationMode);
   });
 
@@ -43,7 +43,8 @@ describe("trusted client application mode", () => {
     expect(modeSource).toContain("VITE_VELARIX_APP_MODE");
     expect(modeSource).not.toMatch(/URLSearchParams|searchParams|localStorage|electron|window\.|location\./i);
     expect(appSource).toContain("<StoreProvider>");
-    expect(appSource).toContain("<SessionBoundary />");
+    expect(appSource).toContain("<SessionBoundary");
+    expect(appSource).toContain("<CatalogShell");
     expect(appSource).toContain("Connecting to the bot server");
     expect(appSource).not.toContain("401");
   });

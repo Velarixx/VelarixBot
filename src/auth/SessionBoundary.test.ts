@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { ApplicationRoot, DesktopApplication, InvalidApplicationMode } from "@/App";
-import { SessionBoundary, SessionBoundaryView, type SessionBoundaryActions } from "./SessionBoundary";
+import { ApplicationRoot, DesktopApplication, InvalidApplicationMode, SaasApplication } from "@/App";
+import { SessionBoundaryView, type SessionBoundaryActions } from "./SessionBoundary";
 import { SESSION_STATUSES, type SessionModel, type SessionStatus } from "./session-state";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -63,6 +63,25 @@ describe("accessible fail-closed session boundary", () => {
     expect(unconfirmed).not.toMatch(/Sign in again|switch account/i);
   });
 
+  it("renders protected content only while authenticated and hides it as soon as sign-out is requested", () => {
+    const protectedContent = createElement("div", { "data-protected": "true" }, "tenant catalog secret");
+    const authenticated = renderToStaticMarkup(createElement(SessionBoundaryView, {
+      model: { status: "authenticated", wasAuthenticated: true, manualAttempt: false },
+      actions,
+      authenticatedContent: protectedContent,
+    }));
+    expect(authenticated).toContain("tenant catalog secret");
+
+    for (const status of ["sign_out_confirm", "sign_out_pending", "session_ended"] as const) {
+      const closed = renderToStaticMarkup(createElement(SessionBoundaryView, {
+        model: { status, wasAuthenticated: status === "sign_out_confirm", manualAttempt: false },
+        actions,
+        authenticatedContent: protectedContent,
+      }));
+      expect(closed).not.toContain("tenant catalog secret");
+    }
+  });
+
   it("renders no raw server, provider, token, cookie, UUID, or error detail", () => {
     const allMarkup = SESSION_STATUSES.map((status) => markup(status)).join("\n");
     expect(allMarkup).not.toMatch(/123e4567|provider-secret|oauth[_ -]?code|access[_ -]?token|velarix_session|stack trace|error\.message/i);
@@ -80,11 +99,12 @@ describe("accessible fail-closed session boundary", () => {
   });
 
   it("keeps SaaS and invalid roots structurally outside StoreProvider and Shell", () => {
-    expect(ApplicationRoot({ mode: "saas" }).type).toBe(SessionBoundary);
+    expect(ApplicationRoot({ mode: "saas" }).type).toBe(SaasApplication);
     expect(ApplicationRoot({ mode: "invalid" }).type).toBe(InvalidApplicationMode);
     expect(ApplicationRoot({ mode: "desktop" }).type).toBe(DesktopApplication);
     expect(boundarySource).not.toMatch(/StoreProvider|<Shell|useStore/);
     expect(appSource).toContain("<StoreProvider>");
+    expect(appSource).toContain("<CatalogShell");
     expect(appSource).toContain("Connection lost. Reconnecting");
   });
 

@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
   type RefObject,
 } from "react";
 import { Github, Loader2, LockKeyhole, LogOut, ShieldCheck } from "lucide-react";
@@ -45,6 +46,7 @@ export interface SessionBoundaryActions {
 interface SessionBoundaryViewProps {
   model: SessionModel;
   actions: SessionBoundaryActions;
+  authenticatedContent?: ReactNode;
   headingRef?: RefObject<HTMLHeadingElement | null>;
   signOutTriggerRef?: RefObject<HTMLButtonElement | null>;
   cancelRef?: RefObject<HTMLButtonElement | null>;
@@ -87,6 +89,7 @@ function Actions({ children }: { children: React.ReactNode }) {
 export function SessionBoundaryView({
   model,
   actions,
+  authenticatedContent,
   headingRef,
   signOutTriggerRef,
   cancelRef,
@@ -196,6 +199,7 @@ export function SessionBoundaryView({
         </BoundaryFrame>
       );
     case "authenticated":
+      if (authenticatedContent) return authenticatedContent;
       return (
         <BoundaryFrame>
           <div role="status" aria-live="polite">
@@ -293,9 +297,17 @@ function keepFocusInDialog(event: KeyboardEvent<HTMLDivElement>, dialog: HTMLDiv
 
 export interface SessionBoundaryProps {
   transport?: SessionTransport;
+  renderAuthenticated?: (controls: {
+    onSessionLost(): void;
+    onRequestSignOut(): void;
+    signOutTriggerRef: RefObject<HTMLButtonElement | null>;
+  }) => ReactNode;
 }
 
-export function SessionBoundary({ transport: injectedTransport }: SessionBoundaryProps = {}) {
+export function SessionBoundary({
+  transport: injectedTransport,
+  renderAuthenticated,
+}: SessionBoundaryProps = {}) {
   const transport = useMemo(() => injectedTransport ?? createSessionTransport(), [injectedTransport]);
   const [returnedResult] = useState(() => {
     if (typeof window === "undefined") return { outcome: "none" as const, scrubbed: true };
@@ -397,6 +409,18 @@ export function SessionBoundary({ transport: injectedTransport }: SessionBoundar
     confirmSignOut: () => void confirmSignOut(),
   }), [beginSignIn, cancelSignIn, cancelSignOut, checkSession, confirmSignOut]);
 
+  const onSessionLost = useCallback(() => {
+    dispatch({ type: "check_unauthenticated" });
+  }, []);
+
+  const authenticatedContent = model.status === "authenticated" && renderAuthenticated
+    ? renderAuthenticated({
+        onSessionLost,
+        onRequestSignOut: actions.requestSignOut,
+        signOutTriggerRef,
+      })
+    : undefined;
+
   const onDialogKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape" && model.status === "sign_out_confirm") {
       event.preventDefault();
@@ -410,6 +434,7 @@ export function SessionBoundary({ transport: injectedTransport }: SessionBoundar
     <SessionBoundaryView
       model={model}
       actions={actions}
+      authenticatedContent={authenticatedContent}
       headingRef={headingRef}
       signOutTriggerRef={signOutTriggerRef}
       cancelRef={cancelRef}
