@@ -140,7 +140,7 @@ describe("database + migrations", () => {
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()?.n).toBe(4);
   });
 
-  it("idempotently backfills stable handles only for existing tenant bots", () => {
+  it("idempotently backfills stable handles only for existing tenant bots and installs retention guards", () => {
     mkdirSync(DATA_DIR, { recursive: true });
     const path = join(DATA_DIR, "pre-public-handles.db");
     db = new (loadBetterSqlite3())(path);
@@ -172,6 +172,14 @@ describe("database + migrations", () => {
       expect(handle).toMatch(PUBLIC_BOT_HANDLE_PATTERN);
     }
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM public_bot_handles").get()?.n).toBe(2);
+    expect(
+      db.prepare<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'public_bot_handles' ORDER BY name",
+      ).all(),
+    ).toEqual([
+      { name: "public_bot_handle_reservation_immutable" },
+      { name: "public_bot_handle_reservation_retained" },
+    ]);
     expect(migrate(db)).toEqual([]);
 
     db.close();

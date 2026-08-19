@@ -177,21 +177,48 @@ describe("bots repository", () => {
     expect(createBotsRepository(db).forOwner(owner.id).get(inserted.id)?.publicHandle).toBe(inserted.publicHandle);
   });
 
-  it("never reuses a reserved handle and rolls back a colliding owned insert", () => {
+  it("makes retired reservations immutable, never reuses them, and rolls back a colliding owned insert", () => {
     const identity = new IdentitySessions(db);
     const owner = identity.upsertGithubIdentity({ githubId: 251, login: "handle-collision" }, 1_000);
     const fixedHandle = "A".repeat(PUBLIC_BOT_HANDLE_LENGTH);
     const bots = createBotsRepository(db, { generatePublicHandle: () => fixedHandle });
     const first = bots.forOwner(owner.id).insert(makeBot());
     expect(first.publicHandle).toBe(fixedHandle);
-    db.prepare("DELETE FROM bots WHERE id = ?").run(first.id);
-    db.prepare("DELETE FROM threads WHERE id = ?").run(first.threadId);
+    expect(db.prepare("DELETE FROM bots WHERE id = ?").run(first.id).changes).toBe(1);
+    expect(db.prepare("DELETE FROM threads WHERE id = ?").run(first.threadId).changes).toBe(1);
+    expect(db.prepare("SELECT 1 FROM threads WHERE id = ?").get(first.threadId)).toBeUndefined();
+    expect(
+      db.prepare<{ handle: string; bot_id: string }>(
+        "SELECT handle, bot_id FROM public_bot_handles WHERE handle = ?",
+      ).get(fixedHandle),
+    ).toEqual({ handle: fixedHandle, bot_id: first.id });
+
+    expect(() =>
+      db.prepare("UPDATE public_bot_handles SET handle = ? WHERE handle = ?")
+        .run("B".repeat(PUBLIC_BOT_HANDLE_LENGTH), fixedHandle),
+    ).toThrow(/reservation is immutable/i);
+    expect(() =>
+      db.prepare("UPDATE public_bot_handles SET bot_id = ? WHERE handle = ?")
+        .run("replacement-bot", fixedHandle),
+    ).toThrow(/reservation is immutable/i);
+    expect(() =>
+      db.prepare("DELETE FROM public_bot_handles WHERE handle = ?").run(fixedHandle),
+    ).toThrow(/reservation cannot be deleted/i);
 
     const colliding = makeBot();
-    expect(() => bots.forOwner(owner.id).insert(colliding)).toThrow(/UNIQUE/i);
+    const before = {
+      bots: db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()!.n,
+      threads: db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()!.n,
+      handles: db.prepare<{ n: number }>("SELECT count(*) AS n FROM public_bot_handles").get()!.n,
+    };
+    expect(() => bots.forOwner(owner.id).insert(colliding)).toThrow(/unique public bot handle/i);
     expect(bots.forOwner(owner.id).get(colliding.id)).toBeNull();
     expect(db.prepare("SELECT 1 FROM threads WHERE id = ?").get(colliding.threadId)).toBeUndefined();
-    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM public_bot_handles").get()?.n).toBe(1);
+    expect({
+      bots: db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()!.n,
+      threads: db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()!.n,
+      handles: db.prepare<{ n: number }>("SELECT count(*) AS n FROM public_bot_handles").get()!.n,
+    }).toEqual(before);
   });
 
   it("rejects malformed and nonexistent owners without leaving bot or thread rows", () => {

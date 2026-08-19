@@ -641,6 +641,16 @@ export const MIGRATIONS: Migration[] = [
           BEGIN
             SELECT RAISE(ABORT, 'bot public handle is immutable');
           END;
+        CREATE TRIGGER public_bot_handle_reservation_immutable
+          BEFORE UPDATE ON public_bot_handles
+          BEGIN
+            SELECT RAISE(ABORT, 'public bot handle reservation is immutable');
+          END;
+        CREATE TRIGGER public_bot_handle_reservation_retained
+          BEFORE DELETE ON public_bot_handles
+          BEGIN
+            SELECT RAISE(ABORT, 'public bot handle reservation cannot be deleted');
+          END;
       `);
     },
   },
