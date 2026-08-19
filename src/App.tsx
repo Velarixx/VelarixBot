@@ -14,6 +14,11 @@ import { UpdateBanner } from "@/components/UpdateBanner";
 import { RoutinesPanel } from "@/components/RoutinesPanel";
 import { SkillsPanel } from "@/components/SkillsPanel";
 import { CreateBotModal } from "@/components/CreateBotModal";
+import { SessionBoundary } from "@/auth/SessionBoundary";
+import {
+  trustedClientApplicationMode,
+  type ClientApplicationMode,
+} from "@/auth/mode";
 
 function Shell() {
   const { state, dispatch } = useStore();
@@ -84,7 +89,7 @@ function Shell() {
   );
 }
 
-export default function App() {
+export function DesktopApplication() {
   const [gated, setGated] = useState(() => !onboardingComplete());
   return (
     <StoreProvider>
@@ -92,4 +97,27 @@ export default function App() {
       {gated && <Onboarding onDone={() => setGated(false)} />}
     </StoreProvider>
   );
+}
+
+export function InvalidApplicationMode() {
+  return (
+    <main className="flex min-h-full items-center justify-center bg-app px-5 py-10 text-ink">
+      <section role="alert" className="w-full max-w-md rounded-2xl border border-line bg-surface p-6 shadow-lg">
+        <h1 tabIndex={-1} className="text-[20px] font-semibold outline-none">This app can’t start safely</h1>
+        <p className="mt-2 text-[14px] leading-6 text-ink-secondary">
+          The application mode is invalid. Product access remains closed.
+        </p>
+      </section>
+    </main>
+  );
+}
+
+export function ApplicationRoot({ mode }: { mode: ClientApplicationMode }) {
+  if (mode === "desktop") return <DesktopApplication />;
+  if (mode === "saas") return <SessionBoundary />;
+  return <InvalidApplicationMode />;
+}
+
+export default function App() {
+  return <ApplicationRoot mode={trustedClientApplicationMode()} />;
 }
