@@ -354,6 +354,10 @@ export async function createApplication(input: CreateApplicationInput): Promise<
 
       return json(res, 404, { error: `no route: ${ctx.method} ${ctx.path}` });
     } catch (e) {
+      // In SaaS, thrown values and status metadata are untrusted. Bounded
+      // client errors must be written by their route before they reach this
+      // application-level boundary; everything else fails closed.
+      if (auth.mode === "saas") return json(res, 500, { error: "internal server error" });
       const status = (e as { status?: number })?.status ?? 500;
       return json(res, status, { error: e instanceof Error ? e.message : String(e) });
     }
