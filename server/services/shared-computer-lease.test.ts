@@ -14,6 +14,7 @@ import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { EventBus } from "../harness/bus.ts";
 import { ProviderRegistry } from "../harness/registry.ts";
+import { createLeaseBroker, type LeaseBroker } from "../computer/leases.ts";
 import { createComputerRegistry } from "../computer/registry.ts";
 import type { ComputerProviderFactory } from "../computer/provider.ts";
 import { createProactive } from "../proactive.ts";
@@ -54,14 +55,21 @@ const SharedMachineFactory: ComputerProviderFactory<Record<string, never>> = {
 };
 
 describe("shared-computer lease at turn dispatch", () => {
-  let db: SqliteDatabase;
+  let db: SqliteDatabase | undefined;
   let repos: Repositories;
   let bots: BotsService;
   let turns: TurnsService;
+  let turnsReady = false;
   let bus: EventBus;
+  let registry: ProviderRegistry | undefined;
+  let leases: LeaseBroker | undefined;
   let sendTurns: string[]; // threadIds, in dispatch order
   let broadcasts: Array<Record<string, unknown>>;
-  let broadcastWaiters: Array<{ pred: (f: any) => boolean; resolve: (f: any) => void }>;
+  let broadcastWaiters: Array<{
+    pred: (f: any) => boolean;
+    resolve: (f: any) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>;
 
   const selection = () => ({ instanceId: "fake", model: "fake-1" });
 
@@ -69,15 +77,19 @@ describe("shared-computer lease at turn dispatch", () => {
     const seen = broadcasts.find(pred);
     if (seen) return Promise.resolve(seen);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`no matching broadcast; saw ${broadcasts.map((b) => b.kind).join(",")}`)), timeoutMs);
-      timer.unref?.();
-      broadcastWaiters.push({
+      let waiter: (typeof broadcastWaiters)[number];
+      waiter = {
         pred,
-        resolve: (f) => {
-          clearTimeout(timer);
-          resolve(f);
-        },
-      });
+        resolve,
+        timer: setTimeout(() => {
+          const index = broadcastWaiters.indexOf(waiter);
+          if (index !== -1) broadcastWaiters.splice(index, 1);
+          reject(new Error(`no matching broadcast; saw ${broadcasts.map((b) => b.kind).join(",")}`));
+        }, timeoutMs),
+      };
+      const { timer } = waiter;
+      timer.unref?.();
+      broadcastWaiters.push(waiter);
     });
   };
 
@@ -95,7 +107,27 @@ describe("shared-computer lease at turn dispatch", () => {
     for (let i = 0; i < 6; i++) await Promise.resolve();
   };
 
+  async function teardown() {
+    for (const waiter of broadcastWaiters ?? []) clearTimeout(waiter.timer);
+    broadcastWaiters = [];
+
+    if (turnsReady) {
+      turnsReady = false;
+      for (const bot of bots.bots()) await turns.interrupt(bot.id);
+      await flush();
+      expect(leases?.holder("sharedfake:m-shared")).toBeNull();
+      expect(leases?.waiting("sharedfake:m-shared")).toEqual([]);
+    }
+    leases = undefined;
+    bus?.detachAll();
+    await registry?.disposeAll();
+    registry = undefined;
+    db?.close();
+    db = undefined;
+  }
+
   async function setup(leaseWaitMs?: number) {
+    await teardown();
     rmSync(DATA_DIR, { recursive: true, force: true });
     db = openDatabase(defaultDbPath());
     repos = createRepositories(db);
@@ -104,7 +136,7 @@ describe("shared-computer lease at turn dispatch", () => {
     broadcastWaiters = [];
 
     const fake = makeFakeDriver();
-    const registry = new ProviderRegistry([fake.driver]);
+    registry = new ProviderRegistry([fake.driver]);
     await registry.load({ fake: { driver: "fake", displayName: "Fake" } });
     const live = fake.created.get("fake")!;
     // the fake driver stands in for any cloud-computer-capable adapter
@@ -137,6 +169,7 @@ describe("shared-computer lease at turn dispatch", () => {
       patchBot: (id, patch) => bots.patchBot(id, patch),
     });
     const proactive = createProactive({ now: () => Date.now(), onNudge: () => {}, onTrigger: () => {} });
+    leases = createLeaseBroker();
     let routinesRef: RoutinesService | null = null;
     turns = createTurnsService({
       cfg: { ...(leaseWaitMs !== undefined ? { box: { leaseWaitMs } } : {}) },
@@ -148,11 +181,13 @@ describe("shared-computer lease at turn dispatch", () => {
       routines: () => routinesRef!,
       teach,
       proactive,
+      leases,
       broadcast: (frame) => {
         broadcasts.push(frame as Record<string, unknown>);
         for (let i = broadcastWaiters.length - 1; i >= 0; i--) {
           if (broadcastWaiters[i].pred(frame)) {
             const [w] = broadcastWaiters.splice(i, 1);
+            clearTimeout(w.timer);
             w.resolve(frame);
           }
         }
@@ -160,6 +195,7 @@ describe("shared-computer lease at turn dispatch", () => {
       port: 0,
       commsToken: "test-lease",
     });
+    turnsReady = true;
     routinesRef = createRoutinesService({
       repos,
       now: () => Date.now(),
@@ -181,13 +217,7 @@ describe("shared-computer lease at turn dispatch", () => {
     return bots.bot(bot.id)!;
   }
 
-  afterEach(() => {
-    try {
-      db.close();
-    } catch {
-      /* already closed */
-    }
-  });
+  afterEach(teardown);
 
   beforeEach(async () => {
     await setup();

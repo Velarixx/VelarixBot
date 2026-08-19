@@ -1297,9 +1297,10 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const bot = store.bot(botId);
     if (!bot) return { error: "no such bot", status: 404 };
     const instance = registry.get(bot.modelSelection.instanceId);
-    // abort releases the machine lease (or the queued wait) immediately —
-    // the driver's own turn.completed release is then an idempotent no-op
+    // Abort releases the machine lease (or queued wait) and its screenshot
+    // interval immediately. A later turn.completed cleanup is idempotent.
     releaseComputerLease(botId);
+    stopScreenPoller(botId);
     await instance?.adapter.interruptTurn(bot.threadId);
     bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
     proactive.noteState(bot.id, "BLOCKED");
