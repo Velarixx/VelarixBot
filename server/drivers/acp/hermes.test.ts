@@ -1,10 +1,10 @@
 // Hermes driver contract tests, run against the scripted fake ACP CLI in
-// server/testing/fake-acp-cli.ts, advertising the auth methods the REAL
-// hermes v0.20.1 ACP adapter advertises: the resolved pool provider (e.g.
+// server/testing/fake-hermes-cli.ts, advertising the auth methods the REAL
+// hermes v0.20.4 ACP adapter advertises: the resolved pool provider (e.g.
 // openai-codex — the ChatGPT/Codex subscription) plus the unconditional
 // terminal setup method (hermes-setup, type "terminal"). Mirrors
 // acp.test.ts for the shared runtime, plus the Hermes-specific quirks:
-// the v0.20.1 spawn grammar (`[-m <model>] acp` — never the retired
+// the v0.20.4 spawn grammar (`[-m <model>] acp` — never the retired
 // `--approval-policy … acp stdio`, never `--yolo`), OPENAI_API_KEY stripped
 // from the child env, credential-pool auth that needs NO ~/.hermes/auth.json
 // on disk and NEVER says `hermes login` (that command was removed — the
@@ -16,7 +16,7 @@
 // resolveCliCommand always executes via process.execPath on every platform —
 // no shebang, no chmodSync, no posixOnly.
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,8 +27,8 @@ import type { ProviderInstance } from "../../contracts.ts";
 import { recordEvents, type EventRecorder } from "../../testing/events.ts";
 import { HermesAgentDriver } from "./hermes.ts";
 
-const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
-// What real hermes v0.20.1 advertises when the credential pool resolves:
+const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-hermes-cli.ts");
+// What real hermes v0.20.4 advertises when the credential pool resolves:
 // the provider as an agent-managed method + the always-on terminal setup.
 const POOL_AUTH_IDS = "openai-codex,hermes-setup:terminal";
 // …and when NO credentials resolve: only the terminal setup method.
@@ -50,12 +50,63 @@ const FAKE_POOL_STORE = JSON.stringify({
     ],
   },
 });
-// Strict-grammar hermes, shaped like the field binary (v0.20.1): rejects any
+// Strict-grammar hermes, shaped like the tagged binary (v0.20.4): rejects any
 // argv that isn't exactly what hermes.ts emits (usage + exit 2, like the real
 // CLI — including the OLD `--approval-policy … acp stdio` grammar), then
 // speaks ACP. The rc.12/rc.14 field failures shipped because only
 // accept-anything fakes ever saw the argv.
-const STRICT_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-hermes-cli.ts");
+const STRICT_CLI = FAKE_CLI;
+
+const exchangeWithStrictHermes = (
+  args: string[],
+  requests: Array<Record<string, unknown>>,
+  lastResponseId: number,
+) =>
+  new Promise<any[]>((resolve, reject) => {
+    const child = spawn(process.execPath, [STRICT_CLI, ...args], {
+      env: {
+        ...process.env,
+        FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS,
+        FAKE_ACP_SESSION_MODELS: "gpt-5.6-sol,gpt-5.5",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const frames: any[] = [];
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      if (error) reject(error);
+      else resolve(frames);
+    };
+    const timer = setTimeout(
+      () => finish(new Error(`timed out waiting for Hermes ACP frames: ${stderr}`)),
+      5_000,
+    );
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      let newline: number;
+      while ((newline = stdout.indexOf("\n")) !== -1) {
+        const line = stdout.slice(0, newline);
+        stdout = stdout.slice(newline + 1);
+        if (!line.trim()) continue;
+        const frame = JSON.parse(line);
+        frames.push(frame);
+        if (frame.id === lastResponseId) finish();
+      }
+    });
+    child.on("error", finish);
+    child.on("close", (code) => {
+      if (!settled) finish(new Error(`Hermes ACP fixture exited ${code}: ${stderr}`));
+    });
+    for (const request of requests) child.stdin.write(JSON.stringify(request) + "\n");
+  });
 
 describe("Hermes decodeConfig", () => {
   it("defaults to the hermes binary", () => {
@@ -73,11 +124,11 @@ describe("Hermes decodeConfig", () => {
     expect(HermesAgentDriver.models.options.map((o) => o.id)).toEqual(["gpt-5.6-sol", "gpt-5.5"]);
   });
 
-  it("keeps the static catalog when initialize has only currentModelId", async () => {
+  it("keeps the static catalog when v0.20.4 initialize carries no model catalog", async () => {
     const inst = await HermesAgentDriver.create({
       instanceId: "hermes-static-catalog",
       displayName: "Hermes",
-      environment: { FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS },
+      environment: { FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS, FAKE_ACP_SESSION_MODELS: "gpt-5.6-sol,gpt-5.5" },
       enabled: true,
       config: { cli: FAKE_CLI, fullAuto: false },
     });
@@ -86,17 +137,20 @@ describe("Hermes decodeConfig", () => {
     await inst.dispose();
   });
 
-  it("uses initialize _meta.modelState.availableModels when a live list exists", async () => {
+  it("takes the active model from the v0.20.4 session/new models frame", async () => {
     const inst = await HermesAgentDriver.create({
-      instanceId: "hermes-live-catalog",
+      instanceId: "hermes-session-model",
       displayName: "Hermes",
-      environment: { FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS, FAKE_ACP_INIT_MODELS: "gpt-5.6-sol,gpt-5.4" },
+      environment: { FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS, FAKE_ACP_SESSION_MODELS: "gpt-5.4,gpt-5.6-sol" },
       enabled: true,
       config: { cli: FAKE_CLI, fullAuto: false },
     });
-    expect(inst.models.options.map((o) => o.id)).toEqual(["gpt-5.6-sol", "gpt-5.5"]);
-    await inst.snapshot();
-    expect(inst.models.options.map((o) => o.id)).toEqual(["gpt-5.6-sol", "gpt-5.4"]);
+    const events = recordEvents(inst.adapter);
+    await inst.adapter.sendTurn({ threadId: "hermes-session-model", text: "hi", model: "requested-model" });
+    const started = await events.until((event) => event.type === "session.started");
+    expect(started).toMatchObject({ model: "gpt-5.4" });
+    await events.until((event) => event.type === "turn.completed");
+    events.stop();
     await inst.dispose();
   });
 
@@ -128,6 +182,7 @@ describe("Hermes turns (fake CLI)", () => {
       displayName: "Hermes Test",
       environment: {
         FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS,
+        FAKE_ACP_SESSION_MODELS: "gpt-5.6-sol,gpt-5.5",
         ...(opts.mode ? { FAKE_ACP_MODE: opts.mode } : {}),
         ...opts.env,
       },
@@ -161,13 +216,16 @@ describe("Hermes turns (fake CLI)", () => {
       "content.delta",
       "item.started",
       "item.completed",
-      "thread.token-usage.updated",
       "item.completed", // assistant_text (summed) on settle
       "turn.completed",
     ]);
     expect(recorder.events.every((e) => e.turnId === turnId && e.provider === "hermesAgent")).toBe(true);
     const text = recorder.events.find((e) => e.type === "item.completed" && (e as any).itemType === "assistant_text")!;
     expect((text as any).text).toBe("hello from fake acp");
+    // v0.20.4 returns PromptResponse.usage, not the legacy fixture's _meta.
+    // The current production driver does not normalize that field; this test
+    // intentionally avoids fabricating a token event the tagged frame cannot.
+    expect(recorder.events.some((e) => e.type === "thread.token-usage.updated")).toBe(false);
     expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
     expect(instance.adapter.hasSession("t-hermes-happy")).toBe(false);
 
@@ -178,7 +236,7 @@ describe("Hermes turns (fake CLI)", () => {
     expect(native).toContain('"dir":"in"');
   });
 
-  it("pins the v0.20.1 argv `-m <model> acp` — no --approval-policy, no stdio — and strips key env vars", async () => {
+  it("pins the v0.20.4 argv `-m <model> acp` — no --approval-policy, no stdio — and strips key env vars", async () => {
     const dump = join(scratch, "dump.json");
     await create({ env: { FAKE_ACP_DUMP: dump } });
     process.env.OPENAI_API_KEY = "sk-should-not-leak";
@@ -189,7 +247,7 @@ describe("Hermes turns (fake CLI)", () => {
 
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.argv).toEqual(["-m", "gpt-5.5", "acp"]);
-    // the retired grammar (rejected by hermes v0.20.1 with usage + exit 2)
+    // the retired grammar (rejected by hermes v0.20.4 with usage + exit 2)
     // must never come back
     expect(seen.argv).not.toContain("--approval-policy");
     expect(seen.argv).not.toContain("stdio");
@@ -385,6 +443,7 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
       displayName: "Hermes Strict",
       environment: {
         FAKE_ACP_AUTH_IDS: POOL_AUTH_IDS,
+        FAKE_ACP_SESSION_MODELS: "gpt-5.6-sol,gpt-5.5",
         ...(opts.reject ? { FAKE_HERMES_GRAMMAR: "reject" } : {}),
         ...(opts.grammar ? { FAKE_HERMES_GRAMMAR: opts.grammar } : {}),
       },
@@ -397,6 +456,72 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
   afterEach(async () => {
     recorder?.stop();
     await instance?.dispose();
+  });
+
+  it("emits the documented v0.20.4 initialize, session model/mode, and prompt usage frames", async () => {
+    const frames = await exchangeWithStrictHermes(
+      ["-m", "gpt-5.6-sol", "acp"],
+      [
+        { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1 } },
+        { jsonrpc: "2.0", id: 2, method: "authenticate", params: { methodId: "openai-codex" } },
+        { jsonrpc: "2.0", id: 3, method: "session/new", params: { cwd: process.cwd(), mcpServers: [] } },
+        {
+          jsonrpc: "2.0",
+          id: 4,
+          method: "session/prompt",
+          params: { sessionId: "fake-acp-session", prompt: [{ type: "text", text: "hi" }] },
+        },
+      ],
+      4,
+    );
+    const response = (id: number) => frames.find((frame) => frame.id === id)?.result;
+    expect(response(1)).toEqual({
+      protocolVersion: 1,
+      agentInfo: { name: "hermes-agent", version: "0.20.4" },
+      agentCapabilities: {
+        loadSession: true,
+        promptCapabilities: { image: true },
+        sessionCapabilities: { fork: {}, list: {}, resume: {} },
+      },
+      authMethods: [
+        {
+          id: "openai-codex",
+          name: "openai-codex runtime credentials",
+          description: "Authenticate Hermes using the currently configured openai-codex runtime credentials.",
+        },
+        {
+          id: "hermes-setup",
+          name: "Configure Hermes provider",
+          description:
+            "Open Hermes' interactive model/provider setup in a terminal. Use this when Hermes has not been configured on this machine yet.",
+          type: "terminal",
+          args: ["--setup"],
+        },
+      ],
+    });
+    expect(response(1)).not.toHaveProperty("_meta");
+    expect(response(3)).toEqual({
+      sessionId: "fake-acp-session",
+      models: {
+        availableModels: [
+          { modelId: "gpt-5.6-sol", name: "gpt-5.6-sol" },
+          { modelId: "gpt-5.5", name: "gpt-5.5" },
+        ],
+        currentModelId: "gpt-5.6-sol",
+      },
+      modes: {
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "accept_edits", name: "Accept Edits" },
+          { id: "dont_ask", name: "Don't Ask" },
+        ],
+        currentModeId: "default",
+      },
+    });
+    expect(response(4)).toEqual({
+      stopReason: "end_turn",
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+    });
   });
 
   it("the exact argv the driver emits (with -m) is accepted and completes a turn", async () => {
@@ -413,8 +538,8 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
     expect(done).toMatchObject({ ok: true, stopReason: null });
   });
 
-  it("the OLD argv (--approval-policy … acp stdio) is rejected by the field-shaped fake: usage + exit 2", async () => {
-    // the v0.20.1 field binary rejects the retired grammar exactly like
+  it("the OLD argv (--approval-policy … acp stdio) is rejected by the tagged fake: usage + exit 2", async () => {
+    // the v0.20.4 tagged binary rejects the retired grammar exactly like
     // this — if the driver ever regresses to it, the strict-fake turn and
     // snapshot tests above fail, and this pins WHY: exit 2 on that argv
     const oldArgv = ["--approval-policy", "acp", "-m", "gpt-5.6-sol", "acp", "stdio"];
@@ -429,7 +554,7 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
       child.on("close", (code) => resolve({ code, stderr }));
     });
     expect(code).toBe(2);
-    expect(stderr).toContain("unexpected argument");
+    expect(stderr).toContain("unrecognized command or arguments");
     expect(stderr).toContain("usage: hermes");
   });
 
@@ -441,12 +566,12 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
     expect(recorder.events.some((e) => e.type === "turn.completed" && (e as any).ok)).toBe(false);
     const err = recorder.events.find((e) => e.type === "runtime.error")!;
     expect(err.message).toContain("exited 2");
-    expect(err.message).toContain("orchestrator"); // the CLI's own usage catalog, surfaced
+    expect(err.message).toContain("[global-options]"); // the CLI's documented usage grammar, surfaced
   });
 
-  it("one-shot generateText uses the accepted `exec -p` grammar", async () => {
+  it("does not invent `hermes exec -p` success: v0.20.4 rejects the undocumented command", async () => {
     await createStrict();
-    expect(await instance.generateText!("distill")).toBe("fake hermes one-shot");
+    await expect(instance.generateText!("distill")).rejects.toThrow(/unrecognized command or arguments/);
   });
 
   it("snapshot on a binary that rejects the argv reports the real usage/exit — never a login hint, whatever is on disk", async () => {
@@ -465,7 +590,7 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
       expect(snap.reason).toContain("wrong or outdated CLI");
       expect(snap.reason).toContain("exited 2"); // the CLI's real exit …
       expect(snap.reason).toContain("usage: hermes"); // … and its own usage
-      expect(snap.reason).toContain("fake-hermes 0.20.1"); // --version alone no longer means available
+      expect(snap.reason).toContain("Hermes Agent v0.20.4 (2026.8.18)"); // --version alone no longer means available
       expect(snap.reason).toContain("fake-hermes-cli"); // resolved path — which binary is this?
       expect(snap.reason).not.toContain("hermes login");
       expect(snap.reason).not.toContain("not signed in");
@@ -500,7 +625,11 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
       mkdirSync(dirname(authFile), { recursive: true });
       writeFileSync(authFile, FAKE_POOL_STORE);
       const withCreds = await instance.snapshot();
-      expect(withCreds).toMatchObject({ state: "available", authenticated: true, version: "fake-hermes 0.20.1" });
+      expect(withCreds).toMatchObject({
+        state: "available",
+        authenticated: true,
+        version: "Hermes Agent v0.20.4 (2026.8.18)",
+      });
     } finally {
       rmSync(authFile, { force: true });
     }
@@ -511,13 +640,13 @@ describe("Hermes spawn grammar (strict fake CLI)", () => {
     expect(await instance.snapshot()).toMatchObject({
       state: "available",
       authenticated: true,
-      version: "fake-hermes 0.20.1",
+      version: "Hermes Agent v0.20.4 (2026.8.18)",
     });
   });
 });
 
-describe("Hermes generateText (one-shot exec)", () => {
-  it("runs `hermes exec -p` and returns trimmed text without leaking keys", async () => {
+describe("Hermes generateText (v0.20.4 command honesty)", () => {
+  it("rejects the production helper's undocumented `hermes exec -p` argv without leaking keys", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "omb-hermes-gen-"));
     const dump = join(scratch, "dump.json");
     process.env.OPENAI_API_KEY = "sk-should-not-leak";
@@ -530,11 +659,11 @@ describe("Hermes generateText (one-shot exec)", () => {
     });
     try {
       expect(instance.generateText).toBeTypeOf("function");
-      const text = await instance.generateText!("distill this");
-      expect(text).toBe("User prefers concise replies. Last turn noted.");
-      const seen = JSON.parse(readFileSync(dump, "utf8"));
-      expect(seen.execArgv).toEqual(["exec", "-p", "distill this"]);
-      expect(seen.env.OPENAI_API_KEY).toBeUndefined();
+      await expect(instance.generateText!("distill this")).rejects.toThrow(/unrecognized command or arguments/);
+      // Rejection happens at the strict argv gate before the ACP fake can
+      // write a dump; the planted key is therefore neither persisted nor
+      // surfaced in the error path.
+      expect(existsSync(dump)).toBe(false);
     } finally {
       delete process.env.OPENAI_API_KEY;
       await instance.dispose();
@@ -571,7 +700,7 @@ describe("Hermes snapshot", () => {
   });
 
   it("authenticated comes from the ACP handshake — an advertised pool provider with NO ~/.hermes/auth.json is signed in", async () => {
-    // the v0.20.1 contract: hermes advertises the resolved pool provider as
+    // the v0.20.4 contract: hermes advertises the resolved pool provider as
     // an auth method iff its credential pool resolves (env-seeded, imported,
     // profile-scoped, or secret-manager-hydrated — Bitwarden Secrets Manager
     // injects provider keys at process start with nothing under ~/.hermes) —

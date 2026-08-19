@@ -44,6 +44,11 @@
 //                     reply with the sidebar id the harness returned)
 //   FAKE_ACP_DUMP   path to write {argv, env} as JSON, so a test can assert
 //                   argv shape (agent/stdio flags) and env hygiene
+//   FAKE_ACP_FIXTURE hermes-v0.20.4 selects the frames emitted by the tagged
+//                   Hermes v0.20.4 ACP adapter: agentInfo + full capabilities
+//                   on initialize, rich auth methods, and model/mode state on
+//                   session/new and session/load. The strict Hermes CLI sets
+//                   this only after validating its documented argv.
 //   FAKE_ACP_AUTH_IDS  comma-separated authMethods that initialize
 //                   advertises (default "cached_token"), each as `id` or
 //                   `id:type` (e.g. "openai-codex,hermes-setup:terminal"
@@ -61,8 +66,9 @@
 //                   shape, where the model truth arrives on the session
 //                   result, not the handshake
 //   FAKE_ACP_INIT_MODELS  comma-separated modelIds to advertise on
-//                   initialize `_meta.modelState.availableModels` (Grok/
-//                   Hermes shape). Ignored when FAKE_ACP_SESSION_MODELS is
+//                   initialize `_meta.modelState.availableModels` (legacy
+//                   Grok-compatible shape). Ignored when
+//                   FAKE_ACP_SESSION_MODELS is
 //                   set. A lone currentModelId is the default — not a list.
 //   FAKE_ACP_SESSION_AUTH_MESSAGE  the -32000 error text for
 //                   session-auth-error mode (default "Authentication
@@ -77,6 +83,7 @@ import { spawn } from "node:child_process";
 import { closeSync, readFileSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_ACP_MODE ?? "happy";
+const hermesV0204 = process.env.FAKE_ACP_FIXTURE === "hermes-v0.20.4";
 const AUTH_REQUIRED_CODE = -32000; // ACP's designated auth_required error code
 // gemini-cli shape: the session result advertises the session's models
 const sessionModelIds = (process.env.FAKE_ACP_SESSION_MODELS ?? "")
@@ -89,6 +96,19 @@ const sessionModels = () =>
         models: {
           availableModels: sessionModelIds.map((id) => ({ modelId: id, name: id })),
           currentModelId: sessionModelIds[0],
+        },
+      }
+    : {};
+const hermesModes = () =>
+  hermesV0204
+    ? {
+        modes: {
+          availableModes: [
+            { id: "default", name: "Default" },
+            { id: "accept_edits", name: "Accept Edits" },
+            { id: "dont_ask", name: "Don't Ask" },
+          ],
+          currentModeId: "default",
         },
       }
     : {};
@@ -112,13 +132,13 @@ if (argv.includes("--version")) {
   console.log("fake-acp 1.0.0");
   process.exit(0);
 }
-// one-shot generateText surface (`cli exec -p …`) — hermes-style
+// generic one-shot generateText test surface (`cli exec -p …`)
 if (argv[0] === "exec" && argv.includes("-p")) {
   if (dumpPath) writeDump({ execArgv: argv });
   console.log("User prefers concise replies. Last turn noted.");
   process.exit(0);
 }
-// pool-listing surface (`cli auth list`) — hermes-style; the driver's
+// generic pool-listing test surface (`cli auth list`); the driver's
 // snapshot cache hint asks this BEFORE any file. Derived from
 // FAKE_ACP_AUTH_IDS (agent-managed entries only — terminal methods are not
 // credentials), so tests flip the pool through env, never through disk.
@@ -152,6 +172,33 @@ function outSplitUtf8(obj: unknown, marker: string) {
   process.stdout.write(bytes.subarray(idx + 1));
 }
 const result = (id: unknown, res: unknown) => out({ jsonrpc: "2.0", id, result: res });
+
+function authMethods() {
+  if (mode === "no-auth") return [];
+  return (process.env.FAKE_ACP_AUTH_IDS ?? "cached_token")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((spec) => {
+      const [id, type] = spec.split(":");
+      if (!hermesV0204) return type ? { id, type } : { id };
+      if (id === "hermes-setup" || type === "terminal") {
+        return {
+          id,
+          name: "Configure Hermes provider",
+          description:
+            "Open Hermes' interactive model/provider setup in a terminal. Use this when Hermes has not been configured on this machine yet.",
+          type: "terminal",
+          args: ["--setup"],
+        };
+      }
+      return {
+        id,
+        name: `${id} runtime credentials`,
+        description: `Authenticate Hermes using the currently configured ${id} runtime credentials.`,
+      };
+    });
+}
 
 // pending server→client permission request id → resolver
 let pendingPermissionId: number | null = null;
@@ -264,27 +311,24 @@ function handle(msg: any) {
         process.stderr.write("fake-acp: simulated crash before result\n");
         process.exit(3);
       }
-      const authIds = (process.env.FAKE_ACP_AUTH_IDS ?? "cached_token")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const authMethods =
-        mode === "no-auth"
-          ? []
-          : authIds.map((spec) => {
-              const [id, type] = spec.split(":");
-              return type ? { id, type } : { id };
-            });
       const initializeResult = {
         protocolVersion: 1,
-        authMethods,
-        agentCapabilities: { promptCapabilities: { image: mode !== "no-image" } },
-        // gemini-cli's initialize carries no modelState — the model truth
-        // arrives on the session result instead. Grok/Hermes default is
-        // currentModelId only (not a catalog). FAKE_ACP_INIT_MODELS adds a list.
-        ...(sessionModelIds.length
+        authMethods: authMethods(),
+        ...(hermesV0204 ? { agentInfo: { name: "hermes-agent", version: "0.20.4" } } : {}),
+        agentCapabilities: hermesV0204
+          ? {
+              loadSession: true,
+              promptCapabilities: { image: true },
+              sessionCapabilities: { fork: {}, list: {}, resume: {} },
+            }
+          : { promptCapabilities: { image: mode !== "no-image" } },
+        // gemini-cli and Hermes v0.20.4 carry model truth on the session
+        // result. The generic/Grok fixture defaults to initialize currentModelId
+        // only (not a catalog); FAKE_ACP_INIT_MODELS adds a legacy list.
+        ...(!hermesV0204 && sessionModelIds.length
           ? {}
-          : {
+          : !hermesV0204
+            ? {
               _meta: {
                 modelState: {
                   currentModelId: initModelIds[0] ?? "fake-acp-model",
@@ -293,7 +337,8 @@ function handle(msg: any) {
                     : {}),
                 },
               },
-            }),
+              }
+            : {}),
       };
       if (mode === "stdin-close") {
         if (process.platform === "win32") {
@@ -332,6 +377,16 @@ function handle(msg: any) {
         out({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "login expired — authenticate failed" } });
         break;
       }
+      if (hermesV0204) {
+        const methodId = msg.params?.methodId;
+        const advertised = authMethods().some(
+          (method) => method.id === methodId && method.type !== "terminal",
+        );
+        if (!advertised) {
+          out({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "unsupported or unavailable auth method" } });
+          break;
+        }
+      }
       result(msg.id, {});
       break;
     case "session/new": {
@@ -357,14 +412,14 @@ function handle(msg: any) {
         out({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "session/new failed (not an auth error)" } });
         break;
       }
-      result(msg.id, { sessionId: "fake-acp-session", ...sessionModels() });
+      result(msg.id, { sessionId: "fake-acp-session", ...sessionModels(), ...hermesModes() });
       break;
     }
     case "session/load": {
       const servers: McpEntry[] = Array.isArray(msg.params?.mcpServers) ? msg.params.mcpServers : [];
       agentsMcp = servers.find((s: any) => s?.name === "agents") ?? agentsMcp;
       writeDump({ sessionLoad: msg.params });
-      result(msg.id, { ...sessionModels() });
+      result(msg.id, { ...sessionModels(), ...hermesModes() });
       break;
     }
     case "session/prompt": {
@@ -395,7 +450,12 @@ function handle(msg: any) {
         process.stdout.write("this is not json\n{broken\n");
       }
       const complete = () =>
-        result(msg.id, { stopReason: "end_turn", _meta: { inputTokens: 10, outputTokens: 5 } });
+        result(
+          msg.id,
+          hermesV0204
+            ? { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } }
+            : { stopReason: "end_turn", _meta: { inputTokens: 10, outputTokens: 5 } },
+        );
       if (mode === "ask-peer" && agentsMcp) {
         const depth = Number(agentsMcp.env?.find((e) => e.name === "OMB_TURN_DEPTH")?.value ?? "0") || 0;
         // Originator (depth 0) asks a peer. A comms-invoked turn still has
@@ -474,10 +534,17 @@ function handle(msg: any) {
               rawInput: { command: signIn ? "Sign in to GitHub. password: hunter2-never-leak" : "echo hi" },
               title: signIn ? "Sign in to GitHub" : "echo hi",
             },
-            options: [
-              { optionId: "allow-once", kind: "allow_once" },
-              { optionId: "reject", kind: "reject_once" },
-            ],
+            options: hermesV0204
+              ? [
+                  { optionId: "allow_once", kind: "allow_once", name: "Allow once" },
+                  { optionId: "allow_session", kind: "allow_always", name: "Allow for session" },
+                  { optionId: "allow_always", kind: "allow_always", name: "Allow always" },
+                  { optionId: "deny", kind: "reject_once", name: "Deny" },
+                ]
+              : [
+                  { optionId: "allow-once", kind: "allow_once" },
+                  { optionId: "reject", kind: "reject_once" },
+                ],
           },
         });
         return;

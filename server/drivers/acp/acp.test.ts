@@ -4,9 +4,10 @@
 // normalize the ACP handshake into canonical events, keep argv/env hygiene,
 // broker permission asks, and settle interrupts/crashes cleanly.
 //
-// Spawn-based tests are POSIX-only until Windows CLI spawning lands (the fake
-// CLI is a shebang script Windows cannot exec directly).
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// All applicable lifecycle/snapshot cases run cross-platform. A `.ts` CLI
+// path is resolved to process.execPath by the shared launch helper, so the
+// shebang is never the process contract. Remaining Windows N/A skips: none.
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,8 +26,6 @@ const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "test
 // asynchronous, so using HOME as their cwd can race setup.ts deleting it
 // after every assertion has already passed.
 const FAKE_CWD = process.cwd();
-// POSIX-only: the fake ACP CLI is a shebang script Windows cannot exec.
-const posixOnly = describe.skipIf(process.platform === "win32");
 
 /** A harness that exists only in tests: no transformEnv, no credentialEnv.
  *  Proves the core deny-by-default allowlist — a forgotten hook must not
@@ -249,7 +248,7 @@ describe("ACP child env (fake driver, no transformEnv)", () => {
   });
 });
 
-posixOnly("ACP turns (fake CLI) — POSIX-only: shebang fake CLI", () => {
+describe("ACP turns (cross-platform fake CLI via process.execPath)", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
   let scratch: string;
@@ -268,7 +267,6 @@ posixOnly("ACP turns (fake CLI) — POSIX-only: shebang fake CLI", () => {
 
   beforeEach(() => {
     ensureDirs();
-    chmodSync(FAKE_CLI, 0o755);
     scratch = mkdtempSync(join(tmpdir(), "omb-acp-test-"));
   });
 
@@ -545,7 +543,7 @@ posixOnly("ACP turns (fake CLI) — POSIX-only: shebang fake CLI", () => {
   });
 });
 
-describe.skipIf(process.platform === "win32")("ACP snapshot (POSIX-only: shebang fake CLI)", () => {
+describe("ACP snapshot (cross-platform process launch)", () => {
   it("a missing binary is unavailable", async () => {
     const instance = await GrokAgentDriver.create({
       instanceId: "grok-missing",

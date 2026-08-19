@@ -4,18 +4,18 @@
 // spawn grammar — which is how the rc.12/rc.14 field failures shipped: the
 // installed hermes rejected our argv, printed its usage, and exited 2,
 // while `--version` kept the picker green. This fake is shaped like the
-// FIELD binary (Hermes Agent v0.20.1): a clap-style argv gate in front of
+// tagged binary (Hermes Agent v0.20.4 / v2026.8.18): an argv gate in front of
 // the shared ACP protocol fake:
 //
-//   default             accepts EXACTLY the v0.20.1 grammar hermes.ts emits —
-//                       `[-m <model>] acp` (plus `exec -p <prompt>` for
-//                       one-shot generateText and `auth list` for the
-//                       snapshot cache hint) — then delegates to
-//                       fake-acp-cli.ts for the protocol. ANY other argv →
-//                       usage on stderr, exit 2. In particular the OLD
+//   default             accepts EXACTLY the documented v0.20.4 surfaces this
+//                       driver uses: `[-m <model>] acp`, `auth list` for the
+//                       snapshot cache hint, and `--version`. It then delegates
+//                       ACP to fake-acp-cli.ts in its v0.20.4 frame mode. ANY
+//                       other argv → usage on stderr, exit 2. In particular
+//                       `exec -p` is not a v0.20.4 command and the OLD
 //                       grammar (`--approval-policy … acp stdio`) and the
 //                       global `--yolo` bypass are rejected, exactly like
-//                       the field binary rejected the old spawn.
+//                       the tagged parser rejects unsupported argv.
 //   FAKE_HERMES_GRAMMAR=reject
 //                       models a wrong/outdated binary: answers `--version`,
 //                       rejects everything else with usage and exit 2 —
@@ -42,21 +42,18 @@ const argv = process.argv.slice(2);
 process.stderr.write("Bitwarden Secrets Manager: applied 1 secret\n");
 
 if (argv.includes("--version")) {
-  console.log("fake-hermes 0.20.1");
+  console.log("Hermes Agent v0.20.4 (2026.8.18)");
   process.exit(0);
 }
 
-// Mirrors the field CLI's rejection: unexpected argument → usage catalog on
-// stderr, exit 2. `hermes acp --help` (v0.20.1) only knows --accept-hooks,
+// Mirrors the tagged CLI's argparse rejection: usage on stderr, exit 2.
+// `hermes acp --help` (v0.20.4) knows --accept-hooks,
 // --version, --check, --setup, --setup-browser, --yes — no --approval-policy,
-// no trailing stdio. The command catalog matches v0.20.1: `login`/`logout`
-// are REMOVED (the field binary answers `hermes login` with "The 'hermes
-// login' command has been removed. Use 'hermes auth' …"); credentials are
-// managed by `hermes auth` / `hermes model` / `hermes setup`.
+// no trailing stdio. Keep the error generic rather than fabricating argparse's
+// enormous generated command catalog; the documented grammar is the contract.
 const USAGE = [
-  "error: unexpected argument found",
-  "usage: hermes [-m MODEL] [--yolo] <command> [options]",
-  "commands: acp, auth, exec, model, setup, orchestrator, pets, journey, plugins, skills",
+  "usage: hermes [global-options] <command> [subcommand/options]",
+  "hermes: error: unrecognized command or arguments",
 ].join("\n");
 
 function rejectArgv(): never {
@@ -69,14 +66,7 @@ if (process.env.FAKE_HERMES_GRAMMAR === "reject-signed-out" && !existsSync(join(
   rejectArgv();
 }
 
-// one-shot generateText surface (`hermes exec -p <prompt>`), strict
-if (argv[0] === "exec") {
-  if (argv[1] !== "-p" || argv.length !== 3) rejectArgv();
-  console.log("fake hermes one-shot");
-  process.exit(0);
-}
-
-// pool-listing surface (`hermes auth list`) — the v0.20.1 credential
+// pool-listing surface (`hermes auth list`) — the v0.20.4 credential
 // manager the snapshot cache hint asks before any file. Strict: only the
 // exact `auth list` argv; the listing mirrors FAKE_ACP_AUTH_IDS'
 // agent-managed entries, like the real CLI mirrors its resolved pool.
@@ -104,5 +94,8 @@ if (rest[0] === "-m") {
 }
 if (rest.length !== 1 || rest[0] !== "acp") rejectArgv();
 
-// grammar accepted — speak ACP via the shared protocol fake
+// Grammar accepted — speak the tagged Hermes v0.20.4 ACP frame shape via the
+// shared protocol fake. This is set only after argv validation, so an invalid
+// command can never be made to look successful by the protocol fixture.
+process.env.FAKE_ACP_FIXTURE = "hermes-v0.20.4";
 await import("./fake-acp-cli.ts");
