@@ -21,10 +21,9 @@
 //                   | expired-token (authenticate succeeds, then
 //                     session/prompt fails with ACP auth_required -32000 —
 //                     the token-expired-mid-session shape)
-//                   | stdin-close (replies to initialize but closes its
-//                     stdin first, then stays alive — the client's next
-//                     write hits a closed pipe: async EPIPE, which must be
-//                     handled, never an unhandled 'error' server crash)
+//                   | stdin-close (closes its actual stdin pipe before it
+//                     replies — the client's next write hits async EPIPE,
+//                     which must be handled, never an unhandled crash)
 //                   | session-auth-error (initialize/authenticate succeed,
 //                     then session/new fails with ACP auth_required -32000
 //                     and FAKE_ACP_SESSION_AUTH_MESSAGE — the gemini-cli
@@ -265,21 +264,6 @@ function handle(msg: any) {
         process.stderr.write("fake-acp: simulated crash before result\n");
         process.exit(3);
       }
-      if (mode === "stdin-close") {
-        // close our read end BEFORE replying: the client's follow-up write
-        // is then causally after the close and must surface as a handled
-        // stdin 'error' (EPIPE), never an unhandled crash. Stay alive so
-        // the failure is the write itself, not our exit. destroy() alone
-        // is not enough — libuv holds a duplicate — closing fd 0 is what
-        // actually breaks the pipe.
-        process.stdin.destroy();
-        try {
-          closeSync(0);
-        } catch {
-          /* already closed */
-        }
-        setInterval(() => {}, 1_000);
-      }
       const authIds = (process.env.FAKE_ACP_AUTH_IDS ?? "cached_token")
         .split(",")
         .map((s) => s.trim())
@@ -291,7 +275,7 @@ function handle(msg: any) {
               const [id, type] = spec.split(":");
               return type ? { id, type } : { id };
             });
-      result(msg.id, {
+      const initializeResult = {
         protocolVersion: 1,
         authMethods,
         agentCapabilities: { promptCapabilities: { image: mode !== "no-image" } },
@@ -310,7 +294,36 @@ function handle(msg: any) {
                 },
               },
             }),
-      });
+      };
+      if (mode === "stdin-close") {
+        if (process.platform === "win32") {
+          // Node's Windows standard streams retain a libuv HANDLE after
+          // destroy()/closeSync(0), so that POSIX-shaped fake leaves the
+          // parent's pipe writable and cannot model closed stdin. Exit the
+          // process to close the real read HANDLE, while a child that does
+          // not inherit stdin relays the already-built response. The relay
+          // briefly retains stdout so the driver receives initialize before
+          // its child-close fallback settles the same failed lifecycle.
+          const line = JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: initializeResult }) + "\n";
+          const relayScript = `process.stdout.write(${JSON.stringify(line)}, () => setTimeout(() => {}, 500))`;
+          const relay = spawn(process.execPath, ["-e", relayScript], {
+            stdio: ["ignore", process.stdout, process.stderr],
+            windowsHide: true,
+          });
+          relay.unref();
+          process.exit(0);
+        }
+        // POSIX closes fd 0 for the process while stdout remains available,
+        // so the response is causally after the pipe's read end closed.
+        process.stdin.destroy();
+        try {
+          closeSync(0);
+        } catch {
+          /* already closed */
+        }
+        setInterval(() => {}, 1_000);
+      }
+      result(msg.id, initializeResult);
       break;
     }
     case "authenticate":

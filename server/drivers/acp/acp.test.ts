@@ -21,6 +21,10 @@ import { GEMINI_CREDENTIAL_ENV, GeminiAgentDriver } from "./gemini.ts";
 import { GrokAgentDriver } from "./grok.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
+// Keep spawned fakes out of the suite's throwaway HOME. Windows taskkill is
+// asynchronous, so using HOME as their cwd can race setup.ts deleting it
+// after every assertion has already passed.
+const FAKE_CWD = process.cwd();
 // POSIX-only: the fake ACP CLI is a shebang script Windows cannot exec.
 const posixOnly = describe.skipIf(process.platform === "win32");
 
@@ -87,7 +91,7 @@ describe("Grok catalog probe", () => {
       displayName: "Grok",
       environment: {},
       enabled: true,
-      config: { cli: FAKE_CLI, fullAuto: false },
+      config: { cli: FAKE_CLI, fullAuto: false, workspace: FAKE_CWD },
     });
     await inst.snapshot();
     expect(inst.models.options.map((o) => o.id)).toEqual(["grok-4.5"]);
@@ -100,7 +104,7 @@ describe("Grok catalog probe", () => {
       displayName: "Grok",
       environment: { FAKE_ACP_INIT_MODELS: "grok-4.5,grok-4" },
       enabled: true,
-      config: { cli: FAKE_CLI, fullAuto: false },
+      config: { cli: FAKE_CLI, fullAuto: false, workspace: FAKE_CWD },
     });
     expect(inst.models.options.map((o) => o.id)).toEqual(["grok-4.5"]);
     await inst.snapshot();
@@ -183,7 +187,7 @@ describe("ACP child env (fake driver, no transformEnv)", () => {
       displayName: "Bare",
       environment: {},
       enabled: true,
-      config: { cli: FAKE_CLI, fullAuto: false },
+      config: { cli: FAKE_CLI, fullAuto: false, workspace: FAKE_CWD },
     });
     recorder = recordEvents(instance.adapter);
     await instance.adapter.sendTurn({ threadId: "t-bare-deny", text: "go" });
@@ -208,7 +212,7 @@ describe("ACP child env (fake driver, no transformEnv)", () => {
       displayName: "Bare",
       environment: { FAKE_ACP_DUMP: dump },
       enabled: true,
-      config: { cli: FAKE_CLI, fullAuto: false },
+      config: { cli: FAKE_CLI, fullAuto: false, workspace: FAKE_CWD },
     });
     expect(instance.generateText).toBeTypeOf("function");
     const text = await instance.generateText!("distill this");
@@ -230,7 +234,7 @@ describe("ACP child env (fake driver, no transformEnv)", () => {
       displayName: "Gemini",
       environment: { FAKE_ACP_AUTH_IDS: "oauth-personal,gemini-api-key,vertex-ai,gateway" },
       enabled: true,
-      config: { cli: FAKE_CLI, fullAuto: false },
+      config: { cli: FAKE_CLI, fullAuto: false, workspace: FAKE_CWD },
     });
     recorder = recordEvents(instance.adapter);
     await instance.adapter.sendTurn({ threadId: "t-gemini-keep", text: "go" });
@@ -257,7 +261,7 @@ posixOnly("ACP turns (fake CLI) — POSIX-only: shebang fake CLI", () => {
       displayName: "ACP Test",
       environment: {},
       enabled: true,
-      config: { cli: FAKE_CLI, fullAuto },
+      config: { cli: FAKE_CLI, fullAuto, workspace: FAKE_CWD },
     });
     recorder = recordEvents(instance.adapter);
   };

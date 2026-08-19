@@ -307,15 +307,20 @@ describe("Hermes turns (fake CLI)", () => {
   });
 
   it("a write to a closed child stdin settles the turn — never an unhandled EPIPE crash (rc.12)", async () => {
-    // the fake replies to initialize but closes its stdin first, so the
-    // driver's next write (authenticate) lands on a closed pipe. Without a
-    // stdin 'error' listener that async EPIPE killed the whole server.
+    // The fake closes its actual stdin pipe before replying, so the driver's
+    // authenticate write deterministically lands on a closed pipe on Windows
+    // too. Windows observes the process-exit fallback before its pipe error;
+    // both paths must fail the turn without an unhandled EPIPE server crash.
     await create({ mode: "stdin-close" });
     await instance.adapter.sendTurn({ threadId: "t-hermes-epipe", text: "go" });
     const done = await recorder.until((e) => e.type === "turn.completed");
-    expect(done).toMatchObject({ ok: false, stopReason: "stdin_error" });
+    expect(done).toMatchObject({
+      ok: false,
+      stopReason: process.platform === "win32" ? "exit_before_result" : "stdin_error",
+    });
+    expect(recorder.events.map((e) => e.type)).toEqual(["turn.started", "runtime.error", "turn.completed"]);
     const err = recorder.events.find((e) => e.type === "runtime.error")!;
-    expect(err.message).toContain("stdin write failed");
+    expect(err.message).toContain(process.platform === "win32" ? "exited 0 before the prompt result" : "stdin write failed");
     expect(instance.adapter.hasSession("t-hermes-epipe")).toBe(false);
   });
 
