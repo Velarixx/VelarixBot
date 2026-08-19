@@ -10,6 +10,7 @@ import type { SqliteDatabase } from "./db/sqlite-native.ts";
 
 export const SESSION_COOKIE_NAME = "velarix_session";
 export const MAX_SESSION_AGE_SECONDS = 60 * 60 * 24 * 30;
+export const MAX_LIVE_SESSIONS_PER_USER = 5;
 
 const SESSION_TOKEN_BYTES = 32;
 const SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -152,10 +153,33 @@ export class IdentitySessions {
     if (!Number.isSafeInteger(expiresAt)) throw new RangeError("session expiry exceeds the safe timestamp range");
 
     const token = randomBytes(SESSION_TOKEN_BYTES).toString("base64url");
-    this.db
-      .prepare("INSERT INTO sessions(token_digest, user_id, created_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, NULL)")
-      .run(sessionDigest(token), userId, createdAt, expiresAt);
-    return { token, userId, createdAt, expiresAt };
+    const tokenDigest = sessionDigest(token);
+    return this.db.transaction(() => {
+      this.db
+        .prepare("INSERT INTO sessions(token_digest, user_id, created_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, NULL)")
+        .run(tokenDigest, userId, createdAt, expiresAt);
+
+      // Session issuance is the maintenance path: prune dead history globally,
+      // then keep the new credential plus the newest bounded set for this user.
+      this.db.prepare("DELETE FROM sessions WHERE expires_at <= ? OR revoked_at IS NOT NULL").run(createdAt);
+      this.db
+        .prepare(
+          `DELETE FROM sessions
+           WHERE token_digest IN (
+             SELECT token_digest
+             FROM sessions
+             WHERE user_id = ?
+               AND revoked_at IS NULL
+               AND expires_at > ?
+               AND token_digest <> ?
+             ORDER BY created_at DESC, token_digest DESC
+             LIMIT -1 OFFSET ?
+           )`,
+        )
+        .run(userId, createdAt, tokenDigest, MAX_LIVE_SESSIONS_PER_USER - 1);
+
+      return { token, userId, createdAt, expiresAt };
+    })();
   }
 
   /** Persist the provider identity refresh and new session as one unit. */

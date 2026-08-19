@@ -9,6 +9,7 @@ import type { SqliteDatabase } from "./db/sqlite-native.ts";
 import {
   clearSessionCookie,
   IdentitySessions,
+  MAX_LIVE_SESSIONS_PER_USER,
   MAX_SESSION_AGE_SECONDS,
   SESSION_COOKIE_NAME,
   sessionCookie,
@@ -21,6 +22,10 @@ interface SessionRow {
   created_at: number;
   expires_at: number;
   revoked_at: number | null;
+}
+
+function digest(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 describe("durable identity and sessions", () => {
@@ -122,7 +127,7 @@ describe("durable identity and sessions", () => {
     expect(session.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(columns).toEqual(["token_digest", "user_id", "created_at", "expires_at", "revoked_at"]);
     expect(row).toEqual({
-      token_digest: createHash("sha256").update(session.token).digest("hex"),
+      token_digest: digest(session.token),
       user_id: user.id,
       created_at: 2_000,
       expires_at: 122_000,
@@ -149,8 +154,117 @@ describe("durable identity and sessions", () => {
     expect(identity.revokeSession(revoked.token, 22_000)).toBe(true);
     expect(identity.resolveSession(revoked.token, 22_000)).toBeNull();
     expect(identity.revokeSession(revoked.token, 23_000)).toBe(false);
-    expect(identity.pruneExpiredSessions(30_000)).toBe(2);
+    expect(identity.pruneExpiredSessions(30_000)).toBe(1);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM sessions").get()?.n).toBe(0);
+  });
+
+  it("caps live sessions per user and keeps the newly issued session valid", () => {
+    const completed = identity.completeGithubSignIn(
+      { githubId: 201, login: "bounded" },
+      { now: 1_000, maxAgeSeconds: 3_600 },
+    );
+    const issued = [completed.session];
+    for (let index = 1; index <= MAX_LIVE_SESSIONS_PER_USER; index += 1) {
+      issued.push(identity.createSession(completed.user.id, { now: 1_000 + index, maxAgeSeconds: 3_600 }));
+    }
+
+    expect(
+      db.prepare<{ n: number }>("SELECT count(*) AS n FROM sessions WHERE user_id = ?").get(completed.user.id)?.n,
+    ).toBe(MAX_LIVE_SESSIONS_PER_USER);
+    expect(identity.resolveSession(issued[0]!.token, 2_000)).toBeNull();
+    expect(identity.resolveSession(issued.at(-1)!.token, 2_000)?.id).toBe(completed.user.id);
+  });
+
+  it("uses token digest as a stable tie-breaker without retiring the new session", () => {
+    const user = identity.upsertGithubIdentity({ githubId: 202, login: "same-time" }, 1_000);
+    const existing = Array.from({ length: MAX_LIVE_SESSIONS_PER_USER }, () =>
+      identity.createSession(user.id, { now: 2_000, maxAgeSeconds: 3_600 }),
+    );
+    const newest = identity.createSession(user.id, { now: 2_000, maxAgeSeconds: 3_600 });
+    const retainedDigests = db
+      .prepare<{ token_digest: string }>("SELECT token_digest FROM sessions WHERE user_id = ? ORDER BY token_digest")
+      .all(user.id)
+      .map(({ token_digest }) => token_digest);
+    const expectedExisting = existing
+      .map(({ token }) => digest(token))
+      .sort()
+      .slice(1);
+
+    expect(retainedDigests).toEqual([...expectedExisting, digest(newest.token)].sort());
+    expect(identity.resolveSession(newest.token, 3_000)?.id).toBe(user.id);
+  });
+
+  it("does not retire another user's live sessions when enforcing the cap", () => {
+    const first = identity.upsertGithubIdentity({ githubId: 203, login: "first-user" }, 1_000);
+    const second = identity.upsertGithubIdentity({ githubId: 204, login: "second-user" }, 1_000);
+    const secondSessions = Array.from({ length: MAX_LIVE_SESSIONS_PER_USER }, (_, index) =>
+      identity.createSession(second.id, { now: 2_000 + index, maxAgeSeconds: 3_600 }),
+    );
+    for (let index = 0; index <= MAX_LIVE_SESSIONS_PER_USER; index += 1) {
+      identity.createSession(first.id, { now: 3_000 + index, maxAgeSeconds: 3_600 });
+    }
+
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM sessions WHERE user_id = ?").get(first.id)?.n).toBe(
+      MAX_LIVE_SESSIONS_PER_USER,
+    );
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM sessions WHERE user_id = ?").get(second.id)?.n).toBe(
+      MAX_LIVE_SESSIONS_PER_USER,
+    );
+    for (const session of secondSessions) {
+      expect(identity.resolveSession(session.token, 4_000)?.id).toBe(second.id);
+    }
+  });
+
+  it("prunes expired and revoked history during an ordinary successful sign-in", () => {
+    const expiredUser = identity.upsertGithubIdentity({ githubId: 205, login: "expired-user" }, 1_000);
+    const revokedUser = identity.upsertGithubIdentity({ githubId: 206, login: "revoked-user" }, 1_000);
+    identity.createSession(expiredUser.id, { now: 1_000, maxAgeSeconds: 1 });
+    const revoked = identity.createSession(revokedUser.id, { now: 1_000, maxAgeSeconds: 100 });
+    identity.revokeSession(revoked.token, 1_500);
+
+    const completed = identity.completeGithubSignIn(
+      { githubId: 207, login: "maintenance-sign-in" },
+      { now: 5_000, maxAgeSeconds: 3_600 },
+    );
+
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM sessions").get()?.n).toBe(1);
+    expect(identity.resolveSession(completed.session.token, 5_001)?.id).toBe(completed.user.id);
+  });
+
+  it("rolls back identity refresh and session issuance when pruning fails", () => {
+    const completed = identity.completeGithubSignIn(
+      { githubId: 208, login: "before-failure" },
+      { now: 1_000, maxAgeSeconds: 3_600 },
+    );
+    for (let index = 1; index < MAX_LIVE_SESSIONS_PER_USER; index += 1) {
+      identity.createSession(completed.user.id, { now: 1_000 + index, maxAgeSeconds: 3_600 });
+    }
+    const before = db
+      .prepare<{ token_digest: string }>("SELECT token_digest FROM sessions ORDER BY token_digest")
+      .all()
+      .map(({ token_digest }) => token_digest);
+    db.exec(`CREATE TRIGGER fail_session_prune
+      BEFORE DELETE ON sessions
+      BEGIN
+        SELECT RAISE(ABORT, 'forced session prune failure');
+      END`);
+
+    expect(() =>
+      identity.completeGithubSignIn(
+        { githubId: 208, login: "must-roll-back" },
+        { now: 2_000, maxAgeSeconds: 3_600 },
+      ),
+    ).toThrow(/forced session prune failure/);
+
+    expect(
+      db.prepare<{ github_login: string }>("SELECT github_login FROM users WHERE id = ?").get(completed.user.id)?.github_login,
+    ).toBe("before-failure");
+    expect(
+      db
+        .prepare<{ token_digest: string }>("SELECT token_digest FROM sessions ORDER BY token_digest")
+        .all()
+        .map(({ token_digest }) => token_digest),
+    ).toEqual(before);
   });
 
   it("resolves the same user after a full database restart", () => {
