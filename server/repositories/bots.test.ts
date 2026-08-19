@@ -1,11 +1,13 @@
 // Bot repository: ordering, persistence across reopen, legacy-row
 // normalization, and boot-time crash recovery.
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "../config.ts";
 import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
+import { IdentitySessions } from "../identity.ts";
 import { zeroUsage, type BotRecord } from "../store.ts";
 import { createBotsRepository } from "./bots.ts";
 import { createRepositories } from "./index.ts";
@@ -88,6 +90,57 @@ describe("bots repository", () => {
     expect(bots.get(running.id)).toMatchObject({ busy: false, state: "BLOCKED", stateDetail: "interrupted" });
     expect(bots.get(idle.id)).toMatchObject({ busy: false, state: "IDLE" });
     expect(bots.recoverInterrupted()).toBe(0); // idempotent
+  });
+
+  it("isolates every tenant-scoped lookup and update from other owners and legacy rows", () => {
+    const identity = new IdentitySessions(db);
+    const userA = identity.upsertGithubIdentity({ githubId: 101, login: "tenant-a" }, 1_000);
+    const userB = identity.upsertGithubIdentity({ githubId: 202, login: "tenant-b" }, 1_000);
+    const bots = createBotsRepository(db);
+    const legacy = makeBot({ name: "Legacy", createdAt: 1_000 });
+    const botA = makeBot({ name: "A", createdAt: 2_000 });
+    const botASecond = makeBot({ name: "A second", createdAt: 3_000 });
+    const botB = makeBot({ name: "B", createdAt: 4_000 });
+
+    bots.insert(legacy);
+    bots.forOwner(userA.id).insert(botA);
+    bots.forOwner(userA.id).insert(botASecond);
+    bots.forOwner(userB.id).insert(botB);
+
+    const tenantA = bots.forOwner(userA.id);
+    const tenantB = bots.forOwner(userB.id);
+    expect(tenantA.list().map((bot) => bot.id)).toEqual([botASecond.id, botA.id]);
+    expect(tenantB.list().map((bot) => bot.id)).toEqual([botB.id]);
+    expect(tenantA.count()).toBe(2);
+    expect(tenantB.count()).toBe(1);
+    expect(tenantA.get(botA.id)?.name).toBe("A");
+    expect(tenantA.getByThread(botA.threadId)?.id).toBe(botA.id);
+    expect(tenantA.get(botB.id)).toBeNull();
+    expect(tenantA.getByThread(botB.threadId)).toBeNull();
+    expect(tenantA.get(legacy.id)).toBeNull();
+    expect(tenantA.getByThread(legacy.threadId)).toBeNull();
+
+    expect(tenantB.update({ ...botA, name: "cross-tenant mutation" })).toBe(false);
+    expect(tenantA.get(botA.id)?.name).toBe("A");
+    expect(tenantB.update({ ...botB, threadId: botA.threadId, name: "thread collision" })).toBe(false);
+    expect(tenantB.get(botB.id)).toMatchObject({ name: "B", threadId: botB.threadId });
+    expect(tenantA.update({ ...botA, name: "A updated" })).toBe(true);
+    expect(tenantA.get(botA.id)?.name).toBe("A updated");
+
+    // The explicitly unscoped desktop API remains backward-compatible and
+    // visible as such; it is not evidence of tenant safety.
+    expect(bots.count()).toBe(4);
+    expect(bots.get(legacy.id)?.name).toBe("Legacy");
+  });
+
+  it("rejects malformed and nonexistent owners without leaving bot or thread rows", () => {
+    const bots = createBotsRepository(db);
+    expect(() => bots.forOwner("not-a-uuid")).toThrow(/internal UUID/);
+
+    const orphan = makeBot();
+    expect(() => bots.forOwner(randomUUID()).insert(orphan)).toThrow(/FOREIGN KEY/i);
+    expect(bots.get(orphan.id)).toBeNull();
+    expect(db.prepare("SELECT 1 FROM threads WHERE id = ?").get(orphan.threadId)).toBeUndefined();
   });
 
   it("deleteBotCascade removes the bot, thread, messages, routines, runs, and binding in one transaction", () => {

@@ -11,6 +11,12 @@ interface BotRow {
   data: string;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function assertOwnerId(ownerId: string): void {
+  if (!UUID_PATTERN.test(ownerId)) throw new TypeError("ownerId must be an internal UUID");
+}
+
 function toRecord(row: BotRow): BotRecord | null {
   try {
     return normalizeBot(JSON.parse(row.data));
@@ -20,6 +26,8 @@ function toRecord(row: BotRow): BotRecord | null {
 }
 
 export interface BotsRepository {
+  /** Legacy desktop access. These methods intentionally include unowned and
+   * tenant-owned rows and must never be used as a tenant security boundary. */
   list(): BotRecord[];
   get(id: string): BotRecord | null;
   getByThread(threadId: string): BotRecord | null;
@@ -29,6 +37,19 @@ export interface BotsRepository {
   /** Boot-time crash recovery: a bot that died mid-turn reloads as
    * BLOCKED/interrupted, never as a phantom RUNNING. */
   recoverInterrupted(): number;
+
+  /** Bind every operation to one internal user UUID. The returned interface
+   * has no unscoped escape hatch and excludes legacy owner_id=NULL rows. */
+  forOwner(ownerId: string): TenantBotsRepository;
+}
+
+export interface TenantBotsRepository {
+  list(): BotRecord[];
+  get(id: string): BotRecord | null;
+  getByThread(threadId: string): BotRecord | null;
+  count(): number;
+  insert(bot: BotRecord): void;
+  update(bot: BotRecord): boolean;
 }
 
 export function createBotsRepository(db: SqliteDatabase): BotsRepository {
@@ -39,11 +60,58 @@ export function createBotsRepository(db: SqliteDatabase): BotsRepository {
   const selectById = db.prepare<BotRow>("SELECT id, thread_id, created_at, data FROM bots WHERE id = ?");
   const selectByThread = db.prepare<BotRow>("SELECT id, thread_id, created_at, data FROM bots WHERE thread_id = ?");
   const countStmt = db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots");
+  const selectAllForOwner = db.prepare<BotRow>(
+    "SELECT id, thread_id, created_at, data FROM bots WHERE owner_id = ? ORDER BY seq DESC",
+  );
+  const selectByIdForOwner = db.prepare<BotRow>(
+    "SELECT id, thread_id, created_at, data FROM bots WHERE owner_id = ? AND id = ?",
+  );
+  const selectByThreadForOwner = db.prepare<BotRow>(
+    "SELECT id, thread_id, created_at, data FROM bots WHERE owner_id = ? AND thread_id = ?",
+  );
+  const countForOwner = db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots WHERE owner_id = ?");
+  const insertOwnedBot = db.prepare(
+    "INSERT INTO bots(id, thread_id, created_at, data, owner_id) VALUES (?, ?, ?, ?, ?)",
+  );
+  const updateOwnedBot = db.prepare(
+    "UPDATE bots SET data = ? WHERE owner_id = ? AND id = ? AND thread_id = ?",
+  );
 
   const insertTx = db.transaction((bot: BotRecord) => {
     insertThread.run(bot.threadId, bot.id, bot.createdAt);
     insertBot.run(bot.id, bot.threadId, bot.createdAt, JSON.stringify(bot));
   });
+
+  const insertOwnedTx = db.transaction((ownerId: string, bot: BotRecord) => {
+    insertThread.run(bot.threadId, bot.id, bot.createdAt);
+    insertOwnedBot.run(bot.id, bot.threadId, bot.createdAt, JSON.stringify(bot), ownerId);
+  });
+
+  function forOwner(ownerId: string): TenantBotsRepository {
+    assertOwnerId(ownerId);
+    return {
+      list() {
+        return selectAllForOwner.all(ownerId).map(toRecord).filter((bot): bot is BotRecord => !!bot);
+      },
+      get(id) {
+        const row = selectByIdForOwner.get(ownerId, id);
+        return row ? toRecord(row) : null;
+      },
+      getByThread(threadId) {
+        const row = selectByThreadForOwner.get(ownerId, threadId);
+        return row ? toRecord(row) : null;
+      },
+      count() {
+        return countForOwner.get(ownerId)?.n ?? 0;
+      },
+      insert(bot) {
+        insertOwnedTx(ownerId, bot);
+      },
+      update(bot) {
+        return updateOwnedBot.run(JSON.stringify(bot), ownerId, bot.id, bot.threadId).changes > 0;
+      },
+    };
+  }
 
   return {
     list() {
@@ -87,5 +155,6 @@ export function createBotsRepository(db: SqliteDatabase): BotsRepository {
       tx();
       return recovered;
     },
+    forOwner,
   };
 }

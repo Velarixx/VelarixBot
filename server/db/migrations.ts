@@ -242,6 +242,22 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // First tenant-owned product-data seam. Existing desktop bots stay
+    // deliberately unowned: later account-claim behavior requires an
+    // explicit product decision and must not silently attach local data to a
+    // real user. SaaS callers must use owner-scoped repository methods.
+    version: 7,
+    name: "bot-user-ownership",
+    up(db) {
+      db.exec(`
+        ALTER TABLE bots ADD COLUMN owner_id TEXT
+          REFERENCES users(id) ON DELETE RESTRICT;
+        CREATE INDEX bots_owner_seq ON bots(owner_id, seq DESC);
+        CREATE INDEX bots_owner_thread ON bots(owner_id, thread_id);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

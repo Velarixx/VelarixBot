@@ -66,6 +66,32 @@ describe("database + migrations", () => {
     expect(appliedMigrations(db)).toEqual(first);
   });
 
+  it("preserves pre-ownership bots as unowned and adds owner lookup indexes", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    db = new (loadBetterSqlite3())(join(DATA_DIR, "pre-ownership.db"));
+    migrate(db, MIGRATIONS.slice(0, 6));
+    db.prepare("INSERT INTO threads(id, bot_id, created_at) VALUES (?, ?, ?)").run("legacy-thread", "legacy-bot", 1_000);
+    db.prepare("INSERT INTO bots(id, thread_id, created_at, data) VALUES (?, ?, ?, ?)").run(
+      "legacy-bot",
+      "legacy-thread",
+      1_000,
+      JSON.stringify({ id: "legacy-bot" }),
+    );
+
+    expect(migrate(db)).toEqual(["bot-user-ownership"]);
+    expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM bots WHERE id = ?").get("legacy-bot")).toEqual({
+      owner_id: null,
+    });
+    expect(
+      db
+        .prepare<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'bots_owner_%' ORDER BY name")
+        .all()
+        .map(({ name }) => name),
+    ).toEqual(["bots_owner_seq", "bots_owner_thread"]);
+    expect(migrate(db)).toEqual([]);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()?.n).toBe(1);
+  });
+
   it("backfills legacy routine_runs rows: open rows close as interrupted", () => {
     // build a v1 database the way a pre-P1.2 build left it, then apply v2
     mkdirSync(DATA_DIR, { recursive: true });
