@@ -17,7 +17,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { posix, win32 } from "node:path";
 
 import { atomicWritePrivateFile } from "./service-auth.mjs";
 
@@ -35,7 +35,7 @@ export function isHarnessServiceArgv(argv, env = {}) {
 }
 
 export function launchAgentPlistPath(home = homedir()) {
-  return join(home, "Library", "LaunchAgents", LAUNCH_AGENT_PLIST);
+  return posix.join(home, "Library", "LaunchAgents", LAUNCH_AGENT_PLIST);
 }
 
 export function xmlEscape(value) {
@@ -118,7 +118,7 @@ export function macBootoutArgs({ uid, label = LAUNCH_AGENT_LABEL }) {
 
 export function windowsScExe(env = process.env) {
   const root = env.SystemRoot || env.SYSTEMROOT || "C:\\Windows";
-  return join(root, "System32", "sc.exe");
+  return win32.join(root, "System32", "sc.exe");
 }
 
 /** Per-user user-session service (type=userown). Not LocalSystem, not

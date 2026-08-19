@@ -30,7 +30,7 @@ export function isNamedPipePath(sockPath) {
 
 export function standaloneSocketPath(platform, home) {
   if (platform === "win32") return "\\\\.\\pipe\\cua-driver";
-  if (platform === "darwin") return path.join(home, "Library/Caches/cua-driver/cua-driver.sock");
+  if (platform === "darwin") return path.posix.join(home, "Library/Caches/cua-driver/cua-driver.sock");
   return null;
 }
 
@@ -49,8 +49,9 @@ export function resolveDriverBinaryWith({
 }) {
   if (envPath) return envPath;
   if (packaged && resourcesPath) {
+    const platformPath = platform === "win32" ? path.win32 : path.posix;
     for (const name of bundledDriverNames(platform)) {
-      const candidate = path.join(resourcesPath, name);
+      const candidate = platformPath.join(resourcesPath, name);
       if (exists(candidate)) return candidate;
     }
   }

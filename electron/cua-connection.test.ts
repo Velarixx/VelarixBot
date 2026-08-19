@@ -111,6 +111,34 @@ describe("darwin cua connection is unchanged", () => {
     expect(conn.socketPath).toMatch(/cua-driver\.sock$/);
   });
 
+  it("keeps Darwin resources POSIX and Windows resources win32 across hosts", () => {
+    const darwinCandidates: string[] = [];
+    resolveDriverBinaryWith({
+      platform: "darwin",
+      packaged: true,
+      resourcesPath: "/Applications/VelarixBot.app/Contents/Resources",
+      exists: (candidate) => {
+        darwinCandidates.push(candidate);
+        return true;
+      },
+    });
+    expect(darwinCandidates).toEqual([
+      "/Applications/VelarixBot.app/Contents/Resources/cua-driver",
+    ]);
+
+    const windowsCandidates: string[] = [];
+    resolveDriverBinaryWith({
+      platform: "win32",
+      packaged: true,
+      resourcesPath: "C:\\Program Files\\VelarixBot\\resources",
+      exists: (candidate) => {
+        windowsCandidates.push(candidate);
+        return true;
+      },
+    });
+    expect(windowsCandidates).toEqual(["C:\\Program Files\\VelarixBot\\resources\\cua-driver.exe"]);
+  });
+
   it("embedded MCP args stay --embedded --socket", () => {
     const conn = mcpConnection({
       mode: "embedded",

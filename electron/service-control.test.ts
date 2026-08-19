@@ -35,6 +35,7 @@ import {
   windowsCreateArgs,
   windowsDeleteArgs,
   windowsQueryArgs,
+  windowsScExe,
   windowsStartArgs,
   windowsStopArgs,
 } from "./service-control.mjs";
@@ -66,6 +67,13 @@ describe("user-session service control", () => {
       `/Users/sam/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist`,
     );
     expect(launchAgentPlistPath("/Users/sam")).not.toMatch(/LaunchDaemons/);
+  });
+
+  it("keeps LaunchAgent paths POSIX and sc.exe paths win32 across hosts", () => {
+    expect(launchAgentPlistPath("/Users/sam")).toBe(
+      `/Users/sam/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist`,
+    );
+    expect(windowsScExe({ SystemRoot: "C:\\Windows" })).toBe("C:\\Windows\\System32\\sc.exe");
   });
 
   it("XML-escapes the executable path in the plist", () => {
