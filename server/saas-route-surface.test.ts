@@ -1,8 +1,21 @@
+import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  createSourceFile,
+  forEachChild,
+  isBinaryExpression,
+  isIfStatement,
+  isRegularExpressionLiteral,
+  isStringLiteralLike,
+  isVariableDeclaration,
+  ScriptKind,
+  ScriptTarget,
+  type Node,
+} from "typescript";
 import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from "vitest";
 
 import { createApplication, type Application } from "./app.ts";
@@ -30,6 +43,42 @@ interface DeniedRoute {
   family: string;
   method: Method;
   path: string;
+}
+
+// This hashes only API literals, route regexes, and method/path predicates,
+// rather than whole files, so implementation-only edits do not churn it. A
+// failure requires reviewing deniedRoutes + the approved SaaS routes before
+// accepting the new digest; otherwise a production route cannot land silently.
+const PRODUCTION_ROUTE_INVENTORY_SHA256 = "a073b21a1df6e834a09f0364d85a62b536a8765adcb17d751b8fde0cb1e63549";
+
+function productionRouteTokens(): string[] {
+  const routesDirectory = new URL("./routes/", import.meta.url);
+  const tokens: string[] = [];
+  for (const file of readdirSync(routesDirectory).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))) {
+    const source = readFileSync(new URL(file, routesDirectory), "utf8");
+    const sourceFile = createSourceFile(file, source, ScriptTarget.Latest, false, ScriptKind.TS);
+    const visit = (node: Node) => {
+      if (isStringLiteralLike(node) && node.text.startsWith("/api/")) tokens.push(`${file}:string:${node.text}`);
+      if (isRegularExpressionLiteral(node) && node.text.startsWith("/^\\/api\\/")) tokens.push(`${file}:regex:${node.text}`);
+      if (isIfStatement(node)) {
+        const predicate = node.expression.getText(sourceFile).replace(/\s+/g, " ");
+        if (/(?:^|[^\w.])(?:method|path)\b/.test(predicate)) tokens.push(`${file}:if:${predicate}`);
+      }
+      if (isVariableDeclaration(node) && node.initializer && isBinaryExpression(node.initializer)) {
+        const predicate = node.initializer.getText(sourceFile).replace(/\s+/g, " ");
+        if (/\bmethod\b/.test(predicate) && /\bpath\b/.test(predicate)) {
+          tokens.push(`${file}:variable:${node.name.getText(sourceFile)}=${predicate}`);
+        }
+      }
+      forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return tokens.sort();
+}
+
+function productionRouteInventoryDigest(tokens: string[]): string {
+  return createHash("sha256").update(tokens.join("\n")).digest("hex");
 }
 
 function route(family: string, method: Method, path: string): DeniedRoute {
@@ -165,6 +214,11 @@ describe("SaaS route exposure matrix", () => {
   let oauthExchange: GithubOAuthProvider["exchangeCodeForIdentity"] & MockInstance;
   const sideEffectSpies: MockInstance[] = [];
 
+  it("keeps the production route inventory synchronized with this exposure matrix", () => {
+    const tokens = productionRouteTokens();
+    expect(productionRouteInventoryDigest(tokens), tokens.join("\n")).toBe(PRODUCTION_ROUTE_INVENTORY_SHA256);
+  });
+
   beforeAll(async () => {
     home = mkdtempSync(join(tmpdir(), "velarix-saas-route-surface-"));
     db = openDatabase(join(home, "velarixbot.db"));
@@ -279,10 +333,12 @@ describe("SaaS route exposure matrix", () => {
     }
     expect(totalChanges(db)).toBe(beforeChanges);
     for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
+    expect(oauthAuthorizationUrl).not.toHaveBeenCalled();
     expect(oauthExchange).not.toHaveBeenCalled();
   });
 
   it("uniformly rejects the matrix without a SaaS session or with a desktop bearer", async () => {
+    const beforeChanges = totalChanges(db);
     for (const testCase of [...deniedRoutes(botId), route("approved bot create", "POST", "/api/bots")]) {
       const credentials: Record<string, string>[] = [
         { origin: APPLICATION_ORIGIN },
@@ -295,6 +351,10 @@ describe("SaaS route exposure matrix", () => {
         expect(result.body).toEqual({ error: "unauthorized" });
       }
     }
+    expect(totalChanges(db)).toBe(beforeChanges);
+    for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
+    expect(oauthAuthorizationUrl).not.toHaveBeenCalled();
+    expect(oauthExchange).not.toHaveBeenCalled();
   });
 
   it("rejects missing or wrong Origin on the sole SaaS write without changes", async () => {
@@ -308,9 +368,13 @@ describe("SaaS route exposure matrix", () => {
       expect(result.body).toEqual({ error: "forbidden origin" });
     }
     expect(totalChanges(db)).toBe(beforeChanges);
+    for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
+    expect(oauthAuthorizationUrl).not.toHaveBeenCalled();
+    expect(oauthExchange).not.toHaveBeenCalled();
   });
 
   it("keeps internal COMMS inaccessible to both SaaS and desktop credentials", async () => {
+    const beforeChanges = totalChanges(db);
     const probes: Array<Pick<DeniedRoute, "method" | "path">> = [
       { method: "GET", path: `/api/internal/agents?self=${botId}` },
       { method: "POST", path: "/api/internal/ask-bot" },
@@ -333,7 +397,10 @@ describe("SaaS route exposure matrix", () => {
         expect(result.body).toEqual({ error: "unauthorized" });
       }
     }
+    expect(totalChanges(db)).toBe(beforeChanges);
     for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
+    expect(oauthAuthorizationUrl).not.toHaveBeenCalled();
+    expect(oauthExchange).not.toHaveBeenCalled();
   });
 
   it("preserves only the approved health, OAuth, session, and catalog behavior", async () => {
