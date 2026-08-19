@@ -68,6 +68,24 @@ describe("durable identity and sessions", () => {
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM users").get()?.n).toBe(1);
   });
 
+  it("commits a GitHub identity refresh and session together", () => {
+    expect(() =>
+      identity.completeGithubSignIn(
+        { githubId: 55, login: "transactional" },
+        { now: 1_000, maxAgeSeconds: 0 },
+      ),
+    ).toThrow(/between/);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM users").get()?.n).toBe(0);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM sessions").get()?.n).toBe(0);
+
+    const completed = identity.completeGithubSignIn(
+      { githubId: 55, login: "transactional" },
+      { now: 2_000, maxAgeSeconds: 60 },
+    );
+    expect(completed.session.userId).toBe(completed.user.id);
+    expect(identity.resolveSession(completed.session.token, 3_000)?.id).toBe(completed.user.id);
+  });
+
   it("enforces GitHub uniqueness, immutability, session uniqueness, and foreign keys", () => {
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     const user = identity.upsertGithubIdentity({ githubId: 7, login: "seven" }, 1_000);

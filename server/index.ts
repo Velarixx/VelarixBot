@@ -17,6 +17,7 @@ import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { attachListenError } from "./listen-error.ts";
+import { createGithubOAuthProvider, resolveGithubOAuthConfiguration } from "./oauth/github-provider.ts";
 import { createRepositories } from "./repositories/index.ts";
 import { initSecretStore } from "./secrets.ts";
 
@@ -70,10 +71,16 @@ const COMMS_TOKEN = process.env.OMB_COMMS_TOKEN || randomBytes(24).toString("hex
 // never shared — fail closed, never silent-off. /api/health stays open.
 const API_TOKEN = resolveApiToken();
 const AUTH_MODE = resolveApplicationAuthMode();
-const AUTH =
-  AUTH_MODE === "desktop"
-    ? ({ mode: "desktop" } as const)
-    : ({ mode: "saas", applicationOrigin: resolveSaasApplicationOrigin() } as const);
+const AUTH = (() => {
+  if (AUTH_MODE === "desktop") return { mode: "desktop" } as const;
+  const applicationOrigin = resolveSaasApplicationOrigin();
+  const oauthConfig = resolveGithubOAuthConfiguration(applicationOrigin);
+  return {
+    mode: "saas",
+    applicationOrigin,
+    oauthProvider: createGithubOAuthProvider(oauthConfig),
+  } as const;
+})();
 
 /** Rebuild the provider fleet after a config change so new keys take
  * effect without a server restart (kills any in-flight turns). */

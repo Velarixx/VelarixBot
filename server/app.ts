@@ -20,6 +20,8 @@ import type { RuntimeEvent } from "./contracts.ts";
 import type { EventBus } from "./harness/bus.ts";
 import type { ProviderRegistry } from "./harness/registry.ts";
 import { IdentitySessions } from "./identity.ts";
+import type { GithubOAuthProvider } from "./oauth/github-provider.ts";
+import { OAuthTransactionStore } from "./oauth/transactions.ts";
 import { createProactive, type Proactive } from "./proactive.ts";
 import { UI_STREAM_ID } from "./repositories/event-log.ts";
 import type { Repositories } from "./repositories/index.ts";
@@ -31,6 +33,7 @@ import { createDiagnosticsRoutes } from "./routes/diagnostics.ts";
 import { createEventsRoutes } from "./routes/events.ts";
 import { createHealthRoutes } from "./routes/health.ts";
 import { createIntegrationsRoutes } from "./routes/integrations.ts";
+import { createOAuthRoutes } from "./routes/oauth.ts";
 import { createRoutinesRoutes } from "./routes/routines.ts";
 import { createSessionRoutes } from "./routes/session.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
@@ -73,7 +76,9 @@ export interface CreateApplicationInput {
   apiToken: string;
   /** Desktop is the default. SaaS exposes only its identity probe until
    * owner-bound business-route composition is approved separately. */
-  auth?: { mode: "desktop" } | { mode: "saas"; applicationOrigin: string };
+  auth?:
+    | { mode: "desktop" }
+    | { mode: "saas"; applicationOrigin: string; oauthProvider: GithubOAuthProvider };
   commsToken: string;
   staticDir: string | null;
   stamp: string;
@@ -101,13 +106,14 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   const { repos, providers: registry, bus, cfg, port, apiToken, commsToken, staticDir, stamp } = input;
   const clock: Clock = input.clock ?? { now: () => Date.now() };
   const auth = input.auth ?? { mode: "desktop" as const };
+  const identitySessions = auth.mode === "saas" ? new IdentitySessions(repos.db) : null;
   const authentication: ApplicationAuthentication =
     auth.mode === "desktop"
       ? { mode: "desktop", token: apiToken, port }
       : {
           mode: "saas",
           applicationOrigin: normalizeSaasApplicationOrigin(auth.applicationOrigin),
-          sessions: new IdentitySessions(repos.db),
+          sessions: identitySessions!,
           now: () => clock.now(),
         };
   configureMemoryStore(repos.memoryRows);
@@ -277,7 +283,17 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   const gatedRoutes: RouteHandler[] =
     auth.mode === "desktop"
       ? desktopRoutes
-      : [createSessionRoutes(), createHealthRoutes({ staticServing: Boolean(staticDir), stamp })];
+      : [
+          createOAuthRoutes({
+            applicationOrigin: authentication.mode === "saas" ? authentication.applicationOrigin : "",
+            provider: auth.oauthProvider,
+            transactions: new OAuthTransactionStore(repos.db),
+            sessions: identitySessions!,
+            now: () => clock.now(),
+          }),
+          createSessionRoutes(),
+          createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
+        ];
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);

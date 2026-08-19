@@ -17,6 +17,7 @@ import {
   authenticateApiRequest,
   hostAllowed,
   isAuthExempt,
+  isSaasOAuthEntry,
   LOOPBACK_HOSTS,
   normalizeSaasApplicationOrigin,
   originAllowed,
@@ -110,6 +111,28 @@ describe("application authentication mode", () => {
       expect(saasOriginAllowed(origin, expected)).toBe(false);
     }
   });
+
+  it("enumerates OAuth entry exemptions by exact SaaS method and path without weakening desktop", () => {
+    expect(isSaasOAuthEntry("/api/auth/github/start", "GET")).toBe(true);
+    expect(isSaasOAuthEntry("/api/auth/github/callback", "GET")).toBe(true);
+    for (const [path, method] of [
+      ["/api/auth/github/start", "POST"],
+      ["/api/auth/github/callback/", "GET"],
+      ["/api/auth/sign-out", "POST"],
+      ["/api/session", "GET"],
+      ["/api/bots", "GET"],
+    ]) {
+      expect(isSaasOAuthEntry(path, method)).toBe(false);
+    }
+
+    const desktop = { mode: "desktop" as const, token: "desktop-token", port: 8799 };
+    for (const path of ["/api/auth/github/start", "/api/auth/github/callback"]) {
+      expect(authenticateApiRequest({ path, method: "GET", headers: { host: "127.0.0.1:8799" } }, desktop)).toEqual({
+        ok: false,
+        failure: { status: 401, error: "unauthorized" },
+      });
+    }
+  });
 });
 
 describe("tokenMatches", () => {
@@ -193,6 +216,7 @@ describe("requireApiAuth", () => {
 
   it("exempts only /api/health — SSE and every other /api/* stay gated", () => {
     expect(isAuthExempt("/api/health")).toBe(true);
+    expect(isAuthExempt("/api/health", "POST")).toBe(false);
     expect(isAuthExempt("/api/bots")).toBe(false);
     expect(isAuthExempt("/api/routines")).toBe(false);
     expect(isAuthExempt("/api/webhooks")).toBe(false);
@@ -277,6 +301,8 @@ describe("API auth e2e (real harness server)", () => {
     expect(routinesDenied.status).toBe(401);
     const routinesWrong = await h.api("GET", "/api/routines", undefined, { authorization: "Bearer wrong-token" });
     expect(routinesWrong.status).toBe(401);
+    expect((await fetch(`${h.base}/api/auth/github/start`, { redirect: "manual" })).status).toBe(401);
+    expect((await h.api("GET", "/api/auth/github/start")).status).toBe(404);
     const bot = (await h.api("GET", "/api/bots")).body.bots[0];
     for (const action of ["start", "stop", "save", "discard"]) {
       const denied = await fetch(`${h.base}/api/bots/${bot.id}/teach/${action}`, { method: "POST" });

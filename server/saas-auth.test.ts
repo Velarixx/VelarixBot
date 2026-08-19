@@ -64,6 +64,9 @@ describe("SaaS authenticated request boundary", () => {
         VELARIX_DEV_TOKEN: desktopToken,
         VELARIX_AUTH_MODE: "saas",
         VELARIX_APP_ORIGIN: applicationOrigin,
+        VELARIX_GITHUB_CLIENT_ID: "test-client-id",
+        VELARIX_GITHUB_CLIENT_SECRET: "test-client-secret",
+        VELARIX_GITHUB_CALLBACK_URL: `${applicationOrigin}/api/auth/github/callback`,
       }),
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -94,6 +97,33 @@ describe("SaaS authenticated request boundary", () => {
     }
   });
 
+  it("mounts only the SaaS OAuth entry pairs and keeps redirects fixed and secret-free", async () => {
+    const start = await fetch(`${base}/api/auth/github/start?returnUrl=https://evil.test/steal`, {
+      redirect: "manual",
+    });
+    expect(start.status).toBe(302);
+    const authorization = new URL(start.headers.get("location")!);
+    expect(`${authorization.origin}${authorization.pathname}`).toBe("https://github.com/login/oauth/authorize");
+    expect(authorization.searchParams.get("redirect_uri")).toBe(
+      `${applicationOrigin}/api/auth/github/callback`,
+    );
+    expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authorization.href).not.toContain("evil.test");
+    expect(authorization.href).not.toContain("test-client-secret");
+
+    const rejected = await fetch(`${base}/api/auth/github/callback?code=missing-state`, {
+      redirect: "manual",
+    });
+    expect(rejected.status).toBe(303);
+    expect(rejected.headers.get("location")).toBe(
+      `${applicationOrigin}/auth/result?outcome=callback_rejected`,
+    );
+    expect(rejected.headers.get("set-cookie")).toContain("velarix_oauth_tx=; Max-Age=0");
+
+    expect((await fetch(`${base}/api/auth/github/start`, { method: "POST" })).status).toBe(401);
+    expect((await fetch(`${base}/api/session?path=/api/auth/github/start`)).status).toBe(401);
+  });
+
   it("projects only the authenticated internal UUID and does not expose secrets", async () => {
     const response = await get("/api/session", { cookie: cookie(activeToken) });
     expect(response.status).toBe(200);
@@ -122,6 +152,29 @@ describe("SaaS authenticated request boundary", () => {
     }
     const exact = await post(applicationOrigin);
     expect(exact.status).toBe(404);
+  });
+
+  it("makes sign-out exact-Origin and idempotently safe without a current session", async () => {
+    const wrong = await fetch(`${base}/api/auth/sign-out`, {
+      method: "POST",
+      headers: { origin: "https://evil.test" },
+    });
+    expect(wrong.status).toBe(403);
+    expect(await wrong.json()).toEqual({ error: "forbidden origin" });
+
+    for (const credential of [undefined, cookie("short"), cookie(revokedToken)]) {
+      const response = await fetch(`${base}/api/auth/sign-out`, {
+        method: "POST",
+        headers: {
+          origin: applicationOrigin,
+          ...(credential ? { cookie: credential } : {}),
+        },
+      });
+      expect(response.status).toBe(204);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("set-cookie")).toContain("velarix_session=; Max-Age=0");
+      expect(await response.text()).toBe("");
+    }
   });
 
   it("does not expose desktop business routes or merge the COMMS boundary", async () => {

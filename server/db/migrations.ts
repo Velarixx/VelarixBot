@@ -323,6 +323,30 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Short-lived OAuth handshakes are server-owned and one-time. Only
+    // digests of the browser-visible state and transaction cookie are
+    // persisted; the PKCE verifier remains server-side until atomic consume.
+    version: 11,
+    name: "github-oauth-transactions",
+    up(db) {
+      db.exec(`
+        CREATE TABLE github_oauth_transactions(
+          state_digest TEXT PRIMARY KEY NOT NULL
+            CHECK(length(state_digest) = 64 AND state_digest NOT GLOB '*[^0-9a-f]*'),
+          cookie_digest TEXT NOT NULL
+            CHECK(length(cookie_digest) = 64 AND cookie_digest NOT GLOB '*[^0-9a-f]*'),
+          code_verifier TEXT NOT NULL
+            CHECK(length(code_verifier) BETWEEN 43 AND 128),
+          issued_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL CHECK(expires_at > issued_at),
+          consumed_at INTEGER CHECK(consumed_at IS NULL OR consumed_at >= issued_at)
+        );
+        CREATE INDEX github_oauth_transactions_expiry
+          ON github_oauth_transactions(expires_at);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

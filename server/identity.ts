@@ -39,6 +39,11 @@ export interface CreatedSession {
   expiresAt: number;
 }
 
+export interface CompletedGithubSignIn {
+  user: IdentityUser;
+  session: CreatedSession;
+}
+
 interface UserRow {
   id: string;
   github_id: number;
@@ -151,6 +156,22 @@ export class IdentitySessions {
       .prepare("INSERT INTO sessions(token_digest, user_id, created_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, NULL)")
       .run(sessionDigest(token), userId, createdAt, expiresAt);
     return { token, userId, createdAt, expiresAt };
+  }
+
+  /** Persist the provider identity refresh and new session as one unit. */
+  completeGithubSignIn(
+    githubIdentity: GithubIdentity,
+    options: { now?: number; maxAgeSeconds?: number } = {},
+  ): CompletedGithubSignIn {
+    const now = options.now ?? Date.now();
+    return this.db.transaction(() => {
+      const user = this.upsertGithubIdentity(githubIdentity, now);
+      const session = this.createSession(user.id, {
+        now,
+        ...(options.maxAgeSeconds === undefined ? {} : { maxAgeSeconds: options.maxAgeSeconds }),
+      });
+      return { user, session };
+    })();
   }
 
   /** All invalid, unknown, expired, and revoked credentials collapse to null. */

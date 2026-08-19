@@ -14,6 +14,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import { sessionTokenFromCookie } from "./identity.ts";
+import { GITHUB_OAUTH_CALLBACK_PATH, GITHUB_OAUTH_START_PATH, SIGN_OUT_PATH } from "./oauth/paths.ts";
 
 export type ApplicationAuthMode = "desktop" | "saas";
 
@@ -91,8 +92,15 @@ export function tokenMatches(authorization: string | undefined, token: string): 
 /** /api/health stays open: the packaged app's port-fallback probe and the
  * release smoke identify the server by pid+stamp before any token exists
  * client-side. It leaks nothing beyond pid/stamp. */
-export function isAuthExempt(path: string): boolean {
-  return path === "/api/health";
+export function isAuthExempt(path: string, method = "GET"): boolean {
+  return method.toUpperCase() === "GET" && path === "/api/health";
+}
+
+export function isSaasOAuthEntry(path: string, method: string): boolean {
+  return (
+    method.toUpperCase() === "GET" &&
+    (path === GITHUB_OAUTH_START_PATH || path === GITHUB_OAUTH_CALLBACK_PATH)
+  );
 }
 
 /** Loopback Host/Origin names only. Do not grow this set — a LAN or
@@ -141,7 +149,7 @@ export function requireApiAuth(
   token: string,
   port: number,
 ): AuthFailure | null {
-  if (isAuthExempt(input.path)) return null;
+  if (isAuthExempt(input.path, input.method)) return null;
   if (!hostAllowed(input.headers.host, port)) return { status: 403, error: "forbidden host" };
   if (STATE_CHANGING.has(input.method.toUpperCase()) && !originAllowed(input.headers.origin)) {
     return { status: 403, error: "forbidden origin" };
@@ -170,11 +178,27 @@ export function authenticateApiRequest(
   },
   authentication: ApplicationAuthentication,
 ): AuthenticationDecision {
-  if (isAuthExempt(input.path)) return { ok: true };
+  if (isAuthExempt(input.path, input.method)) return { ok: true };
 
   if (authentication.mode === "desktop") {
     const failure = requireApiAuth(input, authentication.token, authentication.port);
     return failure ? { ok: false, failure } : { ok: true };
+  }
+
+  if (isSaasOAuthEntry(input.path, input.method)) return { ok: true };
+
+  // Sign-out is an exact-Origin operation even after a session has expired or
+  // disappeared. The route returns the same idempotent empty success, while no
+  // other API path gains an unauthenticated fallback.
+  if (input.path === SIGN_OUT_PATH && input.method.toUpperCase() === "POST") {
+    if (!saasOriginAllowed(input.headers.origin, authentication.applicationOrigin)) {
+      return { ok: false, failure: { status: 403, error: "forbidden origin" } };
+    }
+    const token = sessionTokenFromCookie(input.headers.cookie);
+    const user = authentication.sessions.resolveSession(token, authentication.now?.());
+    return user
+      ? { ok: true, principal: { kind: "internal-user", user: { id: user.id } } }
+      : { ok: true };
   }
 
   const token = sessionTokenFromCookie(input.headers.cookie);
