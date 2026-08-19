@@ -45,6 +45,7 @@ describe("user workspace bindings repository", () => {
       userId: userA.id,
       providerKind: "fake",
       machineId: "machine-a",
+      authorizationGeneration: 1,
       createdAt: 1_000,
       updatedAt: 1_000,
     });
@@ -55,6 +56,7 @@ describe("user workspace bindings repository", () => {
       machineId: "machine-a2",
       createdAt: 1_000,
       updatedAt: 3_000,
+      authorizationGeneration: 3,
     });
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM user_workspace_bindings").get()?.n).toBe(1);
     expect(legacy.get("legacy-bot")).toMatchObject({ boxId: "legacy-machine", createdAt: 500, updatedAt: 500 });
@@ -66,6 +68,7 @@ describe("user workspace bindings repository", () => {
       machineId: "machine-a2",
       createdAt: 1_000,
       updatedAt: 3_000,
+      authorizationGeneration: 3,
     });
     expect(createComputerBindingsRepository(db).get("legacy-bot")?.boxId).toBe("legacy-machine");
   });
@@ -102,29 +105,48 @@ describe("user workspace bindings repository", () => {
   it("enforces ownership and provider/machine uniqueness in SQLite", () => {
     const [userA, userB] = users();
     db.prepare(
-      `INSERT INTO user_workspace_bindings(user_id, provider_kind, machine_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).run(userA.id, "fake", "machine-a", 1_000, 1_000);
+      "INSERT INTO user_workspace_binding_generations(user_id, generation) VALUES (?, ?), (?, ?)",
+    ).run(userA.id, 1, userB.id, 1);
+    db.prepare(
+      `INSERT INTO user_workspace_bindings(
+         user_id, provider_kind, machine_id, authorization_generation, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(userA.id, "fake", "machine-a", 1, 1_000, 1_000);
 
     expect(() =>
       db.prepare(
-        `INSERT INTO user_workspace_bindings(user_id, provider_kind, machine_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)`,
-      ).run(userA.id, "box", "machine-a2", 2_000, 2_000),
+        `INSERT INTO user_workspace_bindings(
+           user_id, provider_kind, machine_id, authorization_generation, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(userA.id, "box", "machine-a2", 1, 2_000, 2_000),
     ).toThrow(/UNIQUE/i);
     expect(() =>
       db.prepare(
-        `INSERT INTO user_workspace_bindings(user_id, provider_kind, machine_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)`,
-      ).run(userB.id, "fake", "machine-a", 2_000, 2_000),
+        `INSERT INTO user_workspace_bindings(
+           user_id, provider_kind, machine_id, authorization_generation, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(userB.id, "fake", "machine-a", 1, 2_000, 2_000),
     ).toThrow(/UNIQUE/i);
     expect(() =>
       db.prepare(
-        `INSERT INTO user_workspace_bindings(user_id, provider_kind, machine_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)`,
-      ).run(randomUUID(), "fake", "orphan-machine", 2_000, 2_000),
-    ).toThrow(/FOREIGN KEY/i);
+        `INSERT INTO user_workspace_bindings(
+           user_id, provider_kind, machine_id, authorization_generation, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(randomUUID(), "fake", "orphan-machine", 1, 2_000, 2_000),
+    ).toThrow(/FOREIGN KEY|not current/i);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM user_workspace_bindings").get()?.n).toBe(1);
+    expect(() =>
+      db.prepare("UPDATE user_workspace_binding_generations SET generation = 1 WHERE user_id = ?").run(userA.id),
+    ).toThrow(/must increase/i);
+    expect(() =>
+      db.prepare("DELETE FROM user_workspace_binding_generations WHERE user_id = ?").run(userA.id),
+    ).toThrow(/retained/i);
+    expect(() =>
+      db.prepare("UPDATE user_workspace_bindings SET authorization_generation = 2 WHERE user_id = ?").run(userA.id),
+    ).toThrow(/not current/i);
+    expect(() =>
+      db.prepare("UPDATE user_workspace_bindings SET machine_id = ? WHERE user_id = ?").run("machine-a2", userA.id),
+    ).toThrow(/new generation/i);
   });
 
   it("requires explicit binding deletion before user deletion and never reassigns the machine", () => {

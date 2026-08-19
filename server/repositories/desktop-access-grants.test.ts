@@ -26,7 +26,7 @@ interface StoredGrantRow {
   provider_kind: string;
   machine_id: string;
   scope: string;
-  binding_updated_at: number;
+  binding_generation: number;
   created_at: number;
   expires_at: number;
   revoked_at: number | null;
@@ -76,7 +76,7 @@ describe("desktop access grants repository", () => {
       provider_kind: WORKSPACE_A.providerKind,
       machine_id: WORKSPACE_A.machineId,
       scope: "desktop:view",
-      binding_updated_at: 1_000,
+      binding_generation: 1,
       created_at: 2_000,
       expires_at: 2_000 + DESKTOP_ACCESS_GRANT_DEFAULT_TTL_MS,
       revoked_at: null,
@@ -183,7 +183,7 @@ describe("desktop access grants repository", () => {
     expect(countForOwner(userB.id)).toBe(1);
   });
 
-  it("fails closed for wrong, stale, and ABA-rebound machine/provider identities", () => {
+  it("fails closed for wrong and stale machine/provider identities", () => {
     const bindings = createUserWorkspaceBindingsRepository(db).forOwner(userA.id);
     const grants = createDesktopAccessGrantsRepository(db).forOwner(userA.id)!;
     const minted = grants.mint(WORKSPACE_A, "desktop:view", { now: 2_000 })!;
@@ -194,10 +194,68 @@ describe("desktop access grants repository", () => {
     bindings.record("fake", "machine-z", 3_000);
     expect(grants.resolve(minted.token, WORKSPACE_A, "desktop:view", 3_001)).toBeNull();
     expect(grants.resolve(minted.token, { providerKind: "fake", machineId: "machine-z" }, "desktop:view", 3_001)).toBeNull();
+  });
 
-    bindings.record(WORKSPACE_A.providerKind, WORKSPACE_A.machineId, 4_000);
-    expect(grants.resolve(minted.token, WORKSPACE_A, "desktop:view", 4_001)).toBeNull();
-    expect(grants.revoke(minted.token, WORKSPACE_A, "desktop:view", 4_001)).toBe(false);
+  it("invalidates equal-timestamp A -> B -> A rebounds with a non-reused generation", () => {
+    const bindings = createUserWorkspaceBindingsRepository(db).forOwner(userA.id);
+    const grants = createDesktopAccessGrantsRepository(db).forOwner(userA.id)!;
+    const minted = grants.mint(WORKSPACE_A, "desktop:view", { now: 2_000 })!;
+    const originalGeneration = bindings.get()!.authorizationGeneration;
+
+    bindings.record("fake", "machine-z", 1_000);
+    bindings.record(WORKSPACE_A.providerKind, WORKSPACE_A.machineId, 1_000);
+
+    expect(bindings.get()).toMatchObject({
+      providerKind: WORKSPACE_A.providerKind,
+      machineId: WORKSPACE_A.machineId,
+      updatedAt: 1_000,
+      authorizationGeneration: originalGeneration + 2,
+    });
+    expect(grants.resolve(minted.token, WORKSPACE_A, "desktop:view", 2_001)).toBeNull();
+    expect(grants.revoke(minted.token, WORKSPACE_A, "desktop:view", 2_001)).toBe(false);
+  });
+
+  it("invalidates raw-SQL delete -> recreate with a retained non-reused generation", () => {
+    const bindings = createUserWorkspaceBindingsRepository(db).forOwner(userA.id);
+    const grants = createDesktopAccessGrantsRepository(db).forOwner(userA.id)!;
+    const minted = grants.mint(WORKSPACE_A, "desktop:view", { now: 2_000 })!;
+    const originalGeneration = bindings.get()!.authorizationGeneration;
+
+    expect(db.prepare("DELETE FROM user_workspace_bindings WHERE user_id = ?").run(userA.id).changes).toBe(1);
+    expect(
+      db.prepare<{ generation: number }>(
+        "SELECT generation FROM user_workspace_binding_generations WHERE user_id = ?",
+      ).get(userA.id),
+    ).toEqual({ generation: originalGeneration + 1 });
+    const reinsert = db.prepare(
+      `INSERT INTO user_workspace_bindings(
+         user_id, provider_kind, machine_id, authorization_generation, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    expect(() =>
+      reinsert.run(
+        userA.id,
+        WORKSPACE_A.providerKind,
+        WORKSPACE_A.machineId,
+        originalGeneration,
+        1_000,
+        1_000,
+      ),
+    ).toThrow(/not current/i);
+    expect(
+      reinsert.run(
+        userA.id,
+        WORKSPACE_A.providerKind,
+        WORKSPACE_A.machineId,
+        originalGeneration + 1,
+        1_000,
+        1_000,
+      ).changes,
+    ).toBe(1);
+
+    expect(bindings.get()!.authorizationGeneration).toBe(originalGeneration + 1);
+    expect(grants.resolve(minted.token, WORKSPACE_A, "desktop:view", 2_001)).toBeNull();
+    expect(grants.revoke(minted.token, WORKSPACE_A, "desktop:view", 2_001)).toBe(false);
   });
 
   it("uses exact allowlisted scopes and grants no implicit authority", () => {
@@ -214,11 +272,14 @@ describe("desktop access grants repository", () => {
   it("enforces schema constraints and records the append-only migration once", () => {
     expect(migrate(db)).toEqual([]);
     expect(appliedMigrations(db).filter(({ name }) => name === "desktop-access-grants")).toHaveLength(1);
+    expect(
+      appliedMigrations(db).filter(({ name }) => name === "workspace-binding-authorization-generations"),
+    ).toHaveLength(1);
 
     const insert = db.prepare(
       `INSERT INTO desktop_access_grants(
          token_digest, owner_id, provider_kind, machine_id, scope,
-         binding_updated_at, created_at, expires_at, revoked_at
+         binding_generation, created_at, expires_at, revoked_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const valid = ["a".repeat(64), userA.id, "fake", "machine-schema", "desktop:view", 1_000, 2_000, 2_010, null];
@@ -228,6 +289,7 @@ describe("desktop access grants repository", () => {
     expect(() => insert.run("c".repeat(64), userA.id, "Fake", ...valid.slice(3))).toThrow(/CHECK/i);
     expect(() => insert.run("d".repeat(64), userA.id, "fake", "bad machine", ...valid.slice(4))).toThrow(/CHECK/i);
     expect(() => insert.run("e".repeat(64), userA.id, "fake", "machine-e", "desktop:admin", ...valid.slice(5))).toThrow(/CHECK/i);
+    expect(() => insert.run("0".repeat(64), userA.id, "fake", "machine-zero", "desktop:view", 0, 2_000, 2_010, null)).toThrow(/CHECK/i);
     expect(() => insert.run("f".repeat(64), userA.id, "fake", "machine-f", "desktop:view", 1_000, 2_000, 2_000, null)).toThrow(/CHECK/i);
     expect(() =>
       insert.run(

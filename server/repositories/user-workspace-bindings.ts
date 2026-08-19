@@ -17,6 +17,7 @@ export interface UserWorkspaceBinding {
   userId: string;
   providerKind: string;
   machineId: string;
+  authorizationGeneration: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -25,6 +26,7 @@ interface UserWorkspaceBindingRow {
   user_id: string;
   provider_kind: string;
   machine_id: string;
+  authorization_generation: number;
   created_at: number;
   updated_at: number;
 }
@@ -50,6 +52,7 @@ function toBinding(row: UserWorkspaceBindingRow): UserWorkspaceBinding {
     userId: row.user_id,
     providerKind: row.provider_kind,
     machineId: row.machine_id,
+    authorizationGeneration: row.authorization_generation,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -57,15 +60,25 @@ function toBinding(row: UserWorkspaceBindingRow): UserWorkspaceBinding {
 
 export function createUserWorkspaceBindingsRepository(db: SqliteDatabase): UserWorkspaceBindingsRepository {
   const selectForOwner = db.prepare<UserWorkspaceBindingRow>(
-    `SELECT user_id, provider_kind, machine_id, created_at, updated_at
+    `SELECT user_id, provider_kind, machine_id, authorization_generation, created_at, updated_at
      FROM user_workspace_bindings WHERE user_id = ?`,
   );
+  const advanceGenerationForOwner = db.prepare<{ generation: number }>(
+    `INSERT INTO user_workspace_binding_generations(user_id, generation)
+     VALUES (?, 1)
+     ON CONFLICT(user_id) DO UPDATE SET generation = generation + 1
+     WHERE generation < 9007199254740991
+     RETURNING generation`,
+  );
   const recordForOwner = db.prepare(
-    `INSERT INTO user_workspace_bindings(user_id, provider_kind, machine_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO user_workspace_bindings(
+       user_id, provider_kind, machine_id, authorization_generation, created_at, updated_at
+     )
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id) DO UPDATE SET
        provider_kind = excluded.provider_kind,
        machine_id = excluded.machine_id,
+       authorization_generation = excluded.authorization_generation,
        updated_at = excluded.updated_at`,
   );
   const deleteForOwner = db.prepare(
@@ -84,7 +97,11 @@ export function createUserWorkspaceBindingsRepository(db: SqliteDatabase): UserW
         record(providerKind, machineId, now = Date.now()) {
           assertOpaqueIdentifier(providerKind, "providerKind");
           assertOpaqueIdentifier(machineId, "machineId");
-          recordForOwner.run(ownerId, providerKind, machineId, now, now);
+          db.transaction(() => {
+            const advanced = advanceGenerationForOwner.get(ownerId);
+            if (!advanced) throw new RangeError("workspace authorization generation exhausted");
+            recordForOwner.run(ownerId, providerKind, machineId, advanced.generation, now, now);
+          })();
         },
         delete(providerKind, machineId) {
           assertOpaqueIdentifier(providerKind, "providerKind");

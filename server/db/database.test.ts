@@ -27,6 +27,7 @@ const MANDATED_TABLES = [
   "users",
   "sessions",
   "user_workspace_bindings",
+  "user_workspace_binding_generations",
   "github_oauth_transactions",
   "desktop_access_grants",
 ];
@@ -109,6 +110,7 @@ describe("database + migrations", () => {
       "user-workspace-bindings",
       "github-oauth-transactions",
       "desktop-access-grants",
+      "workspace-binding-authorization-generations",
     ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM bots WHERE id = ?").get("legacy-bot")).toEqual({
       owner_id: null,
@@ -159,6 +161,7 @@ describe("database + migrations", () => {
       "user-workspace-bindings",
       "github-oauth-transactions",
       "desktop-access-grants",
+      "workspace-binding-authorization-generations",
     ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM groups WHERE id = ?").get("legacy-group")).toEqual({
       owner_id: null,
@@ -183,7 +186,12 @@ describe("database + migrations", () => {
       "INSERT INTO computer_bindings(bot_id, box_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
     ).run("legacy-bot", "legacy-machine", 1_000, 2_000);
 
-    expect(migrate(db)).toEqual(["user-workspace-bindings", "github-oauth-transactions", "desktop-access-grants"]);
+    expect(migrate(db)).toEqual([
+      "user-workspace-bindings",
+      "github-oauth-transactions",
+      "desktop-access-grants",
+      "workspace-binding-authorization-generations",
+    ]);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM user_workspace_bindings").get()?.n).toBe(0);
     expect(
       db
@@ -192,6 +200,40 @@ describe("database + migrations", () => {
         )
         .all(),
     ).toEqual([{ bot_id: "legacy-bot", box_id: "legacy-machine", created_at: 1_000, updated_at: 2_000 }]);
+    expect(migrate(db)).toEqual([]);
+  });
+
+  it("backfills durable binding generations and invalidates pre-generation grants", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    db = new (loadBetterSqlite3())(join(DATA_DIR, "pre-binding-generation.db"));
+    migrate(db, MIGRATIONS.slice(0, 12));
+    const ownerId = "11111111-1111-4111-8111-111111111111";
+    db.prepare(
+      "INSERT INTO users(id, github_id, github_login, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run(ownerId, 101, "owner", 1_000, 1_000);
+    db.prepare(
+      `INSERT INTO user_workspace_bindings(user_id, provider_kind, machine_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(ownerId, "fake", "machine-a", 1_000, 1_000);
+    db.prepare(
+      `INSERT INTO desktop_access_grants(
+         token_digest, owner_id, provider_kind, machine_id, scope,
+         binding_updated_at, created_at, expires_at, revoked_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    ).run("a".repeat(64), ownerId, "fake", "machine-a", "desktop:view", 1_000, 2_000, 2_010);
+
+    expect(migrate(db)).toEqual(["workspace-binding-authorization-generations"]);
+    expect(
+      db.prepare<{ authorization_generation: number }>(
+        "SELECT authorization_generation FROM user_workspace_bindings WHERE user_id = ?",
+      ).get(ownerId),
+    ).toEqual({ authorization_generation: 1 });
+    expect(
+      db.prepare<{ generation: number }>(
+        "SELECT generation FROM user_workspace_binding_generations WHERE user_id = ?",
+      ).get(ownerId),
+    ).toEqual({ generation: 1 });
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM desktop_access_grants").get()?.n).toBe(0);
     expect(migrate(db)).toEqual([]);
   });
 

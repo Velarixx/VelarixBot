@@ -408,6 +408,155 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Authorization generations are independent of wall-clock time and
+    // survive binding deletion. The per-user counter is retained as a
+    // tombstone, so equal-timestamp A -> B -> A and delete -> recreate can
+    // never make an older grant current again. Existing short-lived grants
+    // are deliberately invalidated instead of guessing a safe generation.
+    version: 13,
+    name: "workspace-binding-authorization-generations",
+    up(db) {
+      db.exec(`
+        CREATE TABLE user_workspace_binding_generations(
+          user_id TEXT PRIMARY KEY NOT NULL
+            REFERENCES users(id) ON DELETE CASCADE,
+          generation INTEGER NOT NULL
+            CHECK(typeof(generation) = 'integer' AND generation BETWEEN 1 AND 9007199254740991)
+        );
+        INSERT INTO user_workspace_binding_generations(user_id, generation)
+        SELECT user_id, 1 FROM user_workspace_bindings;
+
+        CREATE TABLE user_workspace_bindings_v13(
+          user_id TEXT PRIMARY KEY NOT NULL
+            REFERENCES users(id) ON DELETE RESTRICT,
+          provider_kind TEXT NOT NULL
+            CHECK(typeof(provider_kind) = 'text' AND length(provider_kind) > 0),
+          machine_id TEXT NOT NULL
+            CHECK(typeof(machine_id) = 'text' AND length(machine_id) > 0),
+          authorization_generation INTEGER NOT NULL
+            CHECK(typeof(authorization_generation) = 'integer' AND authorization_generation BETWEEN 1 AND 9007199254740991),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(provider_kind, machine_id)
+        );
+        INSERT INTO user_workspace_bindings_v13(
+          user_id, provider_kind, machine_id, authorization_generation, created_at, updated_at
+        )
+        SELECT user_id, provider_kind, machine_id, 1, created_at, updated_at
+        FROM user_workspace_bindings;
+        DROP TABLE user_workspace_bindings;
+        ALTER TABLE user_workspace_bindings_v13 RENAME TO user_workspace_bindings;
+        CREATE TRIGGER user_workspace_binding_generation_monotonic
+          BEFORE UPDATE OF generation ON user_workspace_binding_generations
+          WHEN NEW.generation <= OLD.generation
+          BEGIN
+            SELECT RAISE(ABORT, 'workspace authorization generation must increase');
+          END;
+        CREATE TRIGGER user_workspace_binding_generation_retained
+          BEFORE DELETE ON user_workspace_binding_generations
+          WHEN EXISTS(SELECT 1 FROM users WHERE id = OLD.user_id)
+          BEGIN
+            SELECT RAISE(ABORT, 'workspace authorization generation is retained');
+          END;
+        CREATE TRIGGER user_workspace_binding_delete_advances_generation
+          BEFORE DELETE ON user_workspace_bindings
+          BEGIN
+            UPDATE user_workspace_binding_generations
+            SET generation = generation + 1
+            WHERE user_id = OLD.user_id
+              AND generation = OLD.authorization_generation
+              AND generation < 9007199254740991;
+            SELECT CASE WHEN changes() <> 1
+              THEN RAISE(ABORT, 'workspace authorization generation could not advance')
+            END;
+          END;
+        CREATE TRIGGER user_workspace_binding_generation_insert_current
+          BEFORE INSERT ON user_workspace_bindings
+          WHEN NOT EXISTS(
+            SELECT 1 FROM user_workspace_binding_generations g
+            WHERE g.user_id = NEW.user_id AND g.generation = NEW.authorization_generation
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'workspace authorization generation is not current');
+          END;
+        CREATE TRIGGER user_workspace_binding_generation_update_current
+          BEFORE UPDATE OF user_id, authorization_generation ON user_workspace_bindings
+          WHEN NOT EXISTS(
+            SELECT 1 FROM user_workspace_binding_generations g
+            WHERE g.user_id = NEW.user_id AND g.generation = NEW.authorization_generation
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'workspace authorization generation is not current');
+          END;
+        CREATE TRIGGER user_workspace_binding_owner_immutable
+          BEFORE UPDATE OF user_id ON user_workspace_bindings
+          WHEN NEW.user_id <> OLD.user_id
+          BEGIN
+            SELECT RAISE(ABORT, 'workspace binding owner is immutable');
+          END;
+        CREATE TRIGGER user_workspace_binding_identity_requires_generation
+          BEFORE UPDATE OF provider_kind, machine_id ON user_workspace_bindings
+          WHEN (
+            NEW.provider_kind <> OLD.provider_kind
+            OR NEW.machine_id <> OLD.machine_id
+          ) AND NEW.authorization_generation = OLD.authorization_generation
+          BEGIN
+            SELECT RAISE(ABORT, 'workspace identity change requires a new generation');
+          END;
+
+        DROP TABLE desktop_access_grants;
+        CREATE TABLE desktop_access_grants(
+          token_digest TEXT PRIMARY KEY NOT NULL
+            CHECK(length(token_digest) = 64 AND token_digest NOT GLOB '*[^0-9a-f]*'),
+          owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE
+            CHECK(
+              length(owner_id) = 36
+              AND substr(owner_id, 9, 1) = '-'
+              AND substr(owner_id, 14, 1) = '-'
+              AND substr(owner_id, 19, 1) = '-'
+              AND substr(owner_id, 24, 1) = '-'
+              AND lower(owner_id) NOT GLOB '*[^0-9a-f-]*'
+            ),
+          provider_kind TEXT NOT NULL
+            CHECK(
+              length(provider_kind) BETWEEN 1 AND 64
+              AND provider_kind = lower(provider_kind)
+              AND substr(provider_kind, 1, 1) GLOB '[a-z]'
+              AND provider_kind NOT GLOB '*[^a-z0-9-]*'
+            ),
+          machine_id TEXT NOT NULL
+            CHECK(
+              length(machine_id) BETWEEN 1 AND 255
+              AND substr(machine_id, 1, 1) GLOB '[A-Za-z0-9]'
+              AND machine_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+            ),
+          scope TEXT NOT NULL CHECK(scope IN ('desktop:view', 'desktop:control')),
+          binding_generation INTEGER NOT NULL
+            CHECK(typeof(binding_generation) = 'integer' AND binding_generation BETWEEN 1 AND 9007199254740991),
+          created_at INTEGER NOT NULL
+            CHECK(typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 9007199254740991),
+          expires_at INTEGER NOT NULL
+            CHECK(
+              typeof(expires_at) = 'integer'
+              AND expires_at > created_at
+              AND expires_at <= created_at + 300000
+              AND expires_at <= 9007199254740991
+            ),
+          revoked_at INTEGER
+            CHECK(
+              revoked_at IS NULL
+              OR (
+                typeof(revoked_at) = 'integer'
+                AND revoked_at BETWEEN created_at AND 9007199254740991
+              )
+            )
+        );
+        CREATE INDEX desktop_access_grants_owner_expiry
+          ON desktop_access_grants(owner_id, expires_at, token_digest);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

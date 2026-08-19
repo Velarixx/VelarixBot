@@ -5,7 +5,8 @@
 // - exact-match scopes (control does not implicitly include view);
 // - every operation is owner-bound, and resolution also requires the caller's
 //   expected current workspace identity and scope;
-// - binding updated_at is an authorization revision, preventing ABA rebinds.
+// - a durable monotonic binding generation prevents timestamp ABA and
+//   delete/recreate grant revival.
 import { createHash, randomBytes } from "node:crypto";
 
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
@@ -56,7 +57,7 @@ interface GrantRow {
 }
 
 interface MintedRow {
-  binding_updated_at: number;
+  binding_generation: number;
 }
 
 export interface DesktopAccessGrantsRepository {
@@ -130,19 +131,21 @@ export function createDesktopAccessGrantsRepository(db: SqliteDatabase): Desktop
   const mintForCurrentBinding = db.prepare<MintedRow>(
     `INSERT INTO desktop_access_grants(
        token_digest, owner_id, provider_kind, machine_id, scope,
-       binding_updated_at, created_at, expires_at, revoked_at
+       binding_generation, created_at, expires_at, revoked_at
      )
-     SELECT ?, b.user_id, b.provider_kind, b.machine_id, ?, b.updated_at, ?, ?, NULL
+     SELECT ?, b.user_id, b.provider_kind, b.machine_id, ?, b.authorization_generation, ?, ?, NULL
      FROM user_workspace_bindings b
      WHERE b.user_id = ?
        AND b.provider_kind = ?
        AND b.machine_id = ?
        AND typeof(b.created_at) = 'integer'
        AND typeof(b.updated_at) = 'integer'
+       AND typeof(b.authorization_generation) = 'integer'
+       AND b.authorization_generation BETWEEN 1 AND ?
        AND b.created_at BETWEEN 0 AND ?
        AND b.updated_at BETWEEN b.created_at AND ?
        AND b.updated_at <= ?
-     RETURNING binding_updated_at`,
+     RETURNING binding_generation`,
   );
   const resolveForCurrentBinding = db.prepare<GrantRow>(
     `SELECT g.owner_id, g.provider_kind, g.machine_id, g.scope, g.created_at, g.expires_at
@@ -151,7 +154,7 @@ export function createDesktopAccessGrantsRepository(db: SqliteDatabase): Desktop
        ON b.user_id = g.owner_id
       AND b.provider_kind = g.provider_kind
       AND b.machine_id = g.machine_id
-      AND b.updated_at = g.binding_updated_at
+      AND b.authorization_generation = g.binding_generation
      WHERE g.token_digest = ?
        AND g.owner_id = ?
        AND g.provider_kind = ?
@@ -178,7 +181,7 @@ export function createDesktopAccessGrantsRepository(db: SqliteDatabase): Desktop
          WHERE b.user_id = desktop_access_grants.owner_id
            AND b.provider_kind = desktop_access_grants.provider_kind
            AND b.machine_id = desktop_access_grants.machine_id
-           AND b.updated_at = desktop_access_grants.binding_updated_at
+           AND b.authorization_generation = desktop_access_grants.binding_generation
        )`,
   );
   const pruneExpiredForOwner = db.prepare(
@@ -214,6 +217,7 @@ export function createDesktopAccessGrantsRepository(db: SqliteDatabase): Desktop
             ownerId,
             expectedWorkspace.providerKind,
             expectedWorkspace.machineId,
+            Number.MAX_SAFE_INTEGER,
             Number.MAX_SAFE_INTEGER,
             Number.MAX_SAFE_INTEGER,
             now,
