@@ -6,13 +6,131 @@ import { cn } from "@/lib/cn";
 
 const LETTERS = ["A", "B", "C", "D", "E", "F"];
 
-type CardResponse = {
+export type CardResponse = {
   answer: string;
   always?: boolean;
   persistScope?: "bot" | "workspace";
   secret?: string;
   dismiss?: boolean;
 };
+
+export type CardDispatchAction =
+  | ({
+      type: "answerCard";
+      botId: string;
+      messageId: string;
+    } & Omit<CardResponse, "dismiss"> & CardResponseCallbacks)
+  | ({
+      type: "dismissCard";
+      botId: string;
+      messageId: string;
+    } & CardResponseCallbacks);
+
+type CardResponseCallbacks = {
+  onSuccess?: () => void;
+  onError?: (message: string) => void;
+};
+
+type SubmissionRef = { current: boolean };
+
+export function approvalResponse(scope: "once" | "bot" | "workspace"): CardResponse {
+  const response: CardResponse = { answer: "Allow once" };
+  if (scope === "once") return response;
+  if (scope === "bot") return { ...response, always: true };
+  return { ...response, always: true, persistScope: "workspace" };
+}
+
+export function submitCardResponse({
+  botId,
+  messageId,
+  liveRequest,
+  response,
+  submitting,
+  dispatch,
+  setSubmitting,
+  setResponseError,
+  setRetainedResponse,
+  clearSecret,
+}: {
+  botId: string;
+  messageId: string;
+  liveRequest: boolean;
+  response: CardResponse;
+  submitting: SubmissionRef;
+  dispatch: (action: CardDispatchAction) => void;
+  setSubmitting: (value: boolean) => void;
+  setResponseError: (value: string | null) => void;
+  setRetainedResponse: (value: CardResponse | null) => void;
+  clearSecret: () => void;
+}): boolean {
+  if (!liveRequest) {
+    if (response.dismiss) {
+      dispatch({ type: "dismissCard", botId, messageId });
+    } else {
+      dispatch({ type: "answerCard", botId, messageId, ...response });
+    }
+    if (response.secret) clearSecret();
+    return true;
+  }
+  if (submitting.current) return false;
+
+  submitting.current = true;
+  setSubmitting(true);
+  setResponseError(null);
+  setRetainedResponse(response);
+  const onSuccess = () => {
+    submitting.current = false;
+    setSubmitting(false);
+    setResponseError(null);
+    setRetainedResponse(null);
+    if (response.secret) clearSecret();
+  };
+  const onError = (error: string) => {
+    submitting.current = false;
+    setSubmitting(false);
+    setResponseError(error);
+  };
+  if (response.dismiss) {
+    dispatch({ type: "dismissCard", botId, messageId, onSuccess, onError });
+  } else {
+    dispatch({ type: "answerCard", botId, messageId, ...response, onSuccess, onError });
+  }
+  return true;
+}
+
+export function OptionCardFeedback({
+  submitting,
+  responseError,
+  onRetry,
+}: {
+  submitting: boolean;
+  responseError: string | null;
+  onRetry?: () => void;
+}) {
+  return (
+    <>
+      {submitting && (
+        <div role="status" aria-live="polite" className="mt-3 text-[13px] text-ink-secondary">
+          Submitting response…
+        </div>
+      )}
+
+      {responseError && onRetry && (
+        <div role="alert" className="mt-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2.5 text-[13px] text-ink">
+          <div className="font-medium">Couldn’t send your response.</div>
+          <div className="mt-0.5 text-ink-secondary">{responseError}</div>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-2 font-medium text-danger hover:underline"
+          >
+            Retry response
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
 
 export function OptionCard({
   botId,
@@ -59,38 +177,18 @@ export function OptionCard({
   if (!card || card.dismissed) return null;
 
   const submitResponse = (response: CardResponse) => {
-    if (!card.requestId) {
-      if (response.dismiss) {
-        dispatch({ type: "dismissCard", botId, messageId: message.id });
-      } else {
-        dispatch({ type: "answerCard", botId, messageId: message.id, ...response });
-      }
-      if (response.secret) setCustom("");
-      return;
-    }
-    if (submittingRef.current) return;
-
-    submittingRef.current = true;
-    setSubmitting(true);
-    setResponseError(null);
-    setRetainedResponse(response);
-    const onSuccess = () => {
-      submittingRef.current = false;
-      setSubmitting(false);
-      setResponseError(null);
-      setRetainedResponse(null);
-      if (response.secret) setCustom("");
-    };
-    const onError = (error: string) => {
-      submittingRef.current = false;
-      setSubmitting(false);
-      setResponseError(error);
-    };
-    if (response.dismiss) {
-      dispatch({ type: "dismissCard", botId, messageId: message.id, onSuccess, onError });
-    } else {
-      dispatch({ type: "answerCard", botId, messageId: message.id, ...response, onSuccess, onError });
-    }
+    submitCardResponse({
+      botId,
+      messageId: message.id,
+      liveRequest: !!card.requestId,
+      response,
+      submitting: submittingRef,
+      dispatch,
+      setSubmitting,
+      setResponseError,
+      setRetainedResponse,
+      clearSecret: () => setCustom(""),
+    });
   };
 
   const answer = (text: string, response: Omit<CardResponse, "answer"> = {}) => {
@@ -129,25 +227,11 @@ export function OptionCard({
         </button>
       </div>
 
-      {submitting && (
-        <div role="status" aria-live="polite" className="mt-3 text-[13px] text-ink-secondary">
-          Submitting response…
-        </div>
-      )}
-
-      {responseError && retainedResponse && (
-        <div role="alert" className="mt-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2.5 text-[13px] text-ink">
-          <div className="font-medium">Couldn’t send your response.</div>
-          <div className="mt-0.5 text-ink-secondary">{responseError}</div>
-          <button
-            type="button"
-            onClick={() => submitResponse(retainedResponse)}
-            className="mt-2 font-medium text-danger hover:underline"
-          >
-            Retry response
-          </button>
-        </div>
-      )}
+      <OptionCardFeedback
+        submitting={submitting}
+        responseError={responseError}
+        onRetry={retainedResponse ? () => submitResponse(retainedResponse) : undefined}
+      />
 
       {offerDesktop && !card.answered && (
         <button
@@ -176,7 +260,7 @@ export function OptionCard({
           <button
             key={opt}
             disabled={submitting || !!card.answered}
-            onClick={() => answer(opt)}
+            onClick={() => permission && opt === "Allow once" ? submitResponse(approvalResponse("once")) : answer(opt)}
             className={cn(
               "flex w-full items-center gap-3 px-3 py-3 text-left text-[15px] text-ink",
               i > 0 && "border-t border-hairline/40",
@@ -237,7 +321,7 @@ export function OptionCard({
           <button
             type="button"
             disabled={submitting}
-            onClick={() => answer("Allow once", { always: true })}
+            onClick={() => submitResponse(approvalResponse("bot"))}
             className="text-[13px] text-ink-secondary hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
             Always allow for this bot
@@ -245,7 +329,7 @@ export function OptionCard({
           <button
             type="button"
             disabled={submitting}
-            onClick={() => answer("Allow once", { always: true, persistScope: "workspace" })}
+            onClick={() => submitResponse(approvalResponse("workspace"))}
             className="text-[12px] text-ink-secondary/70 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
             Advanced: always allow for all bots
