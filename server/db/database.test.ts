@@ -28,6 +28,7 @@ const MANDATED_TABLES = [
   "sessions",
   "user_workspace_bindings",
   "github_oauth_transactions",
+  "desktop_access_grants",
 ];
 
 describe("database + migrations", () => {
@@ -102,7 +103,13 @@ describe("database + migrations", () => {
       ownerId,
     );
 
-    expect(migrate(db)).toEqual(["thread-user-ownership", "group-user-ownership", "user-workspace-bindings", "github-oauth-transactions"]);
+    expect(migrate(db)).toEqual([
+      "thread-user-ownership",
+      "group-user-ownership",
+      "user-workspace-bindings",
+      "github-oauth-transactions",
+      "desktop-access-grants",
+    ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM bots WHERE id = ?").get("legacy-bot")).toEqual({
       owner_id: null,
     });
@@ -147,7 +154,12 @@ describe("database + migrations", () => {
       }),
     );
 
-    expect(migrate(db)).toEqual(["group-user-ownership", "user-workspace-bindings", "github-oauth-transactions"]);
+    expect(migrate(db)).toEqual([
+      "group-user-ownership",
+      "user-workspace-bindings",
+      "github-oauth-transactions",
+      "desktop-access-grants",
+    ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM groups WHERE id = ?").get("legacy-group")).toEqual({
       owner_id: null,
     });
@@ -171,7 +183,7 @@ describe("database + migrations", () => {
       "INSERT INTO computer_bindings(bot_id, box_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
     ).run("legacy-bot", "legacy-machine", 1_000, 2_000);
 
-    expect(migrate(db)).toEqual(["user-workspace-bindings", "github-oauth-transactions"]);
+    expect(migrate(db)).toEqual(["user-workspace-bindings", "github-oauth-transactions", "desktop-access-grants"]);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM user_workspace_bindings").get()?.n).toBe(0);
     expect(
       db

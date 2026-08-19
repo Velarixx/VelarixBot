@@ -5,6 +5,7 @@ import { collectAvatarHashes } from "../avatar-image.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { createBotsRepository, type BotsRepository } from "./bots.ts";
 import { createComputerBindingsRepository, type ComputerBindingsRepository } from "./computer-bindings.ts";
+import { createDesktopAccessGrantsRepository, type DesktopAccessGrantsRepository } from "./desktop-access-grants.ts";
 import { createEventLogRepository, type EventLogRepository } from "./event-log.ts";
 import { createGroupsRepository, type GroupsRepository } from "./groups.ts";
 import { createMessagesRepository, type MessagesRepository } from "./messages.ts";
@@ -25,6 +26,7 @@ export interface Repositories {
   routines: RoutinesRepository;
   eventLog: EventLogRepository;
   computerBindings: ComputerBindingsRepository;
+  desktopAccessGrants: DesktopAccessGrantsRepository;
   userWorkspaceBindings: UserWorkspaceBindingsRepository;
   snapshots: SnapshotsRepository;
   memoryRows: MemoryRowsStore;
@@ -43,6 +45,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
   const routines = createRoutinesRepository(db);
   const eventLog = createEventLogRepository(db);
   const computerBindings = createComputerBindingsRepository(db);
+  const desktopAccessGrants = createDesktopAccessGrantsRepository(db);
   const userWorkspaceBindings = createUserWorkspaceBindingsRepository(db);
   const snapshots = createSnapshotsRepository(db);
   const memoryRows = createMemoryRowsRepository(db);
@@ -67,6 +70,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     routines,
     eventLog,
     computerBindings,
+    desktopAccessGrants,
     userWorkspaceBindings,
     snapshots,
     memoryRows,

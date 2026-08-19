@@ -347,6 +347,67 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Server-only authorization material for later browser desktop access.
+    // The browser-visible secret is never stored: only its SHA-256 digest is
+    // durable. Binding updated_at is captured as a revision so an old grant
+    // cannot become valid again after a machine binding is changed and later
+    // changed back to the same opaque identifiers.
+    version: 12,
+    name: "desktop-access-grants",
+    up(db) {
+      db.exec(`
+        CREATE TABLE desktop_access_grants(
+          token_digest TEXT PRIMARY KEY NOT NULL
+            CHECK(length(token_digest) = 64 AND token_digest NOT GLOB '*[^0-9a-f]*'),
+          owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE
+            CHECK(
+              length(owner_id) = 36
+              AND substr(owner_id, 9, 1) = '-'
+              AND substr(owner_id, 14, 1) = '-'
+              AND substr(owner_id, 19, 1) = '-'
+              AND substr(owner_id, 24, 1) = '-'
+              AND lower(owner_id) NOT GLOB '*[^0-9a-f-]*'
+            ),
+          provider_kind TEXT NOT NULL
+            CHECK(
+              length(provider_kind) BETWEEN 1 AND 64
+              AND provider_kind = lower(provider_kind)
+              AND substr(provider_kind, 1, 1) GLOB '[a-z]'
+              AND provider_kind NOT GLOB '*[^a-z0-9-]*'
+            ),
+          machine_id TEXT NOT NULL
+            CHECK(
+              length(machine_id) BETWEEN 1 AND 255
+              AND substr(machine_id, 1, 1) GLOB '[A-Za-z0-9]'
+              AND machine_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+            ),
+          scope TEXT NOT NULL CHECK(scope IN ('desktop:view', 'desktop:control')),
+          binding_updated_at INTEGER NOT NULL
+            CHECK(typeof(binding_updated_at) = 'integer' AND binding_updated_at BETWEEN 0 AND 9007199254740991),
+          created_at INTEGER NOT NULL
+            CHECK(typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 9007199254740991),
+          expires_at INTEGER NOT NULL
+            CHECK(
+              typeof(expires_at) = 'integer'
+              AND expires_at > created_at
+              AND expires_at <= created_at + 300000
+              AND expires_at <= 9007199254740991
+            ),
+          revoked_at INTEGER
+            CHECK(
+              revoked_at IS NULL
+              OR (
+                typeof(revoked_at) = 'integer'
+                AND revoked_at BETWEEN created_at AND 9007199254740991
+              )
+            )
+        );
+        CREATE INDEX desktop_access_grants_owner_expiry
+          ON desktop_access_grants(owner_id, expires_at, token_digest);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {
