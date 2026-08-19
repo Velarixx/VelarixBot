@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "issue": "DHV-71",
+  "baseline": {
+    "sha": "46e9963774a45f90c1414b93a8ce4a6b57ca12e8",
+    "tree": "e0142653da88ad44409ffd0bba29c8a698b89f5b",
+    "runtime": "Node v24.19.0",
+    "platform": "win32",
+    "arch": "x64",
+    "vitest": "4.1.10",
+    "totalTests": 1362,
+    "passedTests": 1261,
+    "failedTests": 6,
+    "skippedTests": 95
+  },
+  "taxonomy": {
+    "valid_platform_na": "Condition is intrinsic to the current OS; expected on Windows and exercised on POSIX CI.",
+    "valid_capability_na": "The provider protocol has no applicable surface; the contract fixture declares the unsupported capability and gives a reason.",
+    "missing_dependency": "A live optional executable is absent; the reasoned skip is an invalid release-evidence gap requiring remediation.",
+    "mock_only_gap": "Only a fake exercises behavior requiring a live-boundary canary; none observed as a Vitest skip at this SHA.",
+    "unjustified_skip": "No durable condition/reason/owner; none observed at this SHA."
+  },
+  "classCounts": {
+    "valid_platform_na": 88,
+    "valid_capability_na": 4,
+    "missing_dependency": 3,
+    "mock_only_gap": 0,
+    "unjustified_skip": 0
+  },
+  "shards": [
+    { "file": "electron-service-auth.json", "count": 1 },
+    { "file": "server-config.json", "count": 1 },
+    { "file": "server-db-database.json", "count": 1 },
+    { "file": "server-drivers-acp-acp.json", "count": 17 },
+    { "file": "server-drivers-acp-gemini.json", "count": 3 },
+    { "file": "server-drivers-claude.json", "count": 25 },
+    { "file": "server-drivers-codex.json", "count": 40 },
+    { "file": "server-drivers-driver-contract.json", "count": 4 },
+    { "file": "server-env-path.json", "count": 2 },
+    { "file": "server-secrets.json", "count": 1 }
+  ]
+}
