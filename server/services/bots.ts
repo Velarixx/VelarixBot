@@ -18,6 +18,7 @@ import { botWorkspaceDir, type AppConfig } from "../config.ts";
 import { deleteBlob, readBlob } from "../db/blobs.ts";
 import { newId, type ModelSelection } from "../contracts.ts";
 import type { Repositories } from "../repositories/index.ts";
+import type { TenantMessagesRepository } from "../repositories/messages.ts";
 import { normalizeBotColor } from "../engine-setup.ts";
 import {
   BASE_COMPUTER_BINDINGS,
@@ -84,9 +85,11 @@ export function toPublicBot(bot: BotRecord, messages: Message[] = []): PublicBot
   return pub;
 }
 
-function hydrateBot(repos: Repositories, bot: BotRecord, hydrate?: HydrateMessages): PublicBot {
-  if (hydrate?.messages === undefined) return toPublicBot(bot, repos.messages.forThread(bot.threadId));
-  const page = repos.messages.pageForThread(bot.threadId, { limit: hydrate.messages, slim: true });
+type MessageReads = Pick<TenantMessagesRepository, "forThread" | "pageForThread">;
+
+function hydrateBot(messages: MessageReads, bot: BotRecord, hydrate?: HydrateMessages): PublicBot {
+  if (hydrate?.messages === undefined) return toPublicBot(bot, messages.forThread(bot.threadId));
+  const page = messages.pageForThread(bot.threadId, { limit: hydrate.messages, slim: true });
   // no `before` cursor — pageForThread cannot miss
   return { ...toPublicBot(bot, page?.messages ?? []), hasMore: page?.hasMore ?? false };
 }
@@ -108,6 +111,8 @@ export function projectPublicBotFrame(
 }
 
 export interface BotsService {
+  /** Authenticated routes must use this owner-bound facade. */
+  forOwner(ownerId: string): OwnerBotsService;
   bots(): BotRecord[];
   count(): number;
   bot(id: string): BotRecord | null;
@@ -141,13 +146,50 @@ export interface BotsService {
   readAvatar(id: string, hash?: string | null): { bytes: Buffer; mime: string } | null;
 }
 
-export function createBotsService(opts: {
+/**
+ * Owner-scoped application API. Process-wide maintenance, recovery, resume
+ * cursors, usage accounting, and raw repositories are deliberately absent.
+ */
+export interface OwnerBotsService {
+  bots(): BotRecord[];
+  count(): number;
+  bot(id: string): BotRecord | null;
+  botByThread(threadId: string): BotRecord | null;
+  publicBot(id: string, hydrate?: HydrateMessages): PublicBot | null;
+  publicBots(hydrate?: HydrateMessages): PublicBot[];
+  pageMessages(threadId: string, opts: { limit: number; before?: string | null }):
+    | { ok: true; messages: Message[]; hasMore: boolean }
+    | { ok: false; status: 404; error: string };
+  readMessageImage(threadId: string, messageId: string):
+    | { ok: true; bytes: Buffer; mime: string }
+    | { ok: false; status: 404; error: string };
+  createBot(): BotRecord;
+  patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null;
+  deleteBot(id: string): boolean;
+  messagesFor(threadId: string): Message[];
+  appendMessage(threadId: string, message: Omit<Message, "id" | "at"> & { at?: number }): Message;
+  patchMessage(threadId: string, id: string, patch: Partial<Message>): Message | null;
+  generateAvatar(
+    id: string,
+    opts: { cfg: AppConfig; requested?: string | null; generate?: GenerateAvatarImages },
+  ): Promise<{ provider: AvatarProvider; prompt: string; candidates: AvatarCandidate[]; bot: BotRecord }>;
+  readAvatar(id: string, hash?: string | null): { bytes: Buffer; mime: string } | null;
+}
+
+export interface BotsServiceOptions {
   repos: Repositories;
   defaultSelection: () => ModelSelection;
   /** Valid computer bindings besides "off" — the composition root wires the
    * computer registry's provider ids; defaults to the base set. */
   computerBindings?: () => Iterable<string>;
-}): BotsService {
+}
+
+/**
+ * Internal desktop-global seam. It intentionally includes legacy-unowned and
+ * tenant-owned rows for loopback desktop behavior and process-wide recovery.
+ * Future authenticated routes must call `forOwner(userId)` on this service.
+ */
+export function createDesktopGlobalBotsService(opts: BotsServiceOptions): BotsService {
   const { repos, defaultSelection } = opts;
   const validComputerBinding = (binding: string): boolean => {
     if (binding === "off") return true;
@@ -158,6 +200,7 @@ export function createBotsService(opts: {
   };
 
   const service: BotsService = {
+    forOwner: (ownerId) => createOwnerBotsService(opts, ownerId),
     bots: () => repos.bots.list(),
     count: () => repos.bots.count(),
     bot: (id) => repos.bots.get(id),
@@ -165,10 +208,10 @@ export function createBotsService(opts: {
     publicBot(id, hydrate) {
       const bot = repos.bots.get(id);
       if (!bot) return null;
-      return hydrateBot(repos, bot, hydrate);
+      return hydrateBot(repos.messages, bot, hydrate);
     },
     publicBots(hydrate) {
-      return repos.bots.list().map((bot) => hydrateBot(repos, bot, hydrate));
+      return repos.bots.list().map((bot) => hydrateBot(repos.messages, bot, hydrate));
     },
     pageMessages(threadId, opts) {
       if (!repos.bots.getByThread(threadId) && !repos.groups.getByThread(threadId)) {
@@ -434,3 +477,151 @@ export function createBotsService(opts: {
   };
   return service;
 }
+
+function createOwnerBotsService(
+  opts: BotsServiceOptions,
+  ownerId: string,
+): OwnerBotsService {
+  const { repos, defaultSelection } = opts;
+  const bots = repos.bots.forOwner(ownerId);
+  const messages = repos.messages.forOwner(ownerId);
+  const groups = repos.groups.forOwner(ownerId);
+  // Reuse the desktop validation policy through an internal adapter whose bot
+  // reads/writes are the owner repository. The adapter itself is never
+  // returned, so its global maintenance surface cannot escape this facade.
+  const validatedMutations = createDesktopGlobalBotsService({
+    ...opts,
+    repos: {
+      ...repos,
+      bots: {
+        ...repos.bots,
+        list: () => bots.list(),
+        get: (id) => bots.get(id),
+        getByThread: (threadId) => bots.getByThread(threadId),
+        count: () => bots.count(),
+        insert: (bot) => bots.insert(bot),
+        update: (bot) => bots.update(bot),
+      },
+    },
+  });
+
+  const ownsConversation = (threadId: string): boolean =>
+    bots.getByThread(threadId) !== null || groups.getByThread(threadId) !== null;
+
+  const service: OwnerBotsService = {
+    bots: () => bots.list(),
+    count: () => bots.count(),
+    bot: (id) => bots.get(id),
+    botByThread: (threadId) => bots.getByThread(threadId),
+    publicBot(id, hydrate) {
+      const bot = bots.get(id);
+      return bot ? hydrateBot(messages, bot, hydrate) : null;
+    },
+    publicBots(hydrate) {
+      return bots.list().map((bot) => hydrateBot(messages, bot, hydrate));
+    },
+    pageMessages(threadId, pageOpts) {
+      if (!ownsConversation(threadId)) {
+        return { ok: false, status: 404, error: "no such conversation" };
+      }
+      const page = messages.pageForThread(threadId, { ...pageOpts, slim: true });
+      if (!page) return { ok: false, status: 404, error: "no such message" };
+      return { ok: true, ...page };
+    },
+    readMessageImage(threadId, messageId) {
+      if (!ownsConversation(threadId)) {
+        return { ok: false, status: 404, error: "no such conversation" };
+      }
+      const image = messages.readImage(threadId, messageId);
+      if (!image) return { ok: false, status: 404, error: "no image on that message" };
+      return { ok: true, ...image };
+    },
+    createBot() {
+      const id = newId();
+      const face = seedAvatar({ botId: id, nonce: 0 });
+      const bot: BotRecord = {
+        id,
+        threadId: newId(),
+        name: "New Bot",
+        title: "",
+        description: "",
+        notifications: true,
+        color: face.color,
+        iconShape: face.iconShape,
+        avatarNonce: 0,
+        unread: false,
+        modelSelection: defaultSelection(),
+        resumeCursors: {},
+        computer: "off",
+        busy: false,
+        state: "IDLE",
+        usage: zeroUsage(),
+        createdAt: Date.now(),
+      };
+      bots.insert(bot);
+      messages.append(bot.threadId, { role: "bot", kind: "text", text: "Hey — I'm your new bot. Nice to meet you." });
+      messages.append(bot.threadId, { role: "bot", kind: "options", card: onboardingCard() });
+      return bot;
+    },
+    patchBot(id, patch) {
+      return validatedMutations.patchBot(id, patch);
+    },
+    deleteBot(id) {
+      const bot = bots.get(id);
+      if (!bot) return false;
+      // Repositories currently expose cascade deletion only at the internal
+      // seam. The owner lookup above makes foreign/legacy ids absent before
+      // this synchronous process-wide maintenance operation can run.
+      const deleted = repos.deleteBotCascade(bot.id);
+      if (!deleted) return false;
+      try {
+        rmSync(botWorkspaceDir(bot.id), { recursive: true, force: true });
+      } catch {
+        /* workspace dir may be held by a late child on Windows */
+      }
+      return true;
+    },
+    messagesFor: (threadId) => messages.forThread(threadId),
+    appendMessage: (threadId, message) => messages.append(threadId, message),
+    patchMessage: (threadId, id, patch) => messages.patch(threadId, id, patch),
+    async generateAvatar(id, avatarOpts) {
+      const bot = bots.get(id);
+      if (!bot) return Promise.reject(Object.assign(new Error("no such bot"), { status: 404 }));
+      const prompt = avatarPrompt(bot);
+      const previous = new Set(bot.avatarCandidates ?? []);
+      const { provider, candidates } = await generateAvatarImagesForConfig(avatarOpts.cfg, {
+        prompt,
+        requested: avatarOpts.requested,
+        generate: avatarOpts.generate,
+      });
+      // Re-authorize after awaiting the provider. A bot deleted while images
+      // were generated must not turn into an unscoped update.
+      const patched = service.patchBot(id, { avatarCandidates: candidates.map((candidate) => candidate.hash) });
+      if (!patched) throw Object.assign(new Error("no such bot"), { status: 404 });
+      // Blob GC is process-wide bookkeeping: scan all references so one
+      // tenant can never delete another tenant's content-addressed avatar.
+      // No cross-tenant record is returned through the owner facade.
+      const keep = collectAvatarHashes(repos.bots.list());
+      for (const hash of previous) {
+        if (keep.has(hash) || repos.messages.blobRefCount(hash) > 0) continue;
+        deleteBlob(hash);
+      }
+      return { provider, prompt, candidates, bot: patched };
+    },
+    readAvatar(id, hash) {
+      const bot = bots.get(id);
+      if (!bot) return null;
+      const want = hash && validBlobHash(hash) ? hash : bot.avatarImageHash;
+      if (!validBlobHash(want)) return null;
+      const allowed = new Set<string>(bot.avatarCandidates ?? []);
+      if (validBlobHash(bot.avatarImageHash)) allowed.add(bot.avatarImageHash);
+      if (!allowed.has(want)) return null;
+      const bytes = readBlob(want);
+      return bytes ? { bytes, mime: "image/png" } : null;
+    },
+  };
+  return service;
+}
+
+/** Backward-compatible name for existing loopback desktop composition. */
+export const createBotsService = createDesktopGlobalBotsService;
