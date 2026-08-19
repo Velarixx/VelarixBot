@@ -8,7 +8,7 @@ import {
   InvalidApplicationMode,
 } from "@/App";
 import { SessionBoundary } from "./SessionBoundary";
-import { resolveClientApplicationMode } from "./mode";
+import { resolveClientApplicationMode, trustedClientApplicationMode } from "./mode";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(join(HERE, "..", "App.tsx"), "utf8");
@@ -24,6 +24,13 @@ describe("trusted client application mode", () => {
     for (const invalid of ["SaaS", " saas ", "browser", false, 1]) {
       expect(resolveClientApplicationMode(invalid)).toBe("invalid");
     }
+  });
+
+  it("keeps the trusted adapter injectable without hiding Vite's static environment access", () => {
+    expect(trustedClientApplicationMode(undefined)).toBe("desktop");
+    expect(trustedClientApplicationMode("saas")).toBe("saas");
+    expect(trustedClientApplicationMode("invalid-value")).toBe("invalid");
+    expect(modeSource).toContain("import.meta.env.VITE_VELARIX_APP_MODE");
   });
 
   it("selects composition before either boundary mounts", () => {

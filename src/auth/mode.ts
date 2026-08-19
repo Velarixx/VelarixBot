@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 export type ClientApplicationMode = "desktop" | "saas" | "invalid";
 
 /**
@@ -14,12 +16,8 @@ export function resolveClientApplicationMode(value: unknown): ClientApplicationM
   return "invalid";
 }
 
-type TrustedImportMeta = ImportMeta & {
-  readonly env?: { readonly VITE_VELARIX_APP_MODE?: string };
-};
-
 export function trustedClientApplicationMode(
-  meta: TrustedImportMeta = import.meta as TrustedImportMeta,
+  value: unknown = import.meta.env.VITE_VELARIX_APP_MODE,
 ): ClientApplicationMode {
-  return resolveClientApplicationMode(meta.env?.VITE_VELARIX_APP_MODE);
+  return resolveClientApplicationMode(value);
 }

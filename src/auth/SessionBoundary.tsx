@@ -46,6 +46,7 @@ interface SessionBoundaryViewProps {
   model: SessionModel;
   actions: SessionBoundaryActions;
   headingRef?: RefObject<HTMLHeadingElement | null>;
+  signOutTriggerRef?: RefObject<HTMLButtonElement | null>;
   cancelRef?: RefObject<HTMLButtonElement | null>;
   dialogRef?: RefObject<HTMLDivElement | null>;
   onDialogKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
@@ -87,6 +88,7 @@ export function SessionBoundaryView({
   model,
   actions,
   headingRef,
+  signOutTriggerRef,
   cancelRef,
   dialogRef,
   onDialogKeyDown,
@@ -205,7 +207,7 @@ export function SessionBoundaryView({
             {description("Product access is not enabled yet. Tenant-safe routes require a separate review.")}
           </div>
           <Actions>
-            <button type="button" className={secondaryButton} onClick={actions.requestSignOut}>
+            <button ref={signOutTriggerRef} type="button" className={secondaryButton} onClick={actions.requestSignOut}>
               <LogOut size={16} aria-hidden="true" />
               Sign out
             </button>
@@ -304,6 +306,8 @@ export function SessionBoundary({ transport: injectedTransport }: SessionBoundar
     returnedResult.scrubbed ? modelForReturnedOutcome(returnedResult.outcome) : INITIAL_SESSION_MODEL,
   );
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const signOutTriggerRef = useRef<HTMLButtonElement>(null);
+  const restoreSignOutFocusRef = useRef(false);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const aliveRef = useRef(true);
@@ -348,6 +352,9 @@ export function SessionBoundary({ transport: injectedTransport }: SessionBoundar
       cancelRef.current?.focus();
     } else if (model.status === "sign_out_pending") {
       headingRef.current?.focus();
+    } else if (model.status === "authenticated" && restoreSignOutFocusRef.current) {
+      restoreSignOutFocusRef.current = false;
+      signOutTriggerRef.current?.focus();
     } else if (FOCUS_ON_ENTRY.has(model.status)) {
       headingRef.current?.focus();
     }
@@ -367,6 +374,11 @@ export function SessionBoundary({ transport: injectedTransport }: SessionBoundar
     dispatch({ type: "sign_in_cancelled" });
   }, []);
 
+  const cancelSignOut = useCallback(() => {
+    restoreSignOutFocusRef.current = true;
+    dispatch({ type: "sign_out_cancelled" });
+  }, []);
+
   const confirmSignOut = useCallback(async () => {
     if (!signOutGuard.current.tryStart()) return;
     dispatch({ type: "sign_out_confirmed" });
@@ -381,24 +393,25 @@ export function SessionBoundary({ transport: injectedTransport }: SessionBoundar
     beginSignIn,
     cancelSignIn,
     requestSignOut: () => dispatch({ type: "sign_out_requested" }),
-    cancelSignOut: () => dispatch({ type: "sign_out_cancelled" }),
+    cancelSignOut,
     confirmSignOut: () => void confirmSignOut(),
-  }), [beginSignIn, cancelSignIn, checkSession, confirmSignOut]);
+  }), [beginSignIn, cancelSignIn, cancelSignOut, checkSession, confirmSignOut]);
 
   const onDialogKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape" && model.status === "sign_out_confirm") {
       event.preventDefault();
-      dispatch({ type: "sign_out_cancelled" });
+      cancelSignOut();
       return;
     }
     keepFocusInDialog(event, dialogRef.current);
-  }, [model.status]);
+  }, [cancelSignOut, model.status]);
 
   return (
     <SessionBoundaryView
       model={model}
       actions={actions}
       headingRef={headingRef}
+      signOutTriggerRef={signOutTriggerRef}
       cancelRef={cancelRef}
       dialogRef={dialogRef}
       onDialogKeyDown={onDialogKeyDown}
