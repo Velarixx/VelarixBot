@@ -1,10 +1,9 @@
 // Durable identity/session primitives for a later GitHub OAuth callback.
-// This module intentionally has no HTTP routes: the existing desktop launch
-// bearer remains the only credential accepted by the loopback API. The next
-// integration must exchange GitHub's numeric identity through
-// upsertGithubIdentity(), set the returned session token as a cookie, and then
-// propagate the resolved internal user.id through every product repository and
-// VM/workspace lookup before exposing any SaaS endpoint.
+// The mode-aware request boundary may resolve these sessions for the narrow
+// SaaS identity probe only. The next integration must exchange GitHub's numeric
+// identity through upsertGithubIdentity(), set the returned session token as a
+// cookie, and then propagate the resolved internal user.id through owner-bound
+// product services before exposing any SaaS business route.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import type { SqliteDatabase } from "./db/sqlite-native.ts";
