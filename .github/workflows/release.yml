@@ -7,9 +7,18 @@ on:
         description: "Release version: 0.x.x full release or 0.x.x-rc.N prerelease (for example 0.2.0 or 0.2.0-rc.18)"
         required: true
         type: string
+      accepted_sha:
+        description: "Full commit SHA approved by the QA/Test Lead"
+        required: true
+        type: string
+      acceptance_record_url:
+        description: "URL to the completed exact-SHA acceptance record"
+        required: true
+        type: string
 
 permissions:
   contents: read
+  checks: read
 
 concurrency:
   group: internal-release-${{ inputs.version }}
@@ -19,11 +28,15 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: exact-sha-release
     outputs:
       prerelease: ${{ steps.version.outputs.prerelease }}
       notes: ${{ steps.version.outputs.notes }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -32,6 +45,22 @@ jobs:
       - name: Validate version
         id: version
         run: node scripts/release-version.mjs --github-output "${{ inputs.version }}"
+      - name: Validate accepted SHA and required CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPTED_SHA: ${{ inputs.accepted_sha }}
+          ACCEPTANCE_RECORD_URL: ${{ inputs.acceptance_record_url }}
+        run: |
+          set -euo pipefail
+          [[ "$ACCEPTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$ACCEPTED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
+          [[ "$ACCEPTANCE_RECORD_URL" =~ ^https:// ]]
+          matches="$(gh api "repos/${{ github.repository }}/commits/$ACCEPTED_SHA/check-runs" \
+            --jq "[.check_runs[] | select(.name == \"exact-sha-release-gate\" and .conclusion == \"success\")] | length")"
+          test "$matches" -ge 1
+          printf "accepted_sha=%s\nacceptance_record=%s\n" "$ACCEPTED_SHA" "$ACCEPTANCE_RECORD_URL"
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
@@ -42,6 +71,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -101,6 +132,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

@@ -4,5 +4,5 @@
     "lib": ["ES2023", "DOM"],
     "noEmit": true
   },
-  "include": ["e2e/**/*.ts", "server/testing/harness.ts"]
+  "include": ["e2e/**/*.ts", "playwright.release.config.ts", "server/testing/harness.ts"]
 }

@@ -1,52 +1,98 @@
-name: CI
+name: Exact-SHA CI
 
-# One Ubuntu job. typecheck, test, and the production UI build run together
-# on the same runner, with the P0.6 gates (secret scan, dependency audit) as
-# named steps in the SAME job — a PR cannot go green if any gate fails.
-# macOS/Windows stay on the manual Portable workflow.
-#
-# PRs only. A merge to main already passed these checks on the PR, so a
-# second run on push would just burn fair-use minutes.
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "LICENSE"
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: "Optional full commit SHA; the run fails if checkout differs"
+        required: false
+        type: string
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: exact-sha-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    name: typecheck + test + build
+  release-gate:
+    # Keep this context stable. Repository admins must require
+    # "exact-sha-release-gate" on main; see docs/product/exact-sha-release-gate.md.
+    name: exact-sha-release-gate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      DISPATCH_EXPECTED_SHA: ${{ inputs.expected_sha || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the exact candidate SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          fetch-depth: 2
+
+      - name: Prove exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_SHA"
+          if [ -n "$DISPATCH_EXPECTED_SHA" ]; then
+            test "$actual" = "$DISPATCH_EXPECTED_SHA"
+          fi
+          printf 'verified_sha=%s\n' "$actual"
+          printf 'parent_sha=%s\n' "$(git rev-parse HEAD^)"
+
       - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
-          # [VERIFY] 2026-08-18 M1: Node 24 only. package.json engines is
-          # >=24. Do not advertise 22 — CI does not test it.
           node-version: 24
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      # exits 1 on any credential-shaped string in tracked files
-      # (scripts/secret-scan.mjs, behavior pinned by server/secret-scan.test.ts)
-      - name: secret scan
-        run: node scripts/secret-scan.mjs
-      # exits 1 on a known high/critical advisory in the lockfile
-      - name: dependency audit
-        run: pnpm audit --audit-level=high
-      - name: typecheck, test, production UI build
+
+      - name: Verify supported runtime
         run: |
-          pnpm typecheck
-          pnpm test
-          pnpm exec vite build
+          node --version
+          corepack pnpm --version
+          node -e "if (Number(process.versions.node.split('.')[0]) < 24) process.exit(1)"
+
+      - name: Frozen dependency install
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Validate gate wiring and command surface
+        run: corepack pnpm verify:release-gate
+
+      - name: Repository lint and format checks
+        run: corepack pnpm verify:lint-format
+
+      - name: Secret inventory
+        run: node scripts/secret-scan.mjs
+
+      - name: Dependency security audit
+        run: corepack pnpm audit --audit-level=high
+
+      - name: Route, import, and security inventories
+        run: corepack pnpm verify:inventories
+
+      - name: Client, server, and Playwright TypeScript
+        run: |
+          corepack pnpm typecheck
+          corepack pnpm typecheck:smoke
+
+      - name: All unit and integration tests
+        run: corepack pnpm test
+
+      - name: Production build
+        run: corepack pnpm build
+
+      - name: Install pinned Chromium
+        run: corepack pnpm exec playwright install chromium --with-deps
+
+      - name: Deterministic Playwright E2E
+        run: corepack pnpm test:e2e
