@@ -54,6 +54,9 @@ export interface TenantBotsRepository {
 
 export function createBotsRepository(db: SqliteDatabase): BotsRepository {
   const insertThread = db.prepare("INSERT INTO threads(id, bot_id, created_at) VALUES (?, ?, ?)");
+  const insertOwnedThread = db.prepare(
+    "INSERT INTO threads(id, bot_id, created_at, owner_id) VALUES (?, ?, ?, ?)",
+  );
   const insertBot = db.prepare("INSERT INTO bots(id, thread_id, created_at, data) VALUES (?, ?, ?, ?)");
   const updateBot = db.prepare("UPDATE bots SET data = ? WHERE id = ?");
   const selectAll = db.prepare<BotRow>("SELECT id, thread_id, created_at, data FROM bots ORDER BY seq DESC");
@@ -83,7 +86,7 @@ export function createBotsRepository(db: SqliteDatabase): BotsRepository {
   });
 
   const insertOwnedTx = db.transaction((ownerId: string, bot: BotRecord) => {
-    insertThread.run(bot.threadId, bot.id, bot.createdAt);
+    insertOwnedThread.run(bot.threadId, bot.id, bot.createdAt, ownerId);
     insertOwnedBot.run(bot.id, bot.threadId, bot.createdAt, JSON.stringify(bot), ownerId);
   });
 

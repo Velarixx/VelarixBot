@@ -258,6 +258,33 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Thread ownership is deliberately nullable. Only threads already tied
+    // to an owned bot are safe to backfill; desktop, group, and orphan
+    // threads remain unowned until their own explicit product-data slice.
+    version: 8,
+    name: "thread-user-ownership",
+    up(db) {
+      db.exec(`
+        ALTER TABLE threads ADD COLUMN owner_id TEXT
+          REFERENCES users(id) ON DELETE RESTRICT;
+        UPDATE threads
+        SET owner_id = (
+          SELECT bots.owner_id
+          FROM bots
+          WHERE bots.thread_id = threads.id
+            AND bots.owner_id IS NOT NULL
+        )
+        WHERE EXISTS (
+          SELECT 1
+          FROM bots
+          WHERE bots.thread_id = threads.id
+            AND bots.owner_id IS NOT NULL
+        );
+        CREATE INDEX threads_owner_id ON threads(owner_id, id);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

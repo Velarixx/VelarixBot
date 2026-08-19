@@ -6,16 +6,38 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "../config.ts";
-import { blobsDir } from "../db/blobs.ts";
+import { blobsDir, listBlobs } from "../db/blobs.ts";
 import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { putBlob } from "../db/blobs.ts";
-import { zeroUsage } from "../store.ts";
+import { IdentitySessions } from "../identity.ts";
+import { zeroUsage, type BotRecord } from "../store.ts";
 import { createEventLogRepository } from "./event-log.ts";
 import { createMessagesRepository } from "./messages.ts";
 import { createRepositories } from "./index.ts";
 
 const PNG_BASE64 = Buffer.from("not-really-a-png-but-bytes-are-bytes").toString("base64");
+
+function makeBot(id: string): BotRecord {
+  return {
+    id,
+    threadId: `thread-${id}`,
+    name: id,
+    title: "",
+    description: "",
+    notifications: true,
+    color: "blue",
+    iconShape: "cursor",
+    unread: false,
+    modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+    resumeCursors: {},
+    computer: "off",
+    busy: false,
+    state: "IDLE",
+    usage: zeroUsage(),
+    createdAt: Date.now(),
+  };
+}
 
 describe("messages repository", () => {
   let db: SqliteDatabase;
@@ -92,6 +114,140 @@ describe("messages repository", () => {
     expect(image.bytes.toString("base64")).toBe(PNG_BASE64);
     expect(image.mime).toBe("image/png");
     expect(messages.readImage("t-page", ids[0])).toBeNull();
+  });
+
+  it("isolates owner-bound list, page, find, image, and count with exact foreign ids", () => {
+    const identity = new IdentitySessions(db);
+    const userA = identity.upsertGithubIdentity({ githubId: 101, login: "tenant-a" }, 1_000);
+    const userB = identity.upsertGithubIdentity({ githubId: 202, login: "tenant-b" }, 1_000);
+    const repos = createRepositories(db);
+    const botA = makeBot("bot-a");
+    const botB = makeBot("bot-b");
+    repos.bots.forOwner(userA.id).insert(botA);
+    repos.bots.forOwner(userB.id).insert(botB);
+    const tenantA = repos.messages.forOwner(userA.id);
+    const tenantB = repos.messages.forOwner(userB.id);
+    const firstA = tenantA.append(botA.threadId, { role: "user", kind: "text", text: "a1" });
+    const secondA = tenantA.append(botA.threadId, { role: "bot", kind: "text", text: "a2" });
+    const imageB = tenantB.append(botB.threadId, { role: "bot", kind: "screen", png: PNG_BASE64, mime: "image/png" });
+    const legacy = repos.messages.append("legacy-thread", { role: "user", kind: "text", text: "legacy" });
+
+    expect(() => repos.messages.forOwner("not-a-uuid")).toThrow(/internal UUID/);
+    expect(tenantA.forThread(botA.threadId).map((message) => message.id)).toEqual([firstA.id, secondA.id]);
+    expect(tenantA.forThread(botB.threadId)).toEqual([]);
+    expect(tenantA.forThread("legacy-thread")).toEqual([]);
+    expect(tenantA.countForThread(botA.threadId)).toBe(2);
+    expect(tenantA.countForThread(botB.threadId)).toBe(0);
+    expect(tenantA.countForThread("legacy-thread")).toBe(0);
+    expect(tenantA.find(botB.threadId, imageB.id)).toBeNull();
+    expect(tenantA.find(botA.threadId, imageB.id)).toBeNull();
+    expect(tenantA.find("legacy-thread", legacy.id)).toBeNull();
+    expect(tenantA.readImage(botB.threadId, imageB.id)).toBeNull();
+    expect(tenantB.readImage(botB.threadId, imageB.id)?.bytes.toString("base64")).toBe(PNG_BASE64);
+    expect(tenantA.pageForThread(botB.threadId, { limit: 10, before: imageB.id })).toBeNull();
+    expect(tenantA.pageForThread("legacy-thread", { limit: 10 })).toBeNull();
+
+    const newest = tenantA.pageForThread(botA.threadId, { limit: 1, slim: true })!;
+    expect(newest.messages.map((message) => message.id)).toEqual([secondA.id]);
+    expect(newest.hasMore).toBe(true);
+    expect(tenantA.pageForThread(botA.threadId, { limit: 1, before: secondA.id })?.messages.map((message) => message.id)).toEqual([
+      firstA.id,
+    ]);
+    expect(tenantA.pageForThread(botA.threadId, { limit: 1, before: imageB.id })).toBeNull();
+  });
+
+  it("rejects cross-tenant mutation before blob writes and preserves safe owner blob GC", () => {
+    const identity = new IdentitySessions(db);
+    const userA = identity.upsertGithubIdentity({ githubId: 303, login: "tenant-a" }, 1_000);
+    const userB = identity.upsertGithubIdentity({ githubId: 404, login: "tenant-b" }, 1_000);
+    const repos = createRepositories(db);
+    const botA = makeBot("mutation-a");
+    const botB = makeBot("mutation-b");
+    repos.bots.forOwner(userA.id).insert(botA);
+    repos.bots.forOwner(userB.id).insert(botB);
+    const tenantA = repos.messages.forOwner(userA.id);
+    const tenantB = repos.messages.forOwner(userB.id);
+    const ownA = tenantA.append(botA.threadId, { role: "user", kind: "text", text: "owner may edit" });
+    const imageB = tenantB.append(botB.threadId, { role: "bot", kind: "screen", png: PNG_BASE64 });
+    const legacy = repos.messages.append("legacy-mutation", { role: "user", kind: "text", text: "legacy" });
+    db.prepare("INSERT INTO threads(id, bot_id, created_at) VALUES (?, NULL, ?)").run("group-thread", 1_000);
+    db.prepare("INSERT INTO groups(id, thread_id, created_at, data) VALUES (?, ?, ?, ?)").run(
+      "group-1",
+      "group-thread",
+      1_000,
+      JSON.stringify({ id: "group-1" }),
+    );
+    const groupMessage = repos.messages.append("group-thread", { role: "user", kind: "text", text: "group" });
+    repos.eventLog.append({
+      eventId: "foreign-event",
+      provider: "fake",
+      threadId: botB.threadId,
+      createdAt: new Date().toISOString(),
+      type: "turn.started",
+    });
+
+    const before = {
+      messages: db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()?.n,
+      threads: db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()?.n,
+      events: db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log").get()?.n,
+      blobs: listBlobs().sort(),
+    };
+    const unauthorizedPng = Buffer.from("must-not-be-written").toString("base64");
+    expect(() => tenantA.append(botB.threadId, { role: "bot", kind: "screen", png: unauthorizedPng })).toThrow(
+      /tenant thread not found/,
+    );
+    expect(() => tenantA.append("legacy-mutation", { role: "user", kind: "text", text: "claim" })).toThrow(
+      /tenant thread not found/,
+    );
+    expect(() => tenantA.append("group-thread", { role: "user", kind: "text", text: "claim" })).toThrow(
+      /tenant thread not found/,
+    );
+    expect(() => tenantA.append("missing-thread", { role: "user", kind: "text", text: "create" })).toThrow(
+      /tenant thread not found/,
+    );
+    expect(tenantA.patch(botB.threadId, imageB.id, { png: unauthorizedPng })).toBeNull();
+    expect(tenantA.patch("legacy-mutation", legacy.id, { text: "changed" })).toBeNull();
+    expect(tenantA.patch("group-thread", groupMessage.id, { text: "changed" })).toBeNull();
+    expect(tenantA.deleteThread(botB.threadId)).toBe(false);
+    expect(tenantA.deleteThread("legacy-mutation")).toBe(false);
+    expect(tenantA.deleteThread("group-thread")).toBe(false);
+    expect(tenantA.deleteThread("missing-thread")).toBe(false);
+    expect({
+      messages: db.prepare<{ n: number }>("SELECT count(*) AS n FROM messages").get()?.n,
+      threads: db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()?.n,
+      events: db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log").get()?.n,
+      blobs: listBlobs().sort(),
+    }).toEqual(before);
+    expect(tenantB.find(botB.threadId, imageB.id)?.png).toBe(PNG_BASE64);
+    expect(repos.eventLog.countForThread(botB.threadId)).toBe(1);
+
+    expect(tenantA.patch(botA.threadId, ownA.id, { text: "owner edited" })?.text).toBe("owner edited");
+    const laterA = tenantA.append(botA.threadId, { role: "bot", kind: "text", text: "later" });
+    expect(tenantA.pageForThread(botA.threadId, { limit: 1 })?.messages[0].id).toBe(laterA.id);
+    expect(tenantA.pageForThread(botA.threadId, { limit: 1, before: laterA.id })?.messages[0].id).toBe(ownA.id);
+
+    db.prepare("INSERT INTO threads(id, bot_id, created_at, owner_id) VALUES (?, NULL, ?, ?)").run(
+      "owned-loose-thread",
+      2_000,
+      userA.id,
+    );
+    tenantA.append("owned-loose-thread", { role: "bot", kind: "screen", png: PNG_BASE64 });
+    repos.eventLog.append({
+      eventId: "owned-event",
+      provider: "fake",
+      threadId: "owned-loose-thread",
+      createdAt: new Date().toISOString(),
+      type: "turn.started",
+    });
+    const sharedHash = createHash("sha256").update(Buffer.from(PNG_BASE64, "base64")).digest("hex");
+    expect(tenantA.deleteThread("owned-loose-thread")).toBe(true);
+    expect(db.prepare("SELECT 1 FROM threads WHERE id = ?").get("owned-loose-thread")).toBeUndefined();
+    expect(repos.eventLog.countForThread("owned-loose-thread")).toBe(0);
+    expect(existsSync(join(blobsDir(), sharedHash))).toBe(true);
+
+    db.prepare("DELETE FROM bots WHERE id = ?").run(botB.id);
+    expect(tenantB.deleteThread(botB.threadId)).toBe(true);
+    expect(existsSync(join(blobsDir(), sharedHash))).toBe(false);
   });
 
   it("append #100,001 does not rewrite the prior 100,000", () => {

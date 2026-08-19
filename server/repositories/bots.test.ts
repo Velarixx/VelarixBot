@@ -107,6 +107,16 @@ describe("bots repository", () => {
     bots.forOwner(userA.id).insert(botASecond);
     bots.forOwner(userB.id).insert(botB);
 
+    expect(
+      db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM threads WHERE id = ?").get(botA.threadId),
+    ).toEqual({ owner_id: userA.id });
+    expect(
+      db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM threads WHERE id = ?").get(botB.threadId),
+    ).toEqual({ owner_id: userB.id });
+    expect(
+      db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM threads WHERE id = ?").get(legacy.threadId),
+    ).toEqual({ owner_id: null });
+
     const tenantA = bots.forOwner(userA.id);
     const tenantB = bots.forOwner(userB.id);
     expect(tenantA.list().map((bot) => bot.id)).toEqual([botASecond.id, botA.id]);
@@ -141,6 +151,24 @@ describe("bots repository", () => {
     expect(() => bots.forOwner(randomUUID()).insert(orphan)).toThrow(/FOREIGN KEY/i);
     expect(bots.get(orphan.id)).toBeNull();
     expect(db.prepare("SELECT 1 FROM threads WHERE id = ?").get(orphan.threadId)).toBeUndefined();
+  });
+
+  it("rolls back both rows when an owned bot or thread id collides", () => {
+    const identity = new IdentitySessions(db);
+    const user = identity.upsertGithubIdentity({ githubId: 303, login: "collision-owner" }, 1_000);
+    const bots = createBotsRepository(db);
+    const existing = makeBot();
+    bots.forOwner(user.id).insert(existing);
+
+    const botCollision = makeBot({ id: existing.id, threadId: "fresh-thread" });
+    expect(() => bots.forOwner(user.id).insert(botCollision)).toThrow(/UNIQUE/i);
+    expect(db.prepare("SELECT 1 FROM threads WHERE id = ?").get(botCollision.threadId)).toBeUndefined();
+
+    const threadCollision = makeBot({ id: "fresh-bot", threadId: existing.threadId });
+    expect(() => bots.forOwner(user.id).insert(threadCollision)).toThrow(/UNIQUE/i);
+    expect(bots.get(threadCollision.id)).toBeNull();
+    expect(bots.count()).toBe(1);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()?.n).toBe(1);
   });
 
   it("deleteBotCascade removes the bot, thread, messages, routines, runs, and binding in one transaction", () => {

@@ -66,10 +66,14 @@ describe("database + migrations", () => {
     expect(appliedMigrations(db)).toEqual(first);
   });
 
-  it("preserves pre-ownership bots as unowned and adds owner lookup indexes", () => {
+  it("backfills only owned bot threads and preserves legacy, group, and orphan threads as unowned", () => {
     mkdirSync(DATA_DIR, { recursive: true });
     db = new (loadBetterSqlite3())(join(DATA_DIR, "pre-ownership.db"));
     migrate(db, MIGRATIONS.slice(0, 6));
+    const ownerId = "11111111-1111-4111-8111-111111111111";
+    db.prepare(
+      "INSERT INTO users(id, github_id, github_login, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run(ownerId, 101, "owner", 1_000, 1_000);
     db.prepare("INSERT INTO threads(id, bot_id, created_at) VALUES (?, ?, ?)").run("legacy-thread", "legacy-bot", 1_000);
     db.prepare("INSERT INTO bots(id, thread_id, created_at, data) VALUES (?, ?, ?, ?)").run(
       "legacy-bot",
@@ -77,19 +81,49 @@ describe("database + migrations", () => {
       1_000,
       JSON.stringify({ id: "legacy-bot" }),
     );
+    db.prepare("INSERT INTO threads(id, bot_id, created_at) VALUES (?, ?, ?)").run("group-thread", null, 1_000);
+    db.prepare("INSERT INTO groups(id, thread_id, created_at, data) VALUES (?, ?, ?, ?)").run(
+      "group-1",
+      "group-thread",
+      1_000,
+      JSON.stringify({ id: "group-1" }),
+    );
+    db.prepare("INSERT INTO threads(id, bot_id, created_at) VALUES (?, ?, ?)").run("orphan-thread", null, 1_000);
 
-    expect(migrate(db)).toEqual(["bot-user-ownership"]);
+    expect(migrate(db, [MIGRATIONS[6]])).toEqual(["bot-user-ownership"]);
+    db.prepare("INSERT INTO threads(id, bot_id, created_at) VALUES (?, ?, ?)").run("owned-thread", "owned-bot", 2_000);
+    db.prepare("INSERT INTO bots(id, thread_id, created_at, data, owner_id) VALUES (?, ?, ?, ?, ?)").run(
+      "owned-bot",
+      "owned-thread",
+      2_000,
+      JSON.stringify({ id: "owned-bot" }),
+      ownerId,
+    );
+
+    expect(migrate(db)).toEqual(["thread-user-ownership"]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM bots WHERE id = ?").get("legacy-bot")).toEqual({
       owner_id: null,
     });
+    expect(
+      db.prepare<{ id: string; owner_id: string | null }>("SELECT id, owner_id FROM threads ORDER BY id").all(),
+    ).toEqual([
+      { id: "group-thread", owner_id: null },
+      { id: "legacy-thread", owner_id: null },
+      { id: "orphan-thread", owner_id: null },
+      { id: "owned-thread", owner_id: ownerId },
+    ]);
     expect(
       db
         .prepare<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'bots_owner_%' ORDER BY name")
         .all()
         .map(({ name }) => name),
     ).toEqual(["bots_owner_seq", "bots_owner_thread"]);
+    expect(
+      db.prepare<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'threads_owner_id'").get(),
+    ).toEqual({ name: "threads_owner_id" });
     expect(migrate(db)).toEqual([]);
-    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()?.n).toBe(1);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM bots").get()?.n).toBe(2);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM threads").get()?.n).toBe(4);
   });
 
   it("backfills legacy routine_runs rows: open rows close as interrupted", () => {
