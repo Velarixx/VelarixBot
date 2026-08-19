@@ -135,6 +135,9 @@ export function createDesktopAccessGrantsRepository(db: SqliteDatabase): Desktop
      )
      SELECT ?, b.user_id, b.provider_kind, b.machine_id, ?, b.authorization_generation, ?, ?, NULL
      FROM user_workspace_bindings b
+     JOIN user_workspace_binding_generations bg
+       ON bg.user_id = b.user_id
+      AND bg.generation = b.authorization_generation
      WHERE b.user_id = ?
        AND b.provider_kind = ?
        AND b.machine_id = ?
@@ -155,6 +158,9 @@ export function createDesktopAccessGrantsRepository(db: SqliteDatabase): Desktop
       AND b.provider_kind = g.provider_kind
       AND b.machine_id = g.machine_id
       AND b.authorization_generation = g.binding_generation
+     JOIN user_workspace_binding_generations bg
+       ON bg.user_id = b.user_id
+      AND bg.generation = b.authorization_generation
      WHERE g.token_digest = ?
        AND g.owner_id = ?
        AND g.provider_kind = ?
@@ -177,7 +183,11 @@ export function createDesktopAccessGrantsRepository(db: SqliteDatabase): Desktop
        AND created_at <= ?
        AND expires_at > ?
        AND EXISTS (
-         SELECT 1 FROM user_workspace_bindings b
+         SELECT 1
+         FROM user_workspace_bindings b
+         JOIN user_workspace_binding_generations bg
+           ON bg.user_id = b.user_id
+          AND bg.generation = b.authorization_generation
          WHERE b.user_id = desktop_access_grants.owner_id
            AND b.provider_kind = desktop_access_grants.provider_kind
            AND b.machine_id = desktop_access_grants.machine_id

@@ -215,6 +215,32 @@ describe("desktop access grants repository", () => {
     expect(grants.revoke(minted.token, WORKSPACE_A, "desktop:view", 2_001)).toBe(false);
   });
 
+  it("fails closed when the durable generation counter is ahead of the binding", () => {
+    const grants = createDesktopAccessGrantsRepository(db).forOwner(userA.id)!;
+    const mintedBeforeCounterAdvance = grants.mint(WORKSPACE_A, "desktop:view", { now: 2_000 })!;
+
+    expect(
+      db.prepare(
+        `UPDATE user_workspace_binding_generations
+         SET generation = generation + 1
+         WHERE user_id = ?`,
+      ).run(userA.id).changes,
+    ).toBe(1);
+    expect(
+      db.prepare<{ binding_generation: number; tombstone_generation: number }>(
+        `SELECT b.authorization_generation AS binding_generation,
+                bg.generation AS tombstone_generation
+         FROM user_workspace_bindings b
+         JOIN user_workspace_binding_generations bg ON bg.user_id = b.user_id
+         WHERE b.user_id = ?`,
+      ).get(userA.id),
+    ).toEqual({ binding_generation: 1, tombstone_generation: 2 });
+
+    expect(grants.mint(WORKSPACE_A, "desktop:view", { now: 2_001 })).toBeNull();
+    expect(grants.resolve(mintedBeforeCounterAdvance.token, WORKSPACE_A, "desktop:view", 2_001)).toBeNull();
+    expect(grants.revoke(mintedBeforeCounterAdvance.token, WORKSPACE_A, "desktop:view", 2_001)).toBe(false);
+  });
+
   it("invalidates raw-SQL delete -> recreate with a retained non-reused generation", () => {
     const bindings = createUserWorkspaceBindingsRepository(db).forOwner(userA.id);
     const grants = createDesktopAccessGrantsRepository(db).forOwner(userA.id)!;
