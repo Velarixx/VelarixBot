@@ -3,12 +3,15 @@
 // persistence (server/db, server/repositories) — import-hygiene enforces it.
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import type { InternalUserPrincipal } from "../auth.ts";
+
 export interface RouteCtx {
   req: IncomingMessage;
   res: ServerResponse;
   url: URL;
   path: string;
   method: string;
+  principal?: InternalUserPrincipal;
 }
 
 /** Returns true when the route handled the request. */

@@ -13,6 +13,64 @@
 // /api/internal COMMS token is a separate credential and stays that way.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
+import { sessionTokenFromCookie } from "./identity.ts";
+
+export type ApplicationAuthMode = "desktop" | "saas";
+
+export interface InternalUserPrincipal {
+  kind: "internal-user";
+  user: { id: string };
+}
+
+export interface SessionResolver {
+  resolveSession(token: unknown, now?: number): { id: string } | null;
+}
+
+export type ApplicationAuthentication =
+  | { mode: "desktop"; token: string; port: number }
+  | { mode: "saas"; applicationOrigin: string; sessions: SessionResolver; now?: () => number };
+
+export type AuthenticationDecision =
+  | { ok: true; principal?: InternalUserPrincipal }
+  | { ok: false; failure: AuthFailure };
+
+/** Desktop is the compatibility default. Unknown values abort startup instead
+ * of silently weakening or switching the credential boundary. */
+export function resolveApplicationAuthMode(
+  env: Record<string, string | undefined> = process.env,
+): ApplicationAuthMode {
+  const configured = (env.VELARIX_AUTH_MODE ?? "").trim().toLowerCase();
+  if (!configured || configured === "desktop") return "desktop";
+  if (configured === "saas") return "saas";
+  throw new Error("VELARIX_AUTH_MODE must be either desktop or saas");
+}
+
+/** SaaS cookie requests are pinned to one serialized HTTPS Origin. */
+export function normalizeSaasApplicationOrigin(value: string | undefined): string {
+  const configured = (value ?? "").trim();
+  let url: URL;
+  try {
+    url = new URL(configured);
+  } catch {
+    throw new Error("VELARIX_APP_ORIGIN must be an exact HTTPS origin");
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    configured !== url.origin
+  ) {
+    throw new Error("VELARIX_APP_ORIGIN must be an exact HTTPS origin");
+  }
+  return configured;
+}
+
+export function resolveSaasApplicationOrigin(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return normalizeSaasApplicationOrigin(env.VELARIX_APP_ORIGIN);
+}
+
 /** 256-bit hex token: env-injected (Electron main / VELARIX_DEV_TOKEN for
  * dev) or freshly minted. A minted token is never shared, so with no env
  * token the API is effectively locked — fail closed, never silent-off. */
@@ -90,4 +148,43 @@ export function requireApiAuth(
   }
   if (!tokenMatches(input.headers.authorization, token)) return { status: 401, error: "unauthorized" };
   return null;
+}
+
+/** Exact-match CSRF boundary for cookie-authenticated SaaS state changes. */
+export function saasOriginAllowed(origin: string | undefined, applicationOrigin: string): boolean {
+  if (!origin) return false;
+  try {
+    return new URL(origin).origin === origin && origin === applicationOrigin;
+  } catch {
+    return false;
+  }
+}
+
+/** Mode-aware request boundary. Session failures collapse to one response,
+ * and only the stable internal UUID crosses into RouteCtx. */
+export function authenticateApiRequest(
+  input: {
+    path: string;
+    method: string;
+    headers: { authorization?: string; cookie?: string; host?: string; origin?: string };
+  },
+  authentication: ApplicationAuthentication,
+): AuthenticationDecision {
+  if (isAuthExempt(input.path)) return { ok: true };
+
+  if (authentication.mode === "desktop") {
+    const failure = requireApiAuth(input, authentication.token, authentication.port);
+    return failure ? { ok: false, failure } : { ok: true };
+  }
+
+  const token = sessionTokenFromCookie(input.headers.cookie);
+  const user = authentication.sessions.resolveSession(token, authentication.now?.());
+  if (!user) return { ok: false, failure: { status: 401, error: "unauthorized" } };
+  if (
+    STATE_CHANGING.has(input.method.toUpperCase()) &&
+    !saasOriginAllowed(input.headers.origin, authentication.applicationOrigin)
+  ) {
+    return { ok: false, failure: { status: 403, error: "forbidden origin" } };
+  }
+  return { ok: true, principal: { kind: "internal-user", user: { id: user.id } } };
 }

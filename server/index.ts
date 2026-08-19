@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 
 import { createApplication } from "./app.ts";
 import { quarantineLegacyRules } from "./approvals.ts";
-import { resolveApiToken } from "./auth.ts";
+import { resolveApiToken, resolveApplicationAuthMode, resolveSaasApplicationOrigin } from "./auth.ts";
 import { ensureDirs, instanceConfigs, loadConfig, migrateConfigSecrets } from "./config.ts";
 import { openDefaultDatabase } from "./db/database.ts";
 import { importLegacyData } from "./db/importer.ts";
@@ -69,6 +69,11 @@ const COMMS_TOKEN = process.env.OMB_COMMS_TOKEN || randomBytes(24).toString("hex
 // request; dev sets VELARIX_DEV_TOKEN. Without either, the minted token is
 // never shared — fail closed, never silent-off. /api/health stays open.
 const API_TOKEN = resolveApiToken();
+const AUTH_MODE = resolveApplicationAuthMode();
+const AUTH =
+  AUTH_MODE === "desktop"
+    ? ({ mode: "desktop" } as const)
+    : ({ mode: "saas", applicationOrigin: resolveSaasApplicationOrigin() } as const);
 
 /** Rebuild the provider fleet after a config change so new keys take
  * effect without a server restart (kills any in-flight turns). */
@@ -87,6 +92,7 @@ const app = await createApplication({
   clock: { now: () => Date.now() },
   port: PORT,
   apiToken: API_TOKEN,
+  auth: AUTH,
   commsToken: COMMS_TOKEN,
   staticDir: STATIC_DIR,
   // release-smoke identity: the stamp names live code paths

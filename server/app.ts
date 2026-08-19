@@ -6,7 +6,11 @@ import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join } from "node:path";
 
-import { requireApiAuth } from "./auth.ts";
+import {
+  authenticateApiRequest,
+  normalizeSaasApplicationOrigin,
+  type ApplicationAuthentication,
+} from "./auth.ts";
 import { boxMaintenance } from "./computer/box.ts";
 import { createLeaseBroker } from "./computer/leases.ts";
 import { createComputerRegistry, type ComputerRegistry } from "./computer/registry.ts";
@@ -15,6 +19,7 @@ import type { AppConfig } from "./config.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { EventBus } from "./harness/bus.ts";
 import type { ProviderRegistry } from "./harness/registry.ts";
+import { IdentitySessions } from "./identity.ts";
 import { createProactive, type Proactive } from "./proactive.ts";
 import { UI_STREAM_ID } from "./repositories/event-log.ts";
 import type { Repositories } from "./repositories/index.ts";
@@ -27,6 +32,7 @@ import { createEventsRoutes } from "./routes/events.ts";
 import { createHealthRoutes } from "./routes/health.ts";
 import { createIntegrationsRoutes } from "./routes/integrations.ts";
 import { createRoutinesRoutes } from "./routes/routines.ts";
+import { createSessionRoutes } from "./routes/session.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
 import { createBotsService, projectPublicBotFrame, type BotsService } from "./services/bots.ts";
 import { createGroupsService, type GroupsService } from "./services/groups.ts";
@@ -65,6 +71,9 @@ export interface CreateApplicationInput {
   clock?: Clock;
   port: number;
   apiToken: string;
+  /** Desktop is the default. SaaS exposes only its identity probe until
+   * owner-bound business-route composition is approved separately. */
+  auth?: { mode: "desktop" } | { mode: "saas"; applicationOrigin: string };
   commsToken: string;
   staticDir: string | null;
   stamp: string;
@@ -91,6 +100,16 @@ export interface Application {
 export async function createApplication(input: CreateApplicationInput): Promise<Application> {
   const { repos, providers: registry, bus, cfg, port, apiToken, commsToken, staticDir, stamp } = input;
   const clock: Clock = input.clock ?? { now: () => Date.now() };
+  const auth = input.auth ?? { mode: "desktop" as const };
+  const authentication: ApplicationAuthentication =
+    auth.mode === "desktop"
+      ? { mode: "desktop", token: apiToken, port }
+      : {
+          mode: "saas",
+          applicationOrigin: normalizeSaasApplicationOrigin(auth.applicationOrigin),
+          sessions: new IdentitySessions(repos.db),
+          now: () => clock.now(),
+        };
   configureMemoryStore(repos.memoryRows);
 
   // the hub's semantic frames are durable on the event log's "ui" stream
@@ -223,7 +242,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
 
   // route order preserves the pre-refactor dispatch: internal comms first
   // (their own token), then the launch-token gate, then the public surface
-  const gatedRoutes: RouteHandler[] = [
+  const desktopRoutes: RouteHandler[] = [
     createEventsRoutes({ hub, bots, groups }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
@@ -255,6 +274,10 @@ export async function createApplication(input: CreateApplicationInput): Promise<
         : {}),
     }),
   ];
+  const gatedRoutes: RouteHandler[] =
+    auth.mode === "desktop"
+      ? desktopRoutes
+      : [createSessionRoutes(), createHealthRoutes({ staticServing: Boolean(staticDir), stamp })];
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -262,25 +285,26 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     try {
       if (await integrations.internal(ctx)) return;
 
-      // ── launch-token gate for everything else under /api ──────────────
-      // 401 without/with a wrong or stale token; Host must be the loopback
-      // bind (DNS-rebinding guard); browser Origins are rejected on state
-      // changes. /api/health is exempt (port-fallback probe + release smoke).
+      // ── mode-aware gate for everything else under /api ────────────────
+      // Desktop retains launch bearer + loopback Host/Origin checks. SaaS
+      // accepts only a server-side session and exact configured HTTPS Origin
+      // for state changes. /api/health remains the minimal startup probe.
       if (ctx.path.startsWith("/api/")) {
-        const denied = requireApiAuth(
+        const decision = authenticateApiRequest(
           {
             path: ctx.path,
             method: ctx.method,
             headers: {
               authorization: req.headers.authorization,
+              cookie: req.headers.cookie,
               host: req.headers.host,
               origin: typeof req.headers.origin === "string" ? req.headers.origin : undefined,
             },
           },
-          apiToken,
-          port,
+          authentication,
         );
-        if (denied) return json(res, denied.status, { error: denied.error });
+        if (!decision.ok) return json(res, decision.failure.status, { error: decision.failure.error });
+        if (decision.principal) ctx.principal = decision.principal;
       }
 
       for (const route of gatedRoutes) {

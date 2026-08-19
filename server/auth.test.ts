@@ -14,12 +14,16 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  authenticateApiRequest,
   hostAllowed,
   isAuthExempt,
   LOOPBACK_HOSTS,
+  normalizeSaasApplicationOrigin,
   originAllowed,
   requireApiAuth,
   resolveApiToken,
+  resolveApplicationAuthMode,
+  saasOriginAllowed,
   tokenMatches,
 } from "./auth.ts";
 import { readServiceAuth, writeServiceAuth } from "../electron/service-auth.mjs";
@@ -43,6 +47,68 @@ describe("resolveApiToken", () => {
     expect(token).toMatch(/^[0-9a-f]{64}$/);
     expect(tokenMatches("Bearer ", token)).toBe(false);
     expect(tokenMatches(undefined, "")).toBe(false);
+  });
+});
+
+describe("application authentication mode", () => {
+  it("defaults explicitly to desktop and rejects unknown modes", () => {
+    expect(resolveApplicationAuthMode({})).toBe("desktop");
+    expect(resolveApplicationAuthMode({ VELARIX_AUTH_MODE: "desktop" })).toBe("desktop");
+    expect(resolveApplicationAuthMode({ VELARIX_AUTH_MODE: "saas" })).toBe("saas");
+    expect(() => resolveApplicationAuthMode({ VELARIX_AUTH_MODE: "off" })).toThrow(/desktop or saas/);
+  });
+
+  it("requires one exact serialized HTTPS application origin", () => {
+    expect(normalizeSaasApplicationOrigin("https://app.velarix.test")).toBe("https://app.velarix.test");
+    for (const origin of [
+      undefined,
+      "http://app.velarix.test",
+      "https://app.velarix.test/",
+      "https://user@app.velarix.test",
+      "https://app.velarix.test/path",
+      "not a url",
+    ]) {
+      expect(() => normalizeSaasApplicationOrigin(origin)).toThrow(/exact HTTPS origin/);
+    }
+  });
+
+  it("creates only an internal UUID principal and never falls back to bearer credentials", () => {
+    const id = "018f50d6-8f4f-7bf2-8e3f-2a0af68c47ad";
+    const sessions = { resolveSession: (token: unknown) => token === "A".repeat(43) ? { id } : null };
+    const authentication = {
+      mode: "saas" as const,
+      applicationOrigin: "https://app.velarix.test",
+      sessions,
+    };
+    expect(
+      authenticateApiRequest(
+        { path: "/api/session", method: "GET", headers: { cookie: `velarix_session=${"A".repeat(43)}` } },
+        authentication,
+      ),
+    ).toEqual({ ok: true, principal: { kind: "internal-user", user: { id } } });
+    for (const authorization of ["Bearer desktop-token", "Bearer comms-token"]) {
+      expect(
+        authenticateApiRequest(
+          { path: "/api/session", method: "GET", headers: { authorization } },
+          authentication,
+        ),
+      ).toEqual({ ok: false, failure: { status: 401, error: "unauthorized" } });
+    }
+  });
+
+  it("matches only the exact SaaS Origin", () => {
+    const expected = "https://app.velarix.test";
+    expect(saasOriginAllowed(expected, expected)).toBe(true);
+    for (const origin of [
+      undefined,
+      "http://app.velarix.test",
+      "https://velarix.test",
+      "https://sub.app.velarix.test",
+      "https://app.velarix.test:444",
+      "not a url",
+    ]) {
+      expect(saasOriginAllowed(origin, expected)).toBe(false);
+    }
   });
 });
 

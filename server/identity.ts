@@ -97,7 +97,11 @@ function sessionDigest(token: string): string {
 
 /** Repository/service boundary shared by the future OAuth callback and auth middleware. */
 export class IdentitySessions {
-  constructor(private readonly db: SqliteDatabase) {}
+  private readonly db: SqliteDatabase;
+
+  constructor(db: SqliteDatabase) {
+    this.db = db;
+  }
 
   upsertGithubIdentity(identity: GithubIdentity, now = Date.now()): IdentityUser {
     if (!Number.isSafeInteger(identity.githubId) || identity.githubId <= 0) {
