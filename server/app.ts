@@ -44,6 +44,7 @@ import { createDiagnosticsService } from "./services/diagnostics.ts";
 import { createSseHub, type Broadcast, type SseHub } from "./services/events.ts";
 import { createListenerPoller } from "./listeners/index.ts";
 import { createRoutinesService, type RoutinesService } from "./services/routines.ts";
+import { createSecurityAuditService } from "./services/security-audit.ts";
 import { createTeachService, type TeachService } from "./services/teach.ts";
 import { createTurnsService, type TurnsService } from "./services/turns.ts";
 import type { ModelSelection } from "./contracts.ts";
@@ -107,7 +108,18 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   const { repos, providers: registry, bus, cfg, port, apiToken, commsToken, staticDir, stamp } = input;
   const clock: Clock = input.clock ?? { now: () => Date.now() };
   const auth = input.auth ?? { mode: "desktop" as const };
-  const identitySessions = auth.mode === "saas" ? new IdentitySessions(repos.db) : null;
+  const rawIdentitySessions = auth.mode === "saas" ? new IdentitySessions(repos.db) : null;
+  const securityAudit =
+    auth.mode === "saas"
+      ? createSecurityAuditService({
+          db: repos.db,
+          eventLog: repos.eventLog,
+          sessions: rawIdentitySessions!,
+          desktopAccessGrants: repos.desktopAccessGrants,
+          now: () => clock.now(),
+        })
+      : null;
+  const identitySessions = securityAudit?.sessions ?? null;
   const authentication: ApplicationAuthentication =
     auth.mode === "desktop"
       ? { mode: "desktop", token: apiToken, port }
@@ -290,10 +302,11 @@ export async function createApplication(input: CreateApplicationInput): Promise<
             provider: auth.oauthProvider,
             transactions: new OAuthTransactionStore(repos.db),
             sessions: identitySessions!,
+            audit: securityAudit!,
             now: () => clock.now(),
           }),
           createSessionRoutes(),
-          createSaasBotCatalogRoutes({ bots }),
+          createSaasBotCatalogRoutes({ bots, audit: securityAudit! }),
           createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
         ];
 

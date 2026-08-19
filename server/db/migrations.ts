@@ -654,6 +654,29 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Security audit records share the durable event-log sequencer, but are
+    // immutable even to repository maintenance and raw application SQL.
+    // Runtime/UI events retain their existing lifecycle behavior.
+    version: 15,
+    name: "immutable-security-audit-events",
+    up(db) {
+      db.exec(`
+        CREATE TRIGGER security_audit_event_no_update
+          BEFORE UPDATE ON event_log
+          WHEN OLD.type = 'security.audit' OR NEW.type = 'security.audit'
+          BEGIN
+            SELECT RAISE(ABORT, 'security audit events are append-only');
+          END;
+        CREATE TRIGGER security_audit_event_no_delete
+          BEFORE DELETE ON event_log
+          WHEN OLD.type = 'security.audit'
+          BEGIN
+            SELECT RAISE(ABORT, 'security audit events are append-only');
+          END;
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

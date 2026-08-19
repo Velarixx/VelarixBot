@@ -26,6 +26,12 @@ import {
 import { json, type RouteCtx } from "./routes/context.ts";
 import { createOAuthRoutes } from "./routes/oauth.ts";
 import { createSessionRoutes } from "./routes/session.ts";
+import { createRepositories, type Repositories } from "./repositories/index.ts";
+import {
+  createSecurityAuditService,
+  SECURITY_AUDIT_SYSTEM_STREAM,
+  type SecurityAuditService,
+} from "./services/security-audit.ts";
 
 const APPLICATION_ORIGIN = "https://app.velarix.test";
 const CALLBACK_URL = `${APPLICATION_ORIGIN}/api/auth/github/callback`;
@@ -194,6 +200,8 @@ describe("SaaS OAuth routes", () => {
   let directory: string;
   let db: SqliteDatabase;
   let sessions: IdentitySessions;
+  let repos: Repositories;
+  let audit: SecurityAuditService;
   let transactions: OAuthTransactionStore;
   let provider: FakeProvider;
   let server: Server;
@@ -204,17 +212,32 @@ describe("SaaS OAuth routes", () => {
     directory = mkdtempSync(join(tmpdir(), "velarix-oauth-routes-"));
     db = openDatabase(join(directory, "oauth.db"));
     sessions = new IdentitySessions(db);
+    repos = createRepositories(db);
+    audit = createSecurityAuditService({
+      db,
+      eventLog: repos.eventLog,
+      sessions,
+      desktopAccessGrants: repos.desktopAccessGrants,
+      now: () => now,
+    });
     transactions = new OAuthTransactionStore(db);
     provider = fakeProvider();
     now = 10_000;
     const authentication: ApplicationAuthentication = {
       mode: "saas",
       applicationOrigin: APPLICATION_ORIGIN,
-      sessions,
+      sessions: audit.sessions,
       now: () => now,
     };
     const routes = [
-      createOAuthRoutes({ applicationOrigin: APPLICATION_ORIGIN, provider, transactions, sessions, now: () => now }),
+      createOAuthRoutes({
+        applicationOrigin: APPLICATION_ORIGIN,
+        provider,
+        transactions,
+        sessions: audit.sessions,
+        audit,
+        now: () => now,
+      }),
       createSessionRoutes(),
     ];
     server = createServer((req, res) => {
@@ -304,6 +327,25 @@ describe("SaaS OAuth routes", () => {
     const secondToken = cookieValue(second, SESSION_COOKIE_NAME)!;
     const secondProbe = await fetch(`${base}/api/session`, { headers: { cookie: `${SESSION_COOKIE_NAME}=${secondToken}` } });
     expect(((await secondProbe.json()) as { user: { id: string } }).user.id).toBe(firstUser.user.id);
+
+    expect(audit.eventsForTenant(firstUser.user.id).map(({ action, decision, reason }) => ({ action, decision, reason }))).toEqual([
+      { action: "oauth.callback", decision: "allow", reason: "completed" },
+      { action: "session.revoke", decision: "allow", reason: "revoked" },
+      { action: "session.resolve", decision: "deny", reason: "replay" },
+      { action: "session.revoke", decision: "deny", reason: "replay" },
+      { action: "session.resolve", decision: "deny", reason: "replay" },
+      { action: "oauth.callback", decision: "allow", reason: "completed" },
+    ]);
+    expect(
+      repos.eventLog.replayAfter(SECURITY_AUDIT_SYSTEM_STREAM, 0).map(({ payload }) => [
+        payload.action,
+        payload.decision,
+        payload.reason,
+      ]),
+    ).toEqual([
+      ["oauth.start", "allow", "initiated"],
+      ["oauth.start", "allow", "initiated"],
+    ]);
   });
 
   it("collapses missing, ambiguous, tampered, expired, unknown, and replayed state", async () => {

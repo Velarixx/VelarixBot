@@ -20,6 +20,7 @@ import {
   type CompletedGithubSignIn,
   type GithubIdentity,
 } from "../identity.ts";
+import type { SecurityAuditRecorder } from "../services/security-audit.ts";
 import type { RouteHandler } from "./context.ts";
 
 type PublicOAuthOutcome = "authenticated" | "sign_in_declined" | "callback_rejected" | "service_unavailable";
@@ -37,6 +38,7 @@ export interface CreateOAuthRoutesInput {
   provider: GithubOAuthProvider;
   transactions: OAuthTransactionStore;
   sessions: OAuthIdentitySessions;
+  audit: SecurityAuditRecorder;
   now?: () => number;
 }
 
@@ -64,10 +66,16 @@ export function createOAuthRoutes(input: CreateOAuthRoutesInput): RouteHandler {
   return async ({ req, res, url, path, method }) => {
     if (method === "GET" && path === GITHUB_OAUTH_START_PATH) {
       const transaction = input.transactions.create(now());
-      const authorizationUrl = input.provider.authorizationUrl({
-        state: transaction.state,
-        codeChallenge: transaction.codeChallenge,
-      });
+      let authorizationUrl: URL;
+      try {
+        authorizationUrl = input.provider.authorizationUrl({
+          state: transaction.state,
+          codeChallenge: transaction.codeChallenge,
+        });
+      } catch {
+        input.audit.recordSystem({ action: "oauth.start", decision: "deny", reason: "provider_failure" });
+        throw new Error("OAuth provider could not create an authorization URL");
+      }
       if (
         authorizationUrl.origin !== GITHUB_AUTHORIZE_ORIGIN ||
         authorizationUrl.pathname !== GITHUB_AUTHORIZE_PATH ||
@@ -76,8 +84,10 @@ export function createOAuthRoutes(input: CreateOAuthRoutesInput): RouteHandler {
         authorizationUrl.password !== "" ||
         authorizationUrl.hash !== ""
       ) {
+        input.audit.recordSystem({ action: "oauth.start", decision: "deny", reason: "provider_failure" });
         throw new Error("OAuth provider returned an invalid authorization URL");
       }
+      input.audit.recordSystem({ action: "oauth.start", decision: "allow", reason: "initiated" });
       res.statusCode = 302;
       res.setHeader("location", authorizationUrl.href);
       res.setHeader("cache-control", "no-store");
@@ -92,6 +102,7 @@ export function createOAuthRoutes(input: CreateOAuthRoutesInput): RouteHandler {
       const cookie = oauthTransactionFromCookie(req.headers.cookie);
       const transaction = input.transactions.consume(state, cookie, now());
       if (!transaction) {
+        input.audit.recordSystem({ action: "oauth.callback", decision: "deny", reason: "invalid_transaction" });
         redirect(res, result("callback_rejected"), clearTransaction);
         return true;
       }
@@ -99,19 +110,29 @@ export function createOAuthRoutes(input: CreateOAuthRoutesInput): RouteHandler {
       const error = singleQueryValue(url, "error");
       const code = singleQueryValue(url, "code");
       if (error && !code) {
+        input.audit.recordSystem({ action: "oauth.callback", decision: "deny", reason: "provider_declined" });
         redirect(res, result("sign_in_declined"), clearTransaction);
         return true;
       }
       if (!code || error) {
+        input.audit.recordSystem({ action: "oauth.callback", decision: "deny", reason: "malformed_callback" });
         redirect(res, result("callback_rejected"), clearTransaction);
         return true;
       }
 
+      let identity: GithubIdentity;
       try {
-        const identity = await input.provider.exchangeCodeForIdentity({
+        identity = await input.provider.exchangeCodeForIdentity({
           code,
           codeVerifier: transaction.codeVerifier,
         });
+      } catch {
+        input.audit.recordSystem({ action: "oauth.callback", decision: "deny", reason: "provider_failure" });
+        redirect(res, result("service_unavailable"), clearTransaction);
+        return true;
+      }
+
+      try {
         const { session } = input.sessions.completeGithubSignIn(identity, {
           now: now(),
           maxAgeSeconds: MAX_SESSION_AGE_SECONDS,
@@ -121,6 +142,7 @@ export function createOAuthRoutes(input: CreateOAuthRoutesInput): RouteHandler {
           sessionCookie(session.token, MAX_SESSION_AGE_SECONDS, "saas"),
         ]);
       } catch {
+        input.audit.recordSystem({ action: "oauth.callback", decision: "deny", reason: "internal_failure" });
         redirect(res, result("service_unavailable"), clearTransaction);
       }
       return true;

@@ -5,6 +5,7 @@
 import type { IncomingMessage } from "node:http";
 
 import type { BotsService, PublicBot, TenantPublicBot } from "../services/bots.ts";
+import { SecurityAuditWriteError, type SecurityAuditRecorder } from "../services/security-audit.ts";
 import type { Message } from "../store.ts";
 import { json, type RouteHandler } from "./context.ts";
 
@@ -103,25 +104,45 @@ async function hasDefaultOnlyCreateBody(req: IncomingMessage): Promise<boolean> 
  * key comes exclusively from the authenticated InternalUserPrincipal.
  * Query/header/body identity is never consulted. The sole write is the
  * owner service's quota-bound default creation primitive. */
-export function createSaasBotCatalogRoutes(deps: { bots: CatalogBots }): RouteHandler {
+export function createSaasBotCatalogRoutes(deps: { bots: CatalogBots; audit: SecurityAuditRecorder }): RouteHandler {
   return async ({ req, res, url, path, method, principal }) => {
     if ((method !== "GET" && method !== "POST") || path !== "/api/bots") return false;
 
     // The application gate normally establishes this invariant. Keeping the
     // route check makes direct invocation and future composition fail closed.
     if (principal?.kind !== "internal-user") {
+      deps.audit.recordSystem({
+        action: method === "POST" ? "catalog.create" : "catalog.read",
+        decision: "deny",
+        reason: "unauthenticated",
+      });
       json(res, 401, { error: "unauthorized" });
       return true;
     }
 
     if (method === "POST") {
       if (!(await hasDefaultOnlyCreateBody(req))) {
+        deps.audit.recordTenant(principal.user.id, {
+          action: "catalog.create",
+          decision: "deny",
+          reason: "invalid_request",
+        });
         json(res, 400, { error: "invalid request" });
         return true;
       }
       try {
         const ownerBots = deps.bots.forOwner(principal.user.id);
-        const created = ownerBots.createBotWithinQuota(SAAS_BOT_OWNER_QUOTA);
+        const created = deps.audit.decideTenant(principal.user.id, () => {
+          const result = ownerBots.createBotWithinQuota(SAAS_BOT_OWNER_QUOTA);
+          return {
+            value: result,
+            decision: {
+              action: "catalog.create",
+              decision: result.ok ? "allow" : "deny",
+              reason: result.ok ? "created" : "quota",
+            },
+          };
+        });
         if (!created.ok) {
           json(res, 409, { error: "bot quota reached" });
           return true;
@@ -130,7 +151,14 @@ export function createSaasBotCatalogRoutes(deps: { bots: CatalogBots }): RouteHa
         json(res, 201, {
           bot: catalogItem({ ...created.bot, messages: created.onboardingMessages, hasMore: false }),
         });
-      } catch {
+      } catch (error) {
+        if (!(error instanceof SecurityAuditWriteError)) {
+          deps.audit.recordTenant(principal.user.id, {
+            action: "catalog.create",
+            decision: "deny",
+            reason: "internal_failure",
+          });
+        }
         json(res, 500, { error: "internal server error" });
       }
       return true;
@@ -139,14 +167,31 @@ export function createSaasBotCatalogRoutes(deps: { bots: CatalogBots }): RouteHa
     try {
       const messages = requestedMessageCount(url);
       if (messages === null) {
+        deps.audit.recordTenant(principal.user.id, {
+          action: "catalog.read",
+          decision: "deny",
+          reason: "invalid_request",
+        });
         json(res, 400, { error: "messages must be one non-negative whole number" });
         return true;
       }
       const ownerBots = deps.bots.forOwner(principal.user.id);
       const bots = ownerBots.publicBots({ messages }).map(catalogItem);
+      deps.audit.recordTenant(principal.user.id, {
+        action: "catalog.read",
+        decision: "allow",
+        reason: "listed",
+      });
       res.setHeader("cache-control", "private, no-store");
       json(res, 200, { bots });
-    } catch {
+    } catch (error) {
+      if (!(error instanceof SecurityAuditWriteError)) {
+        deps.audit.recordTenant(principal.user.id, {
+          action: "catalog.read",
+          decision: "deny",
+          reason: "internal_failure",
+        });
+      }
       // Do not serialize repository/provider errors or identity-bearing detail.
       json(res, 500, { error: "internal server error" });
     }

@@ -339,7 +339,9 @@ describe("SaaS route exposure matrix", () => {
 
   it("uniformly rejects the matrix without a SaaS session or with a desktop bearer", async () => {
     const beforeChanges = totalChanges(db);
-    for (const testCase of [...deniedRoutes(botId), route("approved bot create", "POST", "/api/bots")]) {
+    const beforeAudit = db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log WHERE type = 'security.audit'").get()!.n;
+    const cases = [...deniedRoutes(botId), route("approved bot create", "POST", "/api/bots")];
+    for (const testCase of cases) {
       const credentials: Record<string, string>[] = [
         { origin: APPLICATION_ORIGIN },
         { cookie: `${SESSION_COOKIE_NAME}=${expiredSessionToken}`, origin: APPLICATION_ORIGIN },
@@ -351,7 +353,11 @@ describe("SaaS route exposure matrix", () => {
         expect(result.body).toEqual({ error: "unauthorized" });
       }
     }
-    expect(totalChanges(db)).toBe(beforeChanges);
+    const afterAudit = db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log WHERE type = 'security.audit'").get()!.n;
+    // Each rejected credential resolution is now durably audited. Those
+    // append-only rows are the only database changes in this adversarial matrix.
+    expect(afterAudit - beforeAudit).toBe(cases.length * 3);
+    expect(totalChanges(db) - beforeChanges).toBe(afterAudit - beforeAudit);
     for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
     expect(oauthAuthorizationUrl).not.toHaveBeenCalled();
     expect(oauthExchange).not.toHaveBeenCalled();
