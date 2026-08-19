@@ -43,4 +43,18 @@ describe("ephemeral catalog state", () => {
     const failed = catalogReducer(loading, { type: "load_failed", requestId: 7 });
     expect(catalogReducer(failed, { type: "load_succeeded", requestId: 7, items: [item] })).toBe(failed);
   });
+
+  it("replaces only safe ready-state projections and clears them unconditionally on session loss", () => {
+    const empty: CatalogModel = { status: "empty", requestId: 4, items: [] };
+    expect(catalogReducer(empty, { type: "catalog_replaced", items: [item] })).toEqual({
+      status: "populated",
+      requestId: 4,
+      items: [item],
+    });
+
+    const loading: CatalogModel = { status: "loading", requestId: 5, items: [] };
+    expect(catalogReducer(loading, { type: "catalog_replaced", items: [item] })).toBe(loading);
+    expect(catalogReducer({ status: "populated", requestId: 6, items: [item] }, { type: "protected_cleared" }))
+      .toEqual({ status: "auth_lost", requestId: 6, items: [] });
+  });
 });

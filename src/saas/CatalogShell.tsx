@@ -7,32 +7,57 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { Bot, Loader2, LogOut, RefreshCw, ShieldCheck } from "lucide-react";
+import { Bot, Loader2, LogOut, Plus, RefreshCw, ShieldCheck } from "lucide-react";
 import { MAUS_COLORS } from "@/lib/mascot";
+import {
+  createCatalogCreationCoordinator,
+  type CatalogCreationCoordinator,
+  type CreationModel,
+} from "./catalog-creation";
 import { catalogReducer, INITIAL_CATALOG_MODEL, type CatalogModel } from "./catalog-state";
 import { createCatalogTransport, type CatalogTransport } from "./catalog-transport";
+import { createBotCreationTransport, type BotCreationTransport } from "./create-bot-transport";
 
 const buttonClass =
   "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-line bg-raised px-4 py-2.5 text-[14px] font-medium text-ink transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
+const primaryButtonClass =
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-accent/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60";
 
 export interface CatalogShellViewProps {
   model: CatalogModel;
+  creation: CreationModel;
+  onCreate(): void;
+  onRetryCreation(): void;
   onRetry(): void;
   onRequestSignOut(): void;
   headingRef?: RefObject<HTMLHeadingElement | null>;
+  feedbackRef?: RefObject<HTMLDivElement | null>;
   signOutTriggerRef?: RefObject<HTMLButtonElement | null>;
 }
 
 export function CatalogShellView({
   model,
+  creation,
+  onCreate,
+  onRetryCreation,
   onRetry,
   onRequestSignOut,
   headingRef,
+  feedbackRef,
   signOutTriggerRef,
 }: CatalogShellViewProps) {
   const hidden = model.status === "auth_lost";
+  const creationPending = creation.status === "creating" || creation.status === "refetching";
+  const creationDisabled = creationPending || creation.status === "quota" || (
+    creation.status === "failure" && creation.retry === "refresh"
+  );
+  const creationAvailable = model.status === "empty" || model.status === "populated";
   return (
-    <main className="min-h-full bg-app px-5 py-8 text-ink" data-saas-catalog="true" aria-busy={model.status === "loading" || undefined}>
+    <main
+      className="min-h-full bg-app px-5 py-8 text-ink"
+      data-saas-catalog="true"
+      aria-busy={model.status === "loading" || creationPending || undefined}
+    >
       <div className="mx-auto w-full max-w-5xl">
         <header className="flex flex-wrap items-start justify-between gap-4 border-b border-line pb-5">
           <div>
@@ -43,13 +68,51 @@ export function CatalogShellView({
             <h1 ref={headingRef} tabIndex={-1} className="text-[24px] font-semibold tracking-tight outline-none">
               Bot catalog
             </h1>
-            <p className="mt-1 text-[14px] text-ink-secondary">Your tenant’s available bots. Read-only.</p>
+            <p className="mt-1 text-[14px] text-ink-secondary">Create and view your tenant’s available bots.</p>
           </div>
-          <button ref={signOutTriggerRef} type="button" className={buttonClass} onClick={onRequestSignOut}>
-            <LogOut size={16} aria-hidden="true" />
-            Sign out
-          </button>
+          <div className="flex flex-wrap gap-2">
+            {creationAvailable && (
+              <button
+                type="button"
+                className={primaryButtonClass}
+                onClick={onCreate}
+                disabled={creationDisabled}
+                aria-describedby={creation.status === "idle" ? undefined : "creation-feedback"}
+              >
+                {creationPending
+                  ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                  : <Plus size={16} aria-hidden="true" />}
+                {creationPending ? "Creating…" : "Create bot"}
+              </button>
+            )}
+            <button ref={signOutTriggerRef} type="button" className={buttonClass} onClick={onRequestSignOut}>
+              <LogOut size={16} aria-hidden="true" />
+              Sign out
+            </button>
+          </div>
         </header>
+
+        {creation.status !== "idle" && (
+          <div
+            id="creation-feedback"
+            ref={feedbackRef}
+            tabIndex={creation.status === "success" || creation.status === "quota" || creation.status === "failure" ? -1 : undefined}
+            role={creation.status === "quota" || creation.status === "failure" ? "alert" : "status"}
+            aria-live={creation.status === "quota" || creation.status === "failure" ? "assertive" : "polite"}
+            className="mt-5 rounded-lg border border-line bg-surface px-4 py-3 text-[14px] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            {creation.status === "creating" && "Creating your bot…"}
+            {creation.status === "refetching" && "Bot request completed. Refreshing the catalog…"}
+            {creation.status === "success" && "Bot created. The catalog is up to date."}
+            {creation.status === "quota" && "Bot limit reached. You can’t create another bot right now."}
+            {creation.status === "failure" && (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span>We couldn’t finish creating the bot. No details were retained.</span>
+                <button type="button" className={buttonClass} onClick={onRetryCreation}>Try again</button>
+              </div>
+            )}
+          </div>
+        )}
 
         {model.status === "loading" && (
           <section role="status" aria-live="polite" className="flex min-h-56 items-center justify-center gap-3 text-ink-secondary">
@@ -60,8 +123,20 @@ export function CatalogShellView({
         {model.status === "empty" && (
           <section role="status" aria-live="polite" className="flex min-h-56 flex-col items-center justify-center text-center">
             <Bot size={30} className="mb-3 text-ink-secondary" aria-hidden="true" />
-            <h2 className="text-[18px] font-semibold">No bots available</h2>
-            <p className="mt-1 text-[14px] text-ink-secondary">This tenant’s catalog is empty.</p>
+            <h2 className="text-[18px] font-semibold">Create your first bot</h2>
+            <p className="mt-1 max-w-md text-[14px] text-ink-secondary">Start with a safe default bot. You can view it here after creation.</p>
+            <button
+              type="button"
+              className={`${primaryButtonClass} mt-5`}
+              onClick={onCreate}
+              disabled={creationDisabled}
+              aria-describedby={creation.status === "idle" ? undefined : "creation-feedback"}
+            >
+              {creationPending
+                ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                : <Plus size={16} aria-hidden="true" />}
+              {creationPending ? "Creating…" : "Create first bot"}
+            </button>
           </section>
         )}
         {model.status === "populated" && (
@@ -109,6 +184,7 @@ export interface CatalogShellProps {
   onRequestSignOut(): void;
   signOutTriggerRef: RefObject<HTMLButtonElement | null>;
   transport?: CatalogTransport;
+  creationTransport?: BotCreationTransport;
 }
 
 export function CatalogShell({
@@ -116,12 +192,30 @@ export function CatalogShell({
   onRequestSignOut,
   signOutTriggerRef,
   transport: injectedTransport,
+  creationTransport: injectedCreationTransport,
 }: CatalogShellProps) {
   const transport = useMemo(() => injectedTransport ?? createCatalogTransport(), [injectedTransport]);
+  const creationTransport = useMemo(
+    () => injectedCreationTransport ?? createBotCreationTransport(),
+    [injectedCreationTransport],
+  );
   const [model, dispatch] = useReducer(catalogReducer, INITIAL_CATALOG_MODEL);
+  const [creation, setCreation] = useState<CreationModel>({ status: "idle" });
   const [loadVersion, setLoadVersion] = useState(0);
   const requestIdRef = useRef(0);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const feedbackRef = useRef<HTMLDivElement>(null);
+
+  const creationCoordinator = useMemo<CatalogCreationCoordinator>(() => (
+    createCatalogCreationCoordinator(creationTransport, transport, {
+      setCreation,
+      replaceCatalog: (items) => dispatch({ type: "catalog_replaced", items }),
+      clearProtectedState: () => dispatch({ type: "protected_cleared" }),
+      onSessionLost,
+    })
+  ), [creationTransport, onSessionLost, transport]);
+
+  useEffect(() => () => creationCoordinator.abort(), [creationCoordinator]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -162,13 +256,28 @@ export function CatalogShell({
     }
   }, [model.status]);
 
-  const retry = useCallback(() => setLoadVersion((version) => version + 1), []);
+  useEffect(() => {
+    if (creation.status === "success" || creation.status === "quota" || creation.status === "failure") {
+      feedbackRef.current?.focus();
+    }
+  }, [creation.status]);
+
+  const retry = useCallback(() => {
+    setCreation({ status: "idle" });
+    setLoadVersion((version) => version + 1);
+  }, []);
+  const create = useCallback(() => void creationCoordinator.start(), [creationCoordinator]);
+  const retryCreation = useCallback(() => void creationCoordinator.retry(), [creationCoordinator]);
   return (
     <CatalogShellView
       model={model}
+      creation={creation}
+      onCreate={create}
+      onRetryCreation={retryCreation}
       onRetry={retry}
       onRequestSignOut={onRequestSignOut}
       headingRef={headingRef}
+      feedbackRef={feedbackRef}
       signOutTriggerRef={signOutTriggerRef}
     />
   );
