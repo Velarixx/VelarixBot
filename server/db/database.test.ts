@@ -24,6 +24,8 @@ const MANDATED_TABLES = [
   "memory",
   "memory_rows",
   "groups",
+  "users",
+  "sessions",
 ];
 
 describe("database + migrations", () => {

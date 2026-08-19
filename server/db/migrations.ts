@@ -204,6 +204,44 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Identity boundary for a later SaaS HTTP surface. Provider metadata is
+    // deliberately separate from the durable internal UUID. Product data is
+    // not user-scoped yet, so no SaaS route may rely on these tables until
+    // user_id is propagated through every repository/workspace lookup.
+    version: 6,
+    name: "github-users-and-sessions",
+    up(db) {
+      db.exec(`
+        CREATE TABLE users(
+          id TEXT PRIMARY KEY NOT NULL,
+          github_id INTEGER NOT NULL UNIQUE
+            CHECK(typeof(github_id) = 'integer' AND github_id > 0),
+          github_login TEXT NOT NULL,
+          github_name TEXT,
+          github_avatar_url TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TRIGGER users_github_id_immutable
+          BEFORE UPDATE OF github_id ON users
+          WHEN NEW.github_id <> OLD.github_id
+          BEGIN
+            SELECT RAISE(ABORT, 'github_id is immutable');
+          END;
+        CREATE TABLE sessions(
+          token_digest TEXT PRIMARY KEY NOT NULL
+            CHECK(length(token_digest) = 64 AND token_digest NOT GLOB '*[^0-9a-f]*'),
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL CHECK(expires_at > created_at),
+          revoked_at INTEGER CHECK(revoked_at IS NULL OR revoked_at >= created_at)
+        );
+        CREATE INDEX sessions_expiry ON sessions(expires_at);
+        CREATE INDEX sessions_user ON sessions(user_id);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {
