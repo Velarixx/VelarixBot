@@ -90,7 +90,7 @@ runProviderDriverContract({
 // proxy's path), not the CLI's stdout — raise them the way the proxy would.
 // Same tag rule as permissionSocketPath in claude.ts.
 function claudeAsk(ask: { id: string; kind?: string; tool: string; input: Record<string, unknown> }) {
-  return async ({ threadId }: ScenarioContext): Promise<() => void> => {
+  return async ({ threadId }: ScenarioContext): Promise<() => Promise<void>> => {
     const tag = threadId.replace(/[^\w-]/g, "").slice(0, 8);
     const socketPath =
       process.platform === "win32" ? `\\\\.\\pipe\\velarix-perm-${tag}` : join(DATA_DIR, `perm-${tag}.sock`);
@@ -100,8 +100,18 @@ function claudeAsk(ask: { id: string; kind?: string; tool: string; input: Record
       conn.on("connect", resolve);
       conn.on("error", reject);
     });
-    conn.write(JSON.stringify({ t: "ask", ...ask }) + "\n");
-    return () => conn.end();
+    await new Promise<void>((resolve, reject) => {
+      conn.write(JSON.stringify({ t: "ask", ...ask }) + "\n", (error) => (error ? reject(error) : resolve()));
+    });
+    return () =>
+      new Promise<void>((resolve) => {
+        if (conn.destroyed) {
+          resolve();
+          return;
+        }
+        conn.once("close", resolve);
+        conn.destroy();
+      });
   };
 }
 

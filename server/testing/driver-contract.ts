@@ -79,6 +79,46 @@ export interface ScenarioContext {
   recorder: EventRecorder;
 }
 
+type ActiveHandle = {
+  constructor?: { name?: string };
+  pid?: number;
+  address?: () => unknown;
+};
+
+const activeHandles = (): ActiveHandle[] => {
+  const getActiveHandles = (process as typeof process & { _getActiveHandles?: () => ActiveHandle[] })._getActiveHandles;
+  return getActiveHandles?.call(process) ?? [];
+};
+
+const describeHandle = (handle: ActiveHandle): string => {
+  const name = handle.constructor?.name ?? "unknown";
+  const pid = typeof handle.pid === "number" ? ` pid=${handle.pid}` : "";
+  let address = "";
+  try {
+    const value = handle.address?.();
+    if (value) address = ` address=${JSON.stringify(value)}`;
+  } catch {
+    // A closing socket can reject address(); its identity is still useful.
+  }
+  return `${name}${pid}${address}`;
+};
+
+/** Driver disposal starts Windows taskkill asynchronously. Wait for the
+ * actual child/pipe/socket handles to disappear before deleting their cwd.
+ * A timeout is a contract failure with the surviving resources named; it is
+ * never converted into an rm retry or an ignored EPERM. */
+async function expectDriverHandlesClosed(baseline: ReadonlySet<ActiveHandle>, label: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const remaining = activeHandles().filter((handle) => !baseline.has(handle));
+    if (remaining.length === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`${label} leaked active handles after dispose: ${remaining.map(describeHandle).join(", ")}`);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 /** process.env for the fake CLI (FAKE_*_MODE, dumps). A function form gets
  * the per-scenario scratch dir, for dump file paths. */
 type EnvSpec = Record<string, string> | ((ctx: { scratch: string }) => Record<string, string>);
@@ -111,7 +151,7 @@ export interface DriverContractFixtures {
       | (Arrange & {
           /** Open the ask out-of-band (claude's socket broker). Runs after
            * session.started; returns a cleanup. */
-          raise?: (ctx: ScenarioContext) => Promise<() => void>;
+          raise?: (ctx: ScenarioContext) => Promise<() => void | Promise<void>>;
           expectTool: string;
           /** Brokers that leave the CLI turn open (claude hang) need an
            * interrupt to end the turn after the ask resolves. */
@@ -123,7 +163,7 @@ export interface DriverContractFixtures {
           /** "carded": request.opened(question) → respondToRequest(answer).
            * "auto-answered": the driver answers in-band; no card may open. */
           style: "carded";
-          raise?: (ctx: ScenarioContext) => Promise<() => void>;
+          raise?: (ctx: ScenarioContext) => Promise<() => void | Promise<void>>;
           expectTool: string;
           answer: string;
           interruptToEnd?: boolean;
@@ -347,6 +387,7 @@ export function runProviderDriverContract(options: RunProviderDriverContractOpti
     ensureDirs();
     const scratch = mkdtempSync(join(tmpdir(), "omb-driver-contract-"));
     const restoreEnv = pushEnv(resolveEnv(arrange.env, scratch));
+    const baselineHandles = new Set(activeHandles());
     let instance: ProviderInstance | undefined;
     let recorder: EventRecorder | undefined;
     try {
@@ -361,12 +402,13 @@ export function runProviderDriverContract(options: RunProviderDriverContractOpti
       recorder?.stop();
       restoreEnv();
       await instance?.dispose();
+      await expectDriverHandlesClosed(baselineHandles, `${driverKind}/${scenario}`);
       rmSync(scratch, { recursive: true, force: true });
     }
   };
 
   const sendTurn = (ctx: ScenarioContext, extra?: Partial<SendTurnInput>) =>
-    ctx.instance.adapter.sendTurn({ threadId: ctx.threadId, text: "contract turn", ...extra });
+    ctx.instance.adapter.sendTurn({ threadId: ctx.threadId, text: "contract turn", cwd: ctx.scratch, ...extra });
   const untilCompleted = (ctx: ScenarioContext) => ctx.recorder.until((e) => e.type === "turn.completed");
   const assistantSettles = (ctx: ScenarioContext) =>
     ctx.recorder.events.filter((e) => e.type === "item.completed" && (e as { itemType?: string }).itemType === "assistant_text");
@@ -418,17 +460,20 @@ export function runProviderDriverContract(options: RunProviderDriverContractOpti
       it("permission: an ask opens a card, allow resolves it, the turn completes", () =>
         withInstance("permission", "ct-perm", fx, async (ctx) => {
           await sendTurn(ctx, fx.turn);
-          let cleanup: (() => void) | undefined;
-          if (fx.raise) {
-            await ctx.recorder.until((e) => e.type === "session.started");
-            cleanup = await fx.raise(ctx);
+          let cleanup: (() => void | Promise<void>) | undefined;
+          try {
+            if (fx.raise) {
+              await ctx.recorder.until((e) => e.type === "session.started");
+              cleanup = await fx.raise(ctx);
+            }
+            const opened = await ctx.recorder.until((e) => e.type === "request.opened");
+            expect(opened).toMatchObject({ requestType: "permission", tool: fx.expectTool });
+            await ctx.instance.adapter.respondToRequest(ctx.threadId, opened.requestId!, { behavior: "allow" });
+            const resolved = await ctx.recorder.until((e) => e.type === "request.resolved");
+            expect(resolved).toMatchObject({ behavior: "allow", source: "user" });
+          } finally {
+            await cleanup?.();
           }
-          const opened = await ctx.recorder.until((e) => e.type === "request.opened");
-          expect(opened).toMatchObject({ requestType: "permission", tool: fx.expectTool });
-          await ctx.instance.adapter.respondToRequest(ctx.threadId, opened.requestId!, { behavior: "allow" });
-          const resolved = await ctx.recorder.until((e) => e.type === "request.resolved");
-          expect(resolved).toMatchObject({ behavior: "allow", source: "user" });
-          cleanup?.();
           if (fx.interruptToEnd) await ctx.instance.adapter.interruptTurn(ctx.threadId);
           await untilCompleted(ctx);
         }));
@@ -441,20 +486,23 @@ export function runProviderDriverContract(options: RunProviderDriverContractOpti
       it("question: an ask opens a question card and the answer flows back", () =>
         withInstance("question", "ct-quest", fx, async (ctx) => {
           await sendTurn(ctx, fx.turn);
-          let cleanup: (() => void) | undefined;
-          if (fx.raise) {
-            await ctx.recorder.until((e) => e.type === "session.started");
-            cleanup = await fx.raise(ctx);
+          let cleanup: (() => void | Promise<void>) | undefined;
+          try {
+            if (fx.raise) {
+              await ctx.recorder.until((e) => e.type === "session.started");
+              cleanup = await fx.raise(ctx);
+            }
+            const opened = await ctx.recorder.until((e) => e.type === "request.opened");
+            expect(opened).toMatchObject({ requestType: "question", tool: fx.expectTool });
+            await ctx.instance.adapter.respondToRequest(ctx.threadId, opened.requestId!, {
+              behavior: "answer",
+              message: fx.answer,
+            });
+            const resolved = await ctx.recorder.until((e) => e.type === "request.resolved");
+            expect(resolved).toMatchObject({ behavior: "answer", source: "user" });
+          } finally {
+            await cleanup?.();
           }
-          const opened = await ctx.recorder.until((e) => e.type === "request.opened");
-          expect(opened).toMatchObject({ requestType: "question", tool: fx.expectTool });
-          await ctx.instance.adapter.respondToRequest(ctx.threadId, opened.requestId!, {
-            behavior: "answer",
-            message: fx.answer,
-          });
-          const resolved = await ctx.recorder.until((e) => e.type === "request.resolved");
-          expect(resolved).toMatchObject({ behavior: "answer", source: "user" });
-          cleanup?.();
           if (fx.interruptToEnd) await ctx.instance.adapter.interruptTurn(ctx.threadId);
           await untilCompleted(ctx);
         }));
