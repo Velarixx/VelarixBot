@@ -35,6 +35,7 @@ import { createHealthRoutes } from "./routes/health.ts";
 import { createIntegrationsRoutes } from "./routes/integrations.ts";
 import { createOAuthRoutes } from "./routes/oauth.ts";
 import { createRoutinesRoutes } from "./routes/routines.ts";
+import { createSaasBotCatalogRoutes } from "./routes/saas-bot-catalog.ts";
 import { createSessionRoutes } from "./routes/session.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
 import { createBotsService, projectPublicBotFrame, type BotsService } from "./services/bots.ts";
@@ -292,6 +293,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
             now: () => clock.now(),
           }),
           createSessionRoutes(),
+          createSaasBotCatalogRoutes({ bots }),
           createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
         ];
 

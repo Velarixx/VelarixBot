@@ -177,9 +177,13 @@ describe("SaaS authenticated request boundary", () => {
     }
   });
 
-  it("does not expose desktop business routes or merge the COMMS boundary", async () => {
-    const business = await get("/api/bots", { cookie: cookie(activeToken) });
-    expect(business.status).toBe(404);
+  it("exposes only the SaaS catalog and does not merge desktop or COMMS boundaries", async () => {
+    const catalog = await get("/api/bots", { cookie: cookie(activeToken) });
+    expect(catalog.status).toBe(200);
+    expect(await catalog.json()).toEqual({ bots: [] });
+
+    const desktopBusiness = await get("/api/routines", { cookie: cookie(activeToken) });
+    expect(desktopBusiness.status).toBe(404);
 
     const internalWithSession = await get("/api/internal/agents?self=x", { cookie: cookie(activeToken) });
     expect(internalWithSession.status).toBe(401);
