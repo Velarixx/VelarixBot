@@ -52,6 +52,11 @@ export interface AcpSupport {
   loginNote: string;
   /** CLI argv AFTER the binary name to enter ACP stdio mode. */
   spawnArgs(config: AcpConfig, turn: SendTurnInput): string[];
+  /** Treat a clean exit before a terminal result as a closed request
+   * transport. Windows can observe process close without surfacing EPIPE
+   * when the peer closes stdin; opt in only for harnesses whose clean-exit
+   * contract cannot otherwise complete a turn. */
+  cleanExitBeforeResultIsStdinError?: boolean;
   /** Extra provider credentials this child may inherit. Deny-by-default:
    *  known provider keys and secret-shaped names are stripped unless listed
    *  here or on DEFAULT_ACP_CREDENTIAL_ENV. A forgotten transformEnv must
@@ -294,10 +299,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> | null }
         >();
 
+        let handleStdinError = (_error: Error) => {};
         const send = (obj: unknown) => {
           try {
             child.stdin.write(JSON.stringify(obj) + "\n");
-          } catch {}
+          } catch (error) {
+            handleStdinError(error instanceof Error ? error : new Error(String(error)));
+          }
           appendNative(threadId, { dir: "out", source: SOURCE, msg: obj });
         };
         const request = (method: string, params: unknown, timeoutMs?: number) =>
@@ -500,13 +508,22 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         // child.stdin, and without a listener that unhandled 'error' event
         // kills the WHOLE server (rc.12 field crash). Settle instead —
         // nothing can be written to this child anymore.
-        child.stdin.on("error", (e) => {
+        handleStdinError = (e) => {
           if (state.settled) return;
           emit({ ...base(threadId, turnId), type: "runtime.error", message: `${DRIVER_KIND} stdin write failed: ${e.message}` });
           settle(false, "stdin_error");
-        });
+        };
+        child.stdin.on("error", handleStdinError);
         child.on("close", (code) => {
           if (!state.settled) {
+            // Node 24 on Windows can report a clean process close without
+            // delivering EPIPE when the peer closed stdin. A harness may opt
+            // in when it has no valid clean exit before the prompt result;
+            // non-zero crashes retain the more useful exit_before_result.
+            if (support.cleanExitBeforeResultIsStdinError && code === 0) {
+              handleStdinError(new Error("request transport closed before the prompt result"));
+              return;
+            }
             emit({
               ...base(threadId, turnId),
               type: "runtime.error",

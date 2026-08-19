@@ -213,6 +213,12 @@ const support: AcpSupport = {
   // session self-approving and never fire session/request_permission.
   spawnArgs: (_config, turn) => [...ACP_ARGS, ...(turn.model ? ["-m", turn.model] : [])],
 
+  // Gemini has no valid clean-exit completion outside session/prompt's RPC
+  // result. On Node 24/Windows a closed child stdin can surface only as exit
+  // 0 after initialize, with no EPIPE event; normalize that transport failure
+  // without changing argv rejection or non-zero crash classification.
+  cleanExitBeforeResultIsStdinError: true,
+
   // A revoked/absent Google login makes the CLI start an interactive OAuth
   // flow inside session/new; without this it opens a browser window out of
   // a headless bot turn. With it the CLI prints the auth URL and waits,

@@ -290,6 +290,10 @@ describe("Gemini turns (fake CLI)", () => {
     await instance.adapter.sendTurn({ threadId: "t-gemini-epipe", text: "go" });
     const done = await recorder.until((e) => e.type === "turn.completed");
     expect(done).toMatchObject({ ok: false, stopReason: "stdin_error" });
+    expect(recorder.events.map((e) => e.type)).toEqual(["turn.started", "runtime.error", "turn.completed"]);
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    const err = recorder.events.find((e) => e.type === "runtime.error")!;
+    expect(err.message).toContain("stdin write failed");
     expect(instance.adapter.hasSession("t-gemini-epipe")).toBe(false);
   });
 
