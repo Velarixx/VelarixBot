@@ -117,7 +117,7 @@ describe.runIf(process.platform === "win32")("Hermes approval timeout, duplicate
           timeoutStart,
           (event) => event.type === "request.resolved" && event.requestId === timeoutRequestId,
         );
-        expect(timeoutResolved).toMatchObject({ behavior: "deny", source: "user" });
+        expect(timeoutResolved).toMatchObject({ behavior: "deny", source: "system" });
         const timeoutDone = await eventAfter(events, timeoutStart, (event) => event.type === "turn.completed");
         expect(timeoutDone).toMatchObject({ ok: true });
         expect(events.slice(timeoutStart).map((event) => event.type)).toEqual([

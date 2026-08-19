@@ -396,7 +396,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           };
           const timer = setTimeout(() => {
             emit({ ...base(threadId, turnId), type: "runtime.error", message: DENY_TIMEOUT_NOTE });
-            finish("deny");
+            finish("deny", "system");
           }, 15 * 60_000);
           timer.unref?.();
           asks.set(requestId, finish);
