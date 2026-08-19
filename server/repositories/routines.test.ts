@@ -1,15 +1,41 @@
 // Routine repository: CRUD, schedule round-trips, and the durable
 // routine_runs ledger (claims with idempotency keys, leases, attempts,
 // skips, pruning, boot recovery).
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { DATA_DIR } from "../config.ts";
 import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
-import type { RoutineRecord } from "../store.ts";
+import { IdentitySessions } from "../identity.ts";
+import { zeroUsage, type BotRecord, type RoutineRecord } from "../store.ts";
+import { createBotsRepository } from "./bots.ts";
 import { createComputerBindingsRepository } from "./computer-bindings.ts";
 import { createRoutinesRepository, RUN_HISTORY_KEEP, type ClaimRunInput } from "./routines.ts";
+
+function makeBot(overrides: Partial<BotRecord> = {}): BotRecord {
+  const id = overrides.id ?? `bot-${Math.random().toString(36).slice(2)}`;
+  return {
+    id,
+    threadId: overrides.threadId ?? `thread-${id}`,
+    name: "Testy",
+    title: "",
+    description: "",
+    notifications: true,
+    color: "blue",
+    iconShape: "cursor",
+    unread: false,
+    modelSelection: { instanceId: "claude", model: "claude-sonnet-5" },
+    resumeCursors: {},
+    computer: "off",
+    busy: false,
+    state: "IDLE",
+    usage: zeroUsage(),
+    createdAt: Date.now(),
+    ...overrides,
+  };
+}
 
 function makeRoutine(overrides: Partial<RoutineRecord> = {}): RoutineRecord {
   const id = overrides.id ?? `routine-${Math.random().toString(36).slice(2)}`;
@@ -163,21 +189,22 @@ describe("routines repository", () => {
 
   it("expires lapsed leases and recovers interrupted runs at boot", () => {
     const routines = createRoutinesRepository(db);
+    const scheduler = routines.internalScheduler;
     routines.insert(makeRoutine({ id: "routine-1", running: true }));
-    const run = routines.claimRun(claimInput({ leaseUntil: 61_000 }));
-    expect(routines.expiredRuns(60_999)).toEqual([]);
-    expect(routines.expiredRuns(61_000).map((r) => r.seq)).toEqual([run!.seq]);
-    routines.renewLeases([run!.seq], 200_000);
-    expect(routines.expiredRuns(61_000)).toEqual([]);
+    const run = scheduler.claimRun(claimInput({ leaseUntil: 61_000 }));
+    expect(scheduler.expiredRuns(60_999)).toEqual([]);
+    expect(scheduler.expiredRuns(61_000).map((r) => r.seq)).toEqual([run!.seq]);
+    scheduler.renewLeases([run!.seq], 200_000);
+    expect(scheduler.expiredRuns(61_000)).toEqual([]);
     // boot: single process, so every running row is orphaned
-    expect(routines.recoverInterrupted(70_000)).toBe(1);
+    expect(scheduler.recoverInterrupted(70_000)).toBe(1);
     expect(routines.runsFor("routine-1")[0]).toMatchObject({
       status: "interrupted",
       finished_at: 70_000,
       result: "interrupted: VelarixBot quit mid-run",
     });
     expect(routines.get("routine-1")?.running).toBe(false);
-    expect(routines.recoverInterrupted(80_000)).toBe(0);
+    expect(scheduler.recoverInterrupted(80_000)).toBe(0);
   });
 
   it("prunes history to the newest 20 rows per routine", () => {
@@ -213,6 +240,154 @@ describe("routines repository", () => {
     expect(routines.deleteForBot("bot-1").sort()).toEqual(["drop-1", "drop-2"]);
     expect(routines.list().map((r) => r.id)).toEqual(["keep"]);
     expect(routines.runsFor("drop-1")).toEqual([]);
+  });
+
+  it("isolates tenant CRUD, claims, finishes, lease renewal, and history from exact foreign identifiers", () => {
+    const identity = new IdentitySessions(db);
+    const userA = identity.upsertGithubIdentity({ githubId: 401, login: "routine-a" }, 1_000);
+    const userB = identity.upsertGithubIdentity({ githubId: 402, login: "routine-b" }, 1_000);
+    const bots = createBotsRepository(db);
+    const legacyBot = makeBot({ id: "legacy-bot" });
+    const botA = makeBot({ id: "bot-a" });
+    const botB = makeBot({ id: "bot-b" });
+    bots.insert(legacyBot);
+    bots.forOwner(userA.id).insert(botA);
+    bots.forOwner(userB.id).insert(botB);
+
+    const routines = createRoutinesRepository(db);
+    const legacy = makeRoutine({ id: "legacy-routine", botId: legacyBot.id });
+    const routineA = makeRoutine({ id: "routine-a", botId: botA.id });
+    const routineB = makeRoutine({ id: "routine-b", botId: botB.id });
+    routines.insert(legacy);
+    routines.forOwner(userA.id).insert(routineA);
+    routines.forOwner(userB.id).insert(routineB);
+    const legacyRun = routines.claimRun(
+      claimInput({ routineId: legacy.id, botId: legacyBot.id, idempotencyKey: "legacy-routine@1000" }),
+    );
+
+    const tenantA = routines.forOwner(userA.id);
+    const tenantB = routines.forOwner(userB.id);
+    expect("internalScheduler" in tenantA).toBe(false);
+    expect(tenantA.list().map((routine) => routine.id)).toEqual([routineA.id]);
+    expect(tenantA.get(routineB.id)).toBeNull();
+    expect(tenantA.get(legacy.id)).toBeNull();
+    expect(tenantA.update({ ...routineB, name: "cross-tenant" })).toBe(false);
+    expect(tenantA.update({ ...legacy, name: "claimed legacy" })).toBe(false);
+    expect(tenantB.get(routineB.id)?.name).toBe("Check inbox");
+
+    const runB = tenantB.claimRun(
+      claimInput({ routineId: routineB.id, botId: botB.id, idempotencyKey: "routine-b@1000" }),
+    );
+    expect(runB).not.toBeNull();
+    expect(
+      tenantA.claimRun(claimInput({ routineId: routineB.id, botId: botB.id, idempotencyKey: "routine-b@1000" })),
+    ).toBeNull();
+    expect(
+      tenantA.claimRun(claimInput({ routineId: legacy.id, botId: legacyBot.id, idempotencyKey: "legacy-routine@1000" })),
+    ).toBeNull();
+    expect(
+      tenantA.claimRun(claimInput({ routineId: routineA.id, botId: botA.id, idempotencyKey: "routine-b@1000" })),
+    ).toBeNull();
+    expect(
+      tenantA.recordSkip({
+        routineId: routineB.id,
+        botId: botB.id,
+        at: 2_000,
+        reason: "cross-tenant skip",
+        idempotencyKey: "routine-b-skip@2000",
+      }),
+    ).toBe(false);
+    expect(tenantA.finishRun(runB!.seq, "done", "stolen", 2_000)).toBe(false);
+    expect(tenantA.finishRun(legacyRun!.seq, "done", "claimed legacy", 2_000)).toBe(false);
+    expect(tenantA.renewLeases([runB!.seq], 120_000)).toBe(0);
+    expect(tenantA.runsFor(routineB.id)).toEqual([]);
+    expect(tenantA.runsFor(legacy.id)).toEqual([]);
+    expect(tenantB.runsFor(routineB.id)[0]).toMatchObject({ status: "running", lease_until: 61_000 });
+    expect(tenantB.finishRun(runB!.seq, "done", "DONE", 3_000)).toBe(true);
+
+    const runA = tenantA.claimRun(
+      claimInput({ routineId: routineA.id, botId: botA.id, idempotencyKey: "routine-a@1000" }),
+    );
+    expect(runA).not.toBeNull();
+    expect(tenantA.finishRun(runA!.seq, "done", "DONE", 3_000)).toBe(true);
+    expect(tenantA.runsFor(routineA.id)).toHaveLength(1);
+    expect(tenantA.delete(routineB.id)).toBe(false);
+    expect(tenantA.delete(legacy.id)).toBe(false);
+    expect(tenantB.get(routineB.id)).not.toBeNull();
+  });
+
+  it("creates only for an owned existing bot and rolls back invalid targets and id collisions", () => {
+    const identity = new IdentitySessions(db);
+    const userA = identity.upsertGithubIdentity({ githubId: 501, login: "create-a" }, 1_000);
+    const userB = identity.upsertGithubIdentity({ githubId: 502, login: "create-b" }, 1_000);
+    const bots = createBotsRepository(db);
+    const legacyBot = makeBot({ id: "legacy-bot" });
+    const botA = makeBot({ id: "bot-a" });
+    const botB = makeBot({ id: "bot-b" });
+    bots.insert(legacyBot);
+    bots.forOwner(userA.id).insert(botA);
+    bots.forOwner(userB.id).insert(botB);
+
+    const routines = createRoutinesRepository(db);
+    const tenantA = routines.forOwner(userA.id);
+    tenantA.insert(makeRoutine({ id: "owned-routine", botId: botA.id }));
+    routines.forOwner(userB.id).insert(makeRoutine({ id: "foreign-collision", botId: botB.id }));
+    expect(tenantA.get("owned-routine")).not.toBeNull();
+
+    for (const botId of [botB.id, legacyBot.id, randomUUID(), "not-a-uuid"]) {
+      expect(() => tenantA.insert(makeRoutine({ id: `rejected-${botId}`, botId }))).toThrow(/owned bot not found/);
+    }
+    expect(() => tenantA.insert(makeRoutine({ id: "foreign-collision", botId: botA.id }))).toThrow(/UNIQUE/i);
+    expect(() => routines.forOwner("not-an-owner-uuid")).toThrow(/internal UUID/);
+
+    expect(tenantA.list().map((routine) => routine.id)).toEqual(["owned-routine"]);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM routines").get()?.n).toBe(2);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM routine_runs").get()?.n).toBe(0);
+  });
+
+  it("owner delete and deleteForBot remove only owned routines and their run rows", () => {
+    const identity = new IdentitySessions(db);
+    const userA = identity.upsertGithubIdentity({ githubId: 601, login: "delete-a" }, 1_000);
+    const userB = identity.upsertGithubIdentity({ githubId: 602, login: "delete-b" }, 1_000);
+    const bots = createBotsRepository(db);
+    const legacyBot = makeBot({ id: "legacy-bot" });
+    const botA = makeBot({ id: "bot-a" });
+    const botB = makeBot({ id: "bot-b" });
+    bots.insert(legacyBot);
+    bots.forOwner(userA.id).insert(botA);
+    bots.forOwner(userB.id).insert(botB);
+
+    const routines = createRoutinesRepository(db);
+    const tenantA = routines.forOwner(userA.id);
+    const tenantB = routines.forOwner(userB.id);
+    const legacy = makeRoutine({ id: "legacy", botId: legacyBot.id });
+    const deleteOne = makeRoutine({ id: "delete-one", botId: botA.id });
+    const deleteWithBot = makeRoutine({ id: "delete-with-bot", botId: botA.id });
+    const keepB = makeRoutine({ id: "keep-b", botId: botB.id });
+    routines.insert(legacy);
+    tenantA.insert(deleteOne);
+    tenantA.insert(deleteWithBot);
+    tenantB.insert(keepB);
+    routines.claimRun(claimInput({ routineId: legacy.id, botId: legacyBot.id, idempotencyKey: "legacy@1000" }));
+    tenantA.claimRun(claimInput({ routineId: deleteOne.id, botId: botA.id, idempotencyKey: "delete-one@1000" }));
+    tenantA.claimRun(claimInput({ routineId: deleteWithBot.id, botId: botA.id, idempotencyKey: "delete-with-bot@1000" }));
+    tenantB.claimRun(claimInput({ routineId: keepB.id, botId: botB.id, idempotencyKey: "keep-b@1000" }));
+
+    expect(tenantA.delete(keepB.id)).toBe(false);
+    expect(tenantA.delete(legacy.id)).toBe(false);
+    expect(tenantA.deleteForBot(botB.id)).toEqual([]);
+    expect(tenantA.deleteForBot(legacyBot.id)).toEqual([]);
+    expect(tenantA.delete(deleteOne.id)).toBe(true);
+    expect(routines.runsFor(deleteOne.id)).toEqual([]);
+    expect(tenantA.deleteForBot(botA.id)).toEqual([deleteWithBot.id]);
+    expect(routines.runsFor(deleteWithBot.id)).toEqual([]);
+
+    expect(tenantB.get(keepB.id)).not.toBeNull();
+    expect(tenantB.runsFor(keepB.id)).toHaveLength(1);
+    expect(routines.get(legacy.id)).not.toBeNull();
+    expect(routines.runsFor(legacy.id)).toHaveLength(1);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM routines").get()?.n).toBe(2);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM routine_runs").get()?.n).toBe(2);
   });
 });
 
