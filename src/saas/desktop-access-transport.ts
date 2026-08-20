@@ -1,4 +1,5 @@
 export const DESKTOP_ACCESS_PATH = "/api/desktop-access";
+export const DESKTOP_VIEW_PATH = `${DESKTOP_ACCESS_PATH}/view`;
 export const DESKTOP_ACCESS_TIMEOUT_MS = 5_000;
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;

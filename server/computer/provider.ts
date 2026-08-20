@@ -63,12 +63,13 @@ export type ScreenConnection =
    * come from the Electron shell, there is nothing to open. */
   | { kind: "local" };
 
-/** A browser-safe rendered desktop frame. Unlike ScreenConnection, this
- * boundary cannot carry a URL, credential, provider response, or identifier.
- * SaaS composition may relay only these encoded image bytes. */
+/** A rendered desktop frame at the server-only provider boundary. Exact-size
+ * RGBA pixels keep provider-controlled encoded metadata/trailing bytes out of
+ * the same-origin browser response; SaaS composition owns final encoding. */
 export interface ComputerViewerFrame {
-  format: "png" | "jpeg";
-  data: Uint8Array;
+  width: number;
+  height: number;
+  rgba: Uint8Array;
 }
 
 /** Server-side viewer connection. The provider must resolve only once the

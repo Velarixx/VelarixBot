@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
+import { deflateSync } from "node:zlib";
 
 import type { ComputerViewerFrame } from "../computer/provider.ts";
 import type { OwnerDesktopAccessGrantService } from "../services/desktop-access-grants.ts";
@@ -15,6 +16,14 @@ export const SAAS_DESKTOP_ACCESS_BODY_MAX_BYTES = 64;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const VIEWER_BOUNDARY = "velarix-desktop-frame";
 const VIEWER_FRAME_MAX_BYTES = 8 * 1024 * 1024;
+const VIEWER_FRAME_MAX_WIDTH = 1_920;
+const VIEWER_FRAME_MAX_HEIGHT = 1_080;
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const CRC_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) === 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  return crc >>> 0;
+});
 
 function accessCookie(token: string, maxAgeSeconds: number): string {
   return `${SAAS_DESKTOP_ACCESS_COOKIE}=${token}; Path=${SAAS_DESKTOP_ACCESS_PATH}; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Strict`;
@@ -61,25 +70,53 @@ function tokenKey(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-function encodedFrame(frame: ComputerViewerFrame): { bytes: Buffer; contentType: string } {
-  const bytes = Buffer.from(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength);
-  if (bytes.length < 3 || bytes.length > VIEWER_FRAME_MAX_BYTES) throw new Error("invalid viewer frame");
-  if (frame.format === "png") {
-    if (bytes.length < 8 || !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-      throw new Error("invalid viewer frame");
-    }
-    return { bytes, contentType: "image/png" };
+function crc32(parts: Buffer[]): number {
+  let crc = 0xffffffff;
+  for (const bytes of parts) {
+    for (const byte of bytes) crc = CRC_TABLE[(crc ^ byte) & 0xff]! ^ (crc >>> 8);
   }
-  if (frame.format === "jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return { bytes, contentType: "image/jpeg" };
-  }
-  throw new Error("invalid viewer frame");
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
-async function writeFrame(res: ServerResponse, frame: ComputerViewerFrame): Promise<void> {
-  const { bytes, contentType } = encodedFrame(frame);
+function pngChunk(type: string, data = Buffer.alloc(0)): Buffer {
+  const kind = Buffer.from(type, "ascii");
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(data.length);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(crc32([kind, data]));
+  return Buffer.concat([header, kind, data, checksum]);
+}
+
+function encodedFrame(frame: ComputerViewerFrame): Buffer {
+  if (
+    !Number.isSafeInteger(frame.width) || frame.width < 1 || frame.width > VIEWER_FRAME_MAX_WIDTH ||
+    !Number.isSafeInteger(frame.height) || frame.height < 1 || frame.height > VIEWER_FRAME_MAX_HEIGHT ||
+    !(frame.rgba instanceof Uint8Array)
+  ) {
+    throw new Error("invalid viewer frame");
+  }
+  const rowBytes = frame.width * 4;
+  const expectedBytes = rowBytes * frame.height;
+  if (expectedBytes > VIEWER_FRAME_MAX_BYTES || frame.rgba.byteLength !== expectedBytes) {
+    throw new Error("invalid viewer frame");
+  }
+  const scanlines = Buffer.alloc(expectedBytes + frame.height);
+  const rgba = Buffer.from(frame.rgba.buffer, frame.rgba.byteOffset, frame.rgba.byteLength);
+  for (let row = 0; row < frame.height; row += 1) {
+    rgba.copy(scanlines, row * (rowBytes + 1) + 1, row * rowBytes, (row + 1) * rowBytes);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(frame.width, 0);
+  ihdr.writeUInt32BE(frame.height, 4);
+  ihdr.set([8, 6, 0, 0, 0], 8);
+  const png = Buffer.concat([PNG_SIGNATURE, pngChunk("IHDR", ihdr), pngChunk("IDAT", deflateSync(scanlines)), pngChunk("IEND")]);
+  if (png.length > VIEWER_FRAME_MAX_BYTES) throw new Error("invalid viewer frame");
+  return png;
+}
+
+async function writeFrame(res: ServerResponse, bytes: Buffer): Promise<void> {
   const prefix = Buffer.from(
-    `--${VIEWER_BOUNDARY}\r\nContent-Type: ${contentType}\r\nContent-Length: ${bytes.length}\r\n\r\n`,
+    `--${VIEWER_BOUNDARY}\r\nContent-Type: image/png\r\nContent-Length: ${bytes.length}\r\n\r\n`,
   );
   const prefixAccepted = res.write(prefix);
   const bytesAccepted = res.write(bytes);
@@ -176,13 +213,24 @@ export function createSaasDesktopAccessRoutes(deps: {
       res.once("close", close);
       let headersSent = false;
       let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+      let frames: AsyncIterator<ComputerViewerFrame> | undefined;
       try {
         const opened = await viewer.open(token, controller.signal);
         if (!opened) {
           viewerUnavailable(res);
           return true;
         }
-        const initial = encodedFrame(opened.connection.initialFrame);
+        frames = opened.frames[Symbol.asyncIterator]();
+        const first = await frames.next();
+        if (first.done || !opened.authorized()) {
+          viewerUnavailable(res);
+          return true;
+        }
+        const initial = encodedFrame(first.value);
+        if (!opened.authorized()) {
+          viewerUnavailable(res);
+          return true;
+        }
         const remainingMs = Math.max(0, opened.expiresAt - now());
         expiryTimer = setTimeout(close, remainingMs);
         res.writeHead(200, {
@@ -194,10 +242,18 @@ export function createSaasDesktopAccessRoutes(deps: {
           "x-frame-options": "SAMEORIGIN",
         });
         headersSent = true;
-        await writeFrame(res, { data: initial.bytes, format: opened.connection.initialFrame.format });
-        for await (const frame of opened.connection.frames) {
-          if (controller.signal.aborted) break;
-          await writeFrame(res, frame);
+        // Chromium paints a multipart image only after the following boundary
+        // arrives. Prime the stream with a duplicate canonical frame so a
+        // quiet desktop renders immediately even before the provider updates.
+        await writeFrame(res, initial);
+        if (!opened.authorized()) return true;
+        await writeFrame(res, initial);
+        while (!controller.signal.aborted) {
+          const next = await frames.next();
+          if (next.done || controller.signal.aborted) break;
+          const encoded = encodedFrame(next.value);
+          if (!opened.authorized()) break;
+          await writeFrame(res, encoded);
         }
       } catch {
         if (!headersSent) viewerFailure(res);
@@ -206,6 +262,11 @@ export function createSaasDesktopAccessRoutes(deps: {
         req.removeListener("aborted", close);
         res.removeListener("close", close);
         controller.abort();
+        try {
+          void frames?.return?.().catch(() => undefined);
+        } catch {
+          // Provider cleanup cannot alter the redacted HTTP outcome.
+        }
         untrack();
         if (headersSent && !res.writableEnded) res.end();
       }

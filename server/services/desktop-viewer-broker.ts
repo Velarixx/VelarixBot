@@ -5,7 +5,8 @@ import type { DesktopAccessGrantService } from "./desktop-access-grants.ts";
 
 export interface OpenedDesktopViewer {
   expiresAt: number;
-  connection: ComputerViewerConnection;
+  frames: AsyncIterable<ComputerViewerConnection["initialFrame"]>;
+  authorized(): boolean;
 }
 
 export interface OwnerDesktopViewerBroker {
@@ -29,16 +30,24 @@ export function createDesktopViewerBroker(options: {
   grants: DesktopAccessGrantService;
   computers: ComputerRegistry;
   openTimeoutMs: number;
+  authorizationIntervalMs: number;
+  now?: () => number;
 }): DesktopViewerBroker {
-  const { repos, grants, computers, openTimeoutMs } = options;
+  const { repos, grants, computers, openTimeoutMs, authorizationIntervalMs } = options;
+  const now = options.now ?? Date.now;
   if (!Number.isSafeInteger(openTimeoutMs) || openTimeoutMs < 1 || openTimeoutMs > 30_000) {
     throw new TypeError("desktop viewer open timeout is invalid");
+  }
+  if (!Number.isSafeInteger(authorizationIntervalMs) || authorizationIntervalMs < 10 || authorizationIntervalMs > 5_000) {
+    throw new TypeError("desktop viewer authorization interval is invalid");
   }
 
   return {
     forOwner(ownerId) {
       const ownerGrants = grants.forOwner(ownerId);
       if (!ownerGrants) return null;
+      const durableGrants = repos.desktopAccessGrants.forOwner(ownerId);
+      if (!durableGrants) return null;
       const bindings = repos.userWorkspaceBindings.forOwner(ownerId);
 
       return {
@@ -90,20 +99,55 @@ export function createDesktopViewerBroker(options: {
               providerAbort.abort();
               return null;
             }
-            const frames = connection.frames;
+            const expectedWorkspace = { providerKind: binding.providerKind, machineId: binding.machineId };
+            const isAuthorized = () => {
+              try {
+                return Boolean(durableGrants.resolve(accessToken, expectedWorkspace, "desktop:view", now()));
+              } catch {
+                return false;
+              }
+            };
+            const iterator = connection.frames[Symbol.asyncIterator]();
+            const nextOrAbort = async () => {
+              let abort!: () => void;
+              const aborted = new Promise<IteratorResult<ComputerViewerConnection["initialFrame"]>>((resolve) => {
+                abort = () => resolve({ done: true, value: undefined });
+                providerAbort.signal.addEventListener("abort", abort, { once: true });
+              });
+              try {
+                return await Promise.race([iterator.next(), aborted]);
+              } finally {
+                providerAbort.signal.removeEventListener("abort", abort);
+              }
+            };
             return {
               expiresAt: confirmed.expiresAt,
-              connection: {
-                initialFrame: connection.initialFrame,
-                frames: (async function* () {
-                  try {
-                    yield* frames;
-                  } finally {
-                    signal.removeEventListener("abort", forwardAbort);
-                    providerAbort.abort();
+              authorized: isAuthorized,
+              frames: (async function* () {
+                let monitor: ReturnType<typeof setInterval> | undefined;
+                const monitorAuthorization = () => {
+                  if (!isAuthorized()) providerAbort.abort();
+                };
+                try {
+                  monitor = setInterval(monitorAuthorization, authorizationIntervalMs);
+                  if (!isAuthorized() || providerAbort.signal.aborted) return;
+                  yield connection.initialFrame;
+                  while (!providerAbort.signal.aborted) {
+                    const next = await nextOrAbort();
+                    if (next.done || providerAbort.signal.aborted || !isAuthorized()) return;
+                    yield next.value;
                   }
-                })(),
-              },
+                } finally {
+                  if (monitor) clearInterval(monitor);
+                  signal.removeEventListener("abort", forwardAbort);
+                  providerAbort.abort();
+                  try {
+                    void iterator.return?.().catch(() => undefined);
+                  } catch {
+                    // Provider cleanup cannot disclose or keep the view open.
+                  }
+                }
+              })(),
             };
           } catch {
             signal.removeEventListener("abort", forwardAbort);

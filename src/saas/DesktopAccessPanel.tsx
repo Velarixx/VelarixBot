@@ -3,6 +3,7 @@ import { Loader2, Monitor, RefreshCw, ShieldOff } from "lucide-react";
 
 import {
   createDesktopAccessTransport,
+  DESKTOP_VIEW_PATH,
   type DesktopAccessOutcome,
   type DesktopAccessTransport,
 } from "./desktop-access-transport";
@@ -69,9 +70,17 @@ export function DesktopAccessPanelView({
           {model.status === "checking" && <span className="flex items-center gap-2"><Loader2 size={16} className="animate-spin" data-saas-progress-indicator="true" aria-hidden="true" />Checking remote desktop access…</span>}
           {model.status === "requesting" && <span className="flex items-center gap-2"><Loader2 size={16} className="animate-spin" data-saas-progress-indicator="true" aria-hidden="true" />Requesting scoped access…</span>}
           {model.status === "active" && (
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span>Remote desktop access is active for less than two minutes.</span>
-              <button type="button" className={buttonClass} onClick={onRevoke}><ShieldOff size={16} aria-hidden="true" />Revoke access</button>
+            <div className="grid gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span>Remote desktop access is active for less than two minutes.</span>
+                <button type="button" className={buttonClass} onClick={onRevoke}><ShieldOff size={16} aria-hidden="true" />Revoke access</button>
+              </div>
+              <img
+                src={DESKTOP_VIEW_PATH}
+                alt="Live view of your tenant desktop"
+                className="max-h-[60vh] w-full rounded-lg border border-line bg-black object-contain"
+                referrerPolicy="no-referrer"
+              />
             </div>
           )}
           {model.status === "denied" && <span>Remote desktop access isn’t available for this workspace.</span>}

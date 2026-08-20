@@ -17,7 +17,7 @@ describe("desktop access panel semantics", () => {
   it("covers loading, grant, denial, expiry, failure, revocation, and recovery actions", () => {
     expect(markup({ status: "checking" })).toMatch(/role="status"[\s\S]*aria-busy="true"[\s\S]*Checking remote desktop access/);
     expect(markup({ status: "requesting" })).toMatch(/role="status"[\s\S]*Requesting scoped access/);
-    expect(markup({ status: "active", expiresAt: 2_000 })).toMatch(/Remote desktop access is active[\s\S]*Revoke access/);
+    expect(markup({ status: "active", expiresAt: 2_000 })).toMatch(/Remote desktop access is active[\s\S]*Revoke access[\s\S]*src="\/api\/desktop-access\/view"[\s\S]*Live view of your tenant desktop/);
     const denied = markup({ status: "denied" });
     expect(denied).toMatch(/role="alert"[\s\S]*isn.t available/);
     expect(denied).toContain("Request access");

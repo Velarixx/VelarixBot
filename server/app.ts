@@ -193,6 +193,8 @@ export async function createApplication(input: CreateApplicationInput): Promise<
           grants: desktopAccessGrants!,
           computers,
           openTimeoutMs: 2_000,
+          authorizationIntervalMs: 250,
+          now: () => clock.now(),
         })
       : null;
 

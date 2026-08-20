@@ -20,6 +20,7 @@ const KIND = "fake";
 // 1x1 transparent PNG — a real decodable frame for screen-in-chat paths
 export const FAKE_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+export const FAKE_VIEWER_FRAME = { width: 1, height: 1, rgba: new Uint8Array([0, 255, 128, 255]) } as const;
 
 interface FakeMachine {
   id: string;
@@ -104,7 +105,7 @@ export const FakeComputerProviderFactory: ComputerProviderFactory<FakeProviderCo
       async openViewer(machineId, { signal }): Promise<ComputerViewerConnection> {
         const machine = machineById(machineId);
         if (machine.state !== "running") throw new Error("computer is unavailable");
-        const initialFrame = { data: Buffer.from(FAKE_PNG, "base64"), format: "png" as const };
+        const initialFrame = FAKE_VIEWER_FRAME;
         return {
           initialFrame,
           frames: (async function* () {
