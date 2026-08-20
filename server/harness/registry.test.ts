@@ -107,4 +107,23 @@ describe("ProviderRegistry", () => {
     expect(registry.entries()).toHaveLength(0);
     expect(registry.get("a")).toBeNull();
   });
+
+  it("disposeAll attempts every disposal and surfaces a rejection", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({ a: { driver: "fake" }, b: { driver: "fake" } });
+    const disposalAttempts: string[] = [];
+
+    fake.created.get("a")!.instance.dispose = async () => {
+      disposalAttempts.push("a");
+      throw new Error("QA_DISPOSE_SENTINEL");
+    };
+    fake.created.get("b")!.instance.dispose = async () => {
+      disposalAttempts.push("b");
+    };
+
+    await expect(registry.disposeAll()).rejects.toThrow("QA_DISPOSE_SENTINEL");
+    expect(disposalAttempts).toEqual(["a", "b"]);
+    expect(registry.entries()).toHaveLength(0);
+  });
 });

@@ -119,7 +119,15 @@ export class ProviderRegistry {
   }
 
   async disposeAll() {
-    await Promise.allSettled(this.instances().map((i) => i.dispose()));
+    const results = await Promise.allSettled(
+      this.instances().map((instance) => Promise.resolve().then(() => instance.dispose())),
+    );
     this.byId.clear();
+
+    const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, `Failed to dispose ${failures.length} provider instances`);
+    }
   }
 }
