@@ -16,6 +16,9 @@ if (major < 24) {
 
 const entries = [];
 const schemaErrors = [];
+if (manifest.schemaVersion !== 2) {
+  schemaErrors.push(`manifest schemaVersion must be 2, observed ${manifest.schemaVersion}`);
+}
 for (const shard of manifest.shards ?? []) {
   let rows;
   try {
@@ -34,7 +37,7 @@ for (const shard of manifest.shards ?? []) {
   entries.push(...rows);
 }
 
-const required = ["file", "name", "condition", "reason", "owner", "classification"];
+const requiredStrings = ["file", "name", "condition", "reason", "owner", "classification"];
 const allowedClasses = new Set([
   "valid_platform_na",
   "valid_capability_na",
@@ -42,20 +45,41 @@ const allowedClasses = new Set([
   "mock_only_gap",
   "unjustified_skip",
 ]);
+const expectedValidity = new Map([
+  ["valid_platform_na", true],
+  ["valid_capability_na", true],
+  ["missing_dependency", false],
+  ["mock_only_gap", false],
+  ["unjustified_skip", false],
+]);
 for (const [index, entry] of entries.entries()) {
-  for (const field of required) {
+  for (const field of requiredStrings) {
     if (typeof entry[field] !== "string" || entry[field].trim() === "") {
       schemaErrors.push(`entry ${index + 1}: ${field} must be a non-empty string`);
     }
   }
+  if (typeof entry.valid !== "boolean") {
+    schemaErrors.push(`entry ${index + 1}: valid must be a boolean`);
+  }
   if (!allowedClasses.has(entry.classification)) {
     schemaErrors.push(`entry ${index + 1}: unknown classification ${entry.classification}`);
+  } else if (typeof entry.valid === "boolean" && entry.valid !== expectedValidity.get(entry.classification)) {
+    schemaErrors.push(
+      `entry ${index + 1}: classification ${entry.classification} requires valid=${expectedValidity.get(entry.classification)}`,
+    );
   }
   if (entry.classification === "unjustified_skip") {
     schemaErrors.push(`entry ${index + 1}: unjustified skips are never accepted`);
   }
-  if (entry.valid === false && (typeof entry.remediation !== "string" || entry.remediation.trim() === "")) {
-    schemaErrors.push(`entry ${index + 1}: invalid class requires remediation ownership`);
+  if (entry.valid === false) {
+    if (typeof entry.remediation !== "string" || entry.remediation.trim() === "") {
+      schemaErrors.push(`entry ${index + 1}: invalid row requires a non-empty remediation reference`);
+    }
+    if (typeof entry.remediationOwner !== "string" || entry.remediationOwner.trim() === "") {
+      schemaErrors.push(`entry ${index + 1}: invalid row requires a non-empty remediationOwner`);
+    }
+  } else if (entry.valid === true && entry.remediation !== null) {
+    schemaErrors.push(`entry ${index + 1}: valid row remediation must be null`);
   }
 }
 

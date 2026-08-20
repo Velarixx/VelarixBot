@@ -1,17 +1,17 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "issue": "DHV-71",
   "baseline": {
-    "sha": "46e9963774a45f90c1414b93a8ce4a6b57ca12e8",
-    "tree": "e0142653da88ad44409ffd0bba29c8a698b89f5b",
+    "sha": "f73fd89b28458619710289dbf3a2257c2ba208e3",
+    "tree": "60976dfa591958d79f9ed08439805ebb893cd018",
     "runtime": "Node v24.19.0",
     "platform": "win32",
     "arch": "x64",
     "vitest": "4.1.10",
-    "totalTests": 1362,
-    "passedTests": 1261,
-    "failedTests": 6,
-    "skippedTests": 95
+    "totalTests": 1407,
+    "passedTests": 1328,
+    "failedTests": 1,
+    "skippedTests": 78
   },
   "taxonomy": {
     "valid_platform_na": "Condition is intrinsic to the current OS; expected on Windows and exercised on POSIX CI.",
@@ -21,7 +21,7 @@
     "unjustified_skip": "No durable condition/reason/owner; none observed at this SHA."
   },
   "classCounts": {
-    "valid_platform_na": 88,
+    "valid_platform_na": 71,
     "valid_capability_na": 4,
     "missing_dependency": 3,
     "mock_only_gap": 0,
@@ -31,7 +31,6 @@
     { "file": "electron-service-auth.json", "count": 1 },
     { "file": "server-config.json", "count": 1 },
     { "file": "server-db-database.json", "count": 1 },
-    { "file": "server-drivers-acp-acp.json", "count": 17 },
     { "file": "server-drivers-acp-gemini.json", "count": 3 },
     { "file": "server-drivers-claude.json", "count": 25 },
     { "file": "server-drivers-codex.json", "count": 40 },
