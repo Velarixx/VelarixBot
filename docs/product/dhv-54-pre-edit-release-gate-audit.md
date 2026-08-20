@@ -1,59 +1,66 @@
-# DHV-54 pre-edit release-gate audit
+# DHV-65 independent pre-edit release-gate audit
 
-Audit date: 2026-08-19
+Audit date: 2026-08-20
 
-Audited local HEAD: `941d9db0ef27f812246264cd43bba19d643dc75f`
+Durable QA baseline: 46e9963774a45f90c1414b93a8ce4a6b57ca12e8
 
-This record was written before changing the release gate. The checkout was
-clean and `main` was two commits ahead of `origin/main`; those commits were
-treated as concurrent Founding Engineer work and were not altered.
+Starting HEAD inspected: b4ce6e452e1b97e5d2e2eacd9066a8ff9a9bceee
 
-## Repository evidence
+Candidate parent after non-overlapping concurrent commits:
+ade36472649c2710001d88caf30f42403de13b16
 
-| Surface | Observed state | Gap against the board gate |
+The QA/Test Lead closed DHV-50 with a durable CHANGES REQUIRED ledger for
+the baseline SHA. The 2026-08-20 board comment cleared the stranded execution
+blocker and directed DHV-65 to continue from the current repository state.
+The assigned paths were clean at the starting SHA above. Before this batch was
+committed, two non-overlapping concurrent batches advanced HEAD through
+f7c85d1 to the candidate parent recorded above. The shared checkout also
+contained an untracked audit/ directory owned by concurrent DHV-66 work; it
+was treated as read-only and excluded from this batch.
+
+Commit 272863088f37974a706b495775a4a0b310e1dd40 is the quarantined DHV-54
+proposal. Its author evidence and verdict are not independent DHV-65 evidence.
+This audit re-derived the required behavior from the repository commands,
+DHV-50 ledger, and DHV-65 acceptance criteria before editing the assigned
+release-control files.
+
+## Independent decision record
+
+| Control | Repository evidence | DHV-65 decision and justification |
 | --- | --- | --- |
-| Runtime and package manager | `package.json` requires Node `>=24` and pins `pnpm@10.33.0`; the local default was Node `v22.20.0`. | Supported-runtime evidence must use the documented `npx -y node@24` fallback, and CI must enforce Node 24 before running checks. |
-| Root scripts | `typecheck`, `test`, `build`, `typecheck:smoke`, and `test:smoke` exist. No lint or format-check command is declared. | CI does not have a repository-supported lint/format command to run. This cannot be silently described as covered; a linked repair item is required. |
-| TypeScript | `typecheck` checks `src` and `server`; `typecheck:smoke` checks the Playwright TypeScript. | Current CI runs only `typecheck`; it does not explicitly check E2E TypeScript. |
-| Unit/integration tests | `pnpm test` runs the Vitest suite. Import hygiene, the production route inventory, and secret-scan wiring are test-enforced in `server/import-hygiene.test.ts`, `server/saas-route-surface.test.ts`, and `server/secret-scan.test.ts`. | Current CI runs the aggregate suite but does not expose these release-significant inventories as an explicit gate step. |
-| Production build | Current CI invokes `pnpm exec vite build`. | That omits the server TypeScript portion encoded by the repository's `pnpm build` command. |
-| Deterministic Playwright | `e2e/fake-engine-smoke.spec.ts` and `e2e/session-boundary.spec.ts` use the fake/local harness; `test:smoke` runs only the former. | Current CI installs no browser and runs no deterministic Playwright E2E. The second deterministic spec has no root command. |
-| CI triggers | `.github/workflows/ci.yml` runs for non-draft PRs and manual dispatch, ignores documentation-only changes, and does not run on pushes to `main`. | A final SHA can lack any CI run; a missing run cannot block direct pushes. Draft and docs-only changes can have no check. |
-| CI identity | The job is named `typecheck + test + build`; checkout uses the default PR merge ref. | There is no durable, stable exact-SHA required-check context and no checkout assertion tying evidence to the PR head SHA. |
-| Release workflow | `.github/workflows/release.yml` validates Node 24, frozen install, typecheck, and tests before packaging. | It can be manually dispatched without proving exact-SHA QA approval or the required CI check. Repository code alone cannot verify a Paperclip approval identity. |
-| Release documentation | `docs/product/dhv-5-release-acceptance-v1.md` records workflow coverage and old Node 22 smoke evidence. | There is no reusable exact-SHA record containing parent, developer evidence, both independent verdicts, commands/counts, skips, CI URLs, risks, push result, or `origin/main` equality. |
-| PR template | Requests verification and a short checklist. | It does not forbid self-approval, require exact-SHA QA approval, or capture the required-check state. |
+| Candidate identity | Pull requests expose pull_request.head.sha; pushes and manual runs expose github.sha. | Use one job named exact-sha-release-gate, check out the derived candidate explicitly, require a lowercase full SHA, and compare it to git rev-parse HEAD. The stable name is the only check context administrators should require. |
+| Runtime and package manager | package.json requires Node >=24 and pins pnpm@10.33.0; the host default is Node 22. | CI uses Node 24 and Corepack pnpm. Local evidence must use npx -y node@24; default-Node results are not acceptance evidence. |
+| Dependency integrity | The repository has a committed pnpm lockfile. | pnpm install --frozen-lockfile is mandatory. The validator rejects a non-frozen install, ignored scripts, and soft-failed steps. |
+| Lint and format | No repository-wide ESLint, Prettier, Biome, or dprint command/config exists. | Run the scoped release-file whitespace/JSON validator and state this limitation. Do not claim application-wide lint coverage. |
+| Secret and dependency checks | scripts/secret-scan.mjs scans Git-tracked files; pnpm supports advisory auditing. | Run both explicitly. Missing commands or non-zero exits block the single required job. |
+| Route/import/security inventories | server/import-hygiene.test.ts, server/saas-route-surface.test.ts, and server/secret-scan.test.ts are release-significant Vitest inventories. | Expose them as a focused step and still run the complete Vitest suite afterward. |
+| TypeScript and build | typecheck checks client and server; typecheck:smoke checks E2E sources; build checks client/server and produces the Vite build. | Run both typecheck commands and the repository production build, rather than only vite build. |
+| Deterministic browser journey | The applicable fake/local specs are fake-engine-smoke.spec.ts and session-boundary.spec.ts; the release Playwright config fixes one worker and disables full parallelism. | Install pinned Chromium and run both specs through the isolated config. Browser installation or test failure is visible and blocking. |
+| Skip semantics | Vitest and Playwright can emit skips without returning non-zero. The current suite has a committed skip-inventory test, but exact-run skips still require human disposition. | CI runs the inventory; the acceptance record separately requires every observed skip, pre-existing reason, owner, and QA/Test Lead verdict. No implementation agent may self-approve a skip. |
+| Release precondition | The existing manual desktop workflow builds and publishes artifacts. Repository YAML cannot authenticate Paperclip roles or configure GitHub protection. | Validation requires the selected main SHA, the explicit accepted SHA, an HTTPS acceptance record, and a completed successful GitHub Actions check whose head_sha is identical. The workflow is not to be dispatched until external review/environment controls are configured. |
+| External enforcement | DHV-50 found no check run for the baseline. The earlier read-only GitHub audit found no branch protection or rulesets. | The Chief of Staff must configure the exact ruleset and independently protected release environment documented in exact-sha-release-gate.md. This batch performs no GitHub-admin mutation, push, release, deployment, or credential provisioning. |
+| Validator credibility | String-presence checks alone can remain green if a critical command is weakened. | The validator now executes fail-closed in-memory mutations covering runtime, required-context name, checkout SHA, frozen install, soft-failure wiring, deterministic specs, exact check SHA, check producer, and QA identity. |
 
-## GitHub enforcement evidence
+## Pre-edit commands and observations
 
-Read-only GitHub API checks produced:
+    git rev-parse HEAD
+    git rev-parse origin/main
+    git status --short --branch
+    git log --oneline -- assigned release-gate paths
+    git show 941d9db:.github/workflows/ci.yml
+    git show 941d9db:package.json
+    GET /api/issues/DHV-50 and its durable comments
+    node --version
 
-- `GET /repos/Velarixx/VelarixBot/branches/main/protection`: HTTP 404,
-  `Branch not protected`.
-- `GET /repos/Velarixx/VelarixBot/rulesets`: `[]`.
-- `GET /repos/Velarixx/VelarixBot/commits/46e9963/check-runs`:
-  `total_count: 0`.
-- Recent `main` workflow history contained scheduled canaries, docs pushes,
-  and manual releases, but no CI run for current `origin/main`.
+Observed before edits:
 
-Therefore repository changes can define a candidate gate but cannot honestly
-claim server-side enforcement. A Velarixx repository administrator, owned by
-the Chief of Staff, must configure and independently verify branch/ruleset
-protection after the workflow exists on GitHub.
+- Starting HEAD: b4ce6e452e1b97e5d2e2eacd9066a8ff9a9bceee.
+- Candidate parent: ade36472649c2710001d88caf30f42403de13b16.
+- origin/main: 46e9963774a45f90c1414b93a8ce4a6b57ca12e8.
+- Host Node: v22.20.0, unsupported for acceptance.
+- Assigned release-gate paths: clean.
+- Shared untracked path: audit/, excluded and untouched.
 
-## Commands used for the audit
-
-```text
-git status --short --branch
-git log -5 --oneline --decorate
-node --version
-corepack pnpm --version
-Get-Content package.json, .github/workflows/*.yml, release docs, and test inventories
-gh api repos/Velarixx/VelarixBot/branches/main/protection
-gh api repos/Velarixx/VelarixBot/rulesets
-gh api repos/Velarixx/VelarixBot/commits/46e9963/check-runs
-gh api "repos/Velarixx/VelarixBot/actions/runs?branch=main&per_page=10"
-```
-
-Observed versions: Windows PowerShell, Node `v22.20.0` (unsupported default),
-and pnpm `10.33.0`.
+This document is an implementation audit, not an approval. A new candidate
+SHA requires separate Test/Release review, QA/Test Lead approval, and successful
+required GitHub CI for that same SHA.

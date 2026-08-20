@@ -20,6 +20,7 @@ Incomplete, placeholder, or self-authored independent fields mean BLOCKED.
 
 - Reviewer identity:
 - Relationship to developer:
+- Confirm reviewer is not the developer: YES / NO
 - Exact SHA reviewed:
 - Verdict: APPROVE / BLOCK
 - Findings:
@@ -28,6 +29,7 @@ Incomplete, placeholder, or self-authored independent fields mean BLOCKED.
 ## QA/Test Lead
 
 - QA/Test Lead identity:
+- Confirm QA/Test Lead is not the developer: YES / NO
 - Exact SHA reviewed:
 - Verdict: APPROVE / BLOCK
 - Approval record URL:
@@ -64,6 +66,7 @@ owner, and QA/Test Lead disposition. Write None only after checking output.
 - Workflow run URL:
 - Workflow head SHA:
 - Checked-out SHA from Prove exact checkout:
+- Check producer/app:
 - Overall conclusion:
 
 ## Required GitHub checks
@@ -105,4 +108,7 @@ owner, and QA/Test Lead disposition. Write None only after checking output.
 - Unsupported runtime evidence: NO / YES (YES means BLOCKED)
 - Unjustified skip: NO / YES (YES means BLOCKED)
 - SHA changed after approval: NO / YES (YES requires a fresh gate)
+- Approval/evidence copied from another SHA: NO / YES (YES means BLOCKED)
+- Developer self-certified an independent verdict: NO / YES (YES means BLOCKED)
+- Bypass actor, label, or exception used: NO / YES (YES means BLOCKED)
 - Final disposition: APPROVED / BLOCKED

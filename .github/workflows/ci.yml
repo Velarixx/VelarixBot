@@ -2,6 +2,7 @@ name: Exact-SHA CI
 
 on:
   pull_request:
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
@@ -27,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      CI: "true"
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       DISPATCH_EXPECTED_SHA: ${{ inputs.expected_sha || '' }}
@@ -36,14 +38,17 @@ jobs:
         with:
           ref: ${{ env.EXPECTED_SHA }}
           fetch-depth: 2
+          persist-credentials: false
 
       - name: Prove exact checkout
         shell: bash
         run: |
           set -euo pipefail
           actual="$(git rev-parse HEAD)"
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$actual" = "$EXPECTED_SHA"
           if [ -n "$DISPATCH_EXPECTED_SHA" ]; then
+            [[ "$DISPATCH_EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
             test "$actual" = "$DISPATCH_EXPECTED_SHA"
           fi
           printf 'verified_sha=%s\n' "$actual"

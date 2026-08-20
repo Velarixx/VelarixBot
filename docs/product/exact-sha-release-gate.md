@@ -55,6 +55,11 @@ release documents added by this policy. The repository still has no general
 application lint or formatter configuration; this policy does not claim that
 broader coverage.
 
+The manual release validator additionally requires the workflow to be selected
+from main and accepts only a completed successful check produced by GitHub
+Actions whose reported head_sha equals the accepted SHA. A same-named check
+for another SHA or from another check producer is not valid evidence.
+
 ## GitHub administrator action required
 
 Repository files cannot configure or prove GitHub branch protection. The
@@ -72,7 +77,8 @@ following:
    require approval of the most recent reviewable push.
 3. Require conversation resolution.
 4. Require the exact check named exact-sha-release-gate and require the branch
-   to be current before merge.
+   to be current before merge. Bind the expected check source to GitHub Actions
+   if the selected GitHub ruleset interface supports an expected source.
 5. Block force pushes and branch deletion.
 6. Apply the rule to administrators; do not add bypass actors or bypass labels.
 7. Configure the Internal desktop release environment with an independent
@@ -91,3 +97,7 @@ desktop release workflow must not be dispatched until the protected exact SHA
 has completed this gate and the configured GitHub environment reviewer has
 approved it. Repository-admin configuration is therefore a hard external
 dependency, not an assumed control.
+
+The release workflow's presence does not authorize a dispatch. DHV-65 does not
+push, release, deploy, provision credentials, mutate an environment, or change
+GitHub administration. Those remain separate, explicitly authorized actions.

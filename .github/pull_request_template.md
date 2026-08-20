@@ -19,6 +19,8 @@ big changes should have an issue agreeing on the approach before code.
 - Parent SHA:
 - Acceptance record:
 - Required exact-sha-release-gate run:
+- Required check head SHA:
+- Required check producer:
 - Independent reviewer:
 - QA/Test Lead:
 
@@ -37,5 +39,7 @@ big changes should have an issue agreeing on the approach before code.
 - [ ] An independent reviewer approved this exact SHA
 - [ ] The QA/Test Lead approved this exact SHA
 - [ ] The required exact-sha-release-gate check succeeded for this SHA
+- [ ] No approval or evidence was transferred from another SHA
+- [ ] No bypass actor, label, or exception was used
 - [ ] Every skip is pre-existing, justified, and accepted by the QA/Test Lead
 - [ ] I am not using my own review as independent or QA approval

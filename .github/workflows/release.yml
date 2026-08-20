@@ -35,8 +35,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
+          ref: ${{ inputs.accepted_sha }}
+          fetch-depth: 2
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -54,13 +55,15 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$ACCEPTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REF" = "refs/heads/main"
           test "$ACCEPTED_SHA" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
           [[ "$ACCEPTANCE_RECORD_URL" =~ ^https:// ]]
           matches="$(gh api "repos/${{ github.repository }}/commits/$ACCEPTED_SHA/check-runs" \
-            --jq "[.check_runs[] | select(.name == \"exact-sha-release-gate\" and .conclusion == \"success\")] | length")"
+            --jq "[.check_runs[] | select(.name == \"exact-sha-release-gate\" and .head_sha == \"$ACCEPTED_SHA\" and .status == \"completed\" and .conclusion == \"success\" and .app.slug == \"github-actions\")] | length")"
           test "$matches" -ge 1
-          printf "accepted_sha=%s\nacceptance_record=%s\n" "$ACCEPTED_SHA" "$ACCEPTANCE_RECORD_URL"
+          printf "accepted_sha=%s\nacceptance_record=%s\nrequired_check_matches=%s\n" \
+            "$ACCEPTED_SHA" "$ACCEPTANCE_RECORD_URL" "$matches"
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
