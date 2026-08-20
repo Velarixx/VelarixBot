@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,9 +17,45 @@ function rejectText(failures, source, fragment, location) {
   }
 }
 
+function inventoryWorkflowJobs(workflows) {
+  const jobs = [];
+  for (const [path, source] of Object.entries(workflows)) {
+    let inJobs = false;
+    let currentJob;
+    for (const line of source.split("\n")) {
+      if (/^jobs:\s*$/.test(line)) {
+        inJobs = true;
+        currentJob = undefined;
+        continue;
+      }
+      if (inJobs && /^[A-Za-z0-9_-]+:/.test(line)) {
+        inJobs = false;
+        currentJob = undefined;
+      }
+      if (!inJobs) continue;
+      const jobKey = line.match(/^  ([A-Za-z0-9_-]+):\s*$/);
+      if (jobKey) {
+        currentJob = jobKey[1];
+        jobs.push({ path, key: currentJob, name: undefined });
+        continue;
+      }
+      const jobName = line.match(/^    name:\s*(.+?)\s*$/);
+      if (currentJob && jobName) {
+        jobs.at(-1).name = jobName[1].replace(/^['"]|['"]$/g, "");
+      }
+    }
+  }
+  return jobs;
+}
+
 function validateGate(bundle, runtimeMajor) {
   const { ci, release, policy, playwright, template, pkg } = bundle;
   const failures = [];
+  const workflows = {
+    ...bundle.workflows,
+    ".github/workflows/ci.yml": ci,
+    ".github/workflows/release.yml": release,
+  };
 
   if (runtimeMajor < 24) {
     failures.push("runtime: Node 24 or newer is required; observed major " + runtimeMajor);
@@ -43,7 +79,7 @@ function validateGate(bundle, runtimeMajor) {
       failures.push("package.json: script " + name + " must be " + JSON.stringify(command));
     }
   }
-  for (const script of ["build", "test", "typecheck", "typecheck:smoke"]) {
+  for (const script of ["build", "build:server", "test", "typecheck", "typecheck:smoke"]) {
     if (!pkg.scripts?.[script]) {
       failures.push("package.json: missing repository command " + script);
     }
@@ -79,6 +115,7 @@ function validateGate(bundle, runtimeMajor) {
     "corepack pnpm typecheck:smoke",
     "corepack pnpm test",
     "corepack pnpm build",
+    "corepack pnpm build:server",
     "corepack pnpm test:e2e",
   ]) {
     requireText(failures, ci, fragment, ".github/workflows/ci.yml");
@@ -99,6 +136,19 @@ function validateGate(bundle, runtimeMajor) {
   const jobKeys = [...jobs.matchAll(/^  ([A-Za-z0-9_-]+):\s*$/gm)].map((match) => match[1]);
   if (jobKeys.length !== 1 || jobKeys[0] !== "release-gate") {
     failures.push(".github/workflows/ci.yml: exactly one job key named release-gate is required");
+  }
+
+  const requiredContexts = inventoryWorkflowJobs(workflows).filter(
+    (job) => job.name === "exact-sha-release-gate",
+  );
+  if (
+    requiredContexts.length !== 1 ||
+    requiredContexts[0].path !== ".github/workflows/ci.yml" ||
+    requiredContexts[0].key !== "release-gate"
+  ) {
+    failures.push(
+      "GitHub workflows: exactly one job context named exact-sha-release-gate is required, at .github/workflows/ci.yml#release-gate",
+    );
   }
 
   for (const fragment of [
@@ -167,9 +217,15 @@ function validateGate(bundle, runtimeMajor) {
   return failures;
 }
 
+const workflowDirectory = join(root, ".github", "workflows");
+const workflowPaths = readdirSync(workflowDirectory)
+  .filter((name) => /\.ya?ml$/i.test(name))
+  .map((name) => ".github/workflows/" + name);
+
 const bundle = {
   ci: read(".github/workflows/ci.yml"),
   release: read(".github/workflows/release.yml"),
+  workflows: Object.fromEntries(workflowPaths.map((path) => [path, read(path)])),
   policy: read("docs/product/exact-sha-release-gate.md"),
   playwright: read("playwright.release.config.ts"),
   template: read(".github/release-acceptance-template.md"),
@@ -200,6 +256,22 @@ const mutationTests = [
       ),
   },
   {
+    name: "duplicate required context",
+    expected: "exactly one job context named exact-sha-release-gate",
+    run: () =>
+      validateGate(
+        {
+          ...bundle,
+          workflows: {
+            ...bundle.workflows,
+            ".github/workflows/duplicate.yml":
+              "jobs:\n  duplicate:\n    name: exact-sha-release-gate\n    runs-on: ubuntu-latest\n",
+          },
+        },
+        runtimeMajor,
+      ),
+  },
+  {
     name: "wrong candidate checkout",
     expected: "missing " + JSON.stringify("ref: " + "$" + "{{ env.EXPECTED_SHA }}"),
     run: () =>
@@ -225,6 +297,18 @@ const mutationTests = [
             "corepack pnpm install --frozen-lockfile",
             "corepack pnpm install --no-frozen-lockfile",
           ),
+        },
+        runtimeMajor,
+      ),
+  },
+  {
+    name: "missing production server build",
+    expected: 'missing "corepack pnpm build:server"',
+    run: () =>
+      validateGate(
+        {
+          ...bundle,
+          ci: bundle.ci.replace("          corepack pnpm build:server\n", ""),
         },
         runtimeMajor,
       ),

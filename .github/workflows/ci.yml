@@ -93,8 +93,10 @@ jobs:
       - name: All unit and integration tests
         run: corepack pnpm test
 
-      - name: Production build
-        run: corepack pnpm build
+      - name: Production client and server build
+        run: |
+          corepack pnpm build
+          corepack pnpm build:server
 
       - name: Install pinned Chromium
         run: corepack pnpm exec playwright install chromium --with-deps
