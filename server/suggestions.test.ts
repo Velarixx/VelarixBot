@@ -3,15 +3,31 @@
 // No sleeps; HOME is the vitest temp dir.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import {
+  createSourceFile,
+  forEachChild,
+  isBinaryExpression,
+  isBlock,
+  isCallExpression,
+  isFunctionDeclaration,
+  isIdentifier,
+  isIfStatement,
+  isObjectLiteralExpression,
+  isPropertyAssignment,
+  isReturnStatement,
+  isSpreadAssignment,
+  isStringLiteralLike,
+  isVariableDeclaration,
+  ScriptKind,
+  ScriptTarget,
+  SyntaxKind,
+  type Expression,
+  type Node,
+  type ObjectLiteralExpression,
+} from "typescript";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import {
-  approvalResponse,
-  submitCardResponse,
-  type CardDispatchAction,
-  type CardResponse,
-} from "../src/components/OptionCard.tsx";
 import { DATA_DIR } from "./config.ts";
 import { defaultDbPath, openDatabase } from "./db/database.ts";
 import type { SqliteDatabase } from "./db/sqlite-native.ts";
@@ -102,58 +118,109 @@ describe("PRO suggestion cards", () => {
   });
 
   it("submits canonical P0.1 approval scopes without persisting Deny or credentials", () => {
-    const actions: CardDispatchAction[] = [];
-    const submit = (response: CardResponse) => submitCardResponse({
-      botId: "bot-1",
-      messageId: "message-1",
-      liveRequest: false,
-      response,
-      submitting: { current: false },
-      dispatch: (action) => actions.push(action),
-      setSubmitting: () => undefined,
-      setResponseError: () => undefined,
-      setRetainedResponse: () => undefined,
-      clearSecret: () => undefined,
+    const card = readFileSync(new URL("../src/components/OptionCard.tsx", import.meta.url), "utf8");
+    const sourceFile = createSourceFile("OptionCard.tsx", card, ScriptTarget.Latest, true, ScriptKind.TSX);
+    const nodes: Node[] = [];
+    const visit = (node: Node) => {
+      nodes.push(node);
+      forEachChild(node, visit);
+    };
+    visit(sourceFile);
+
+    const approvalFunction = nodes.filter(isFunctionDeclaration).find((node) =>
+      node.name?.text === "approvalResponse");
+    if (!approvalFunction?.body) throw new Error("approvalResponse function not found");
+    const approvalBody = approvalFunction.body;
+
+    const responseDeclaration = nodes.filter(isVariableDeclaration).find((node) =>
+      isIdentifier(node.name)
+      && node.name.text === "response"
+      && node.initializer !== undefined
+      && isObjectLiteralExpression(node.initializer));
+    const responseInitializer = responseDeclaration?.initializer;
+    if (!responseInitializer || !isObjectLiteralExpression(responseInitializer)) {
+      throw new Error("approvalResponse base payload not found");
+    }
+
+    type Payload = Record<string, string | boolean>;
+    const decodeObject = (object: ObjectLiteralExpression, bindings: Record<string, Payload> = {}): Payload => {
+      const decoded: Payload = {};
+      for (const property of object.properties) {
+        if (isSpreadAssignment(property) && isIdentifier(property.expression)) {
+          Object.assign(decoded, bindings[property.expression.text]);
+          continue;
+        }
+        if (!isPropertyAssignment(property)) throw new Error("Unsupported approval payload property");
+        const name = isIdentifier(property.name) || isStringLiteralLike(property.name)
+          ? property.name.text
+          : property.name.getText(sourceFile);
+        if (isStringLiteralLike(property.initializer)) decoded[name] = property.initializer.text;
+        else if (property.initializer.kind === SyntaxKind.TrueKeyword) decoded[name] = true;
+        else if (property.initializer.kind === SyntaxKind.FalseKeyword) decoded[name] = false;
+        else throw new Error(`Unsupported value for approval payload property ${name}`);
+      }
+      return decoded;
+    };
+    const base = decodeObject(responseInitializer);
+    const decodePayload = (expression: Expression): Payload => {
+      if (isIdentifier(expression) && expression.text === "response") return { ...base };
+      if (isObjectLiteralExpression(expression)) return decodeObject(expression, { response: base });
+      throw new Error("Unsupported approval response expression");
+    };
+    const scopedPayload = (scope: string): Payload => {
+      const branch = approvalBody.statements.find((statement) =>
+        isIfStatement(statement)
+        && isBinaryExpression(statement.expression)
+        && isIdentifier(statement.expression.left)
+        && statement.expression.left.text === "scope"
+        && statement.expression.operatorToken.kind === SyntaxKind.EqualsEqualsEqualsToken
+        && isStringLiteralLike(statement.expression.right)
+        && statement.expression.right.text === scope);
+      if (!branch || !isIfStatement(branch)) throw new Error(`approvalResponse ${scope} branch not found`);
+      const returned = isReturnStatement(branch.thenStatement)
+        ? branch.thenStatement
+        : isBlock(branch.thenStatement)
+          ? branch.thenStatement.statements.find(isReturnStatement)
+          : undefined;
+      if (!returned?.expression) throw new Error(`approvalResponse ${scope} payload not found`);
+      return decodePayload(returned.expression);
+    };
+    const finalReturn = [...approvalBody.statements].reverse().find(isReturnStatement);
+    if (!finalReturn?.expression) throw new Error("approvalResponse workspace payload not found");
+
+    expect(scopedPayload("bot")).toStrictEqual({ answer: "Allow once", always: true });
+    expect(decodePayload(finalReturn.expression)).toStrictEqual({
+      answer: "Allow once",
+      always: true,
+      persistScope: "workspace",
     });
 
-    submit(approvalResponse("bot"));
-    submit(approvalResponse("workspace"));
-    submit({ answer: "Deny" });
-    submit({ answer: "••••", secret: "test-credential" });
+    const calls = nodes.filter(isCallExpression);
+    const submittedScopes = calls.flatMap((call) => {
+      if (!isIdentifier(call.expression) || call.expression.text !== "submitResponse") return [];
+      const response = call.arguments[0];
+      if (!response || !isCallExpression(response) || !isIdentifier(response.expression)
+        || response.expression.text !== "approvalResponse") return [];
+      const scope = response.arguments[0];
+      return scope && isStringLiteralLike(scope) ? [scope.text] : [];
+    });
+    expect(submittedScopes.sort()).toStrictEqual(["bot", "once", "workspace"]);
 
-    expect(actions).toStrictEqual([
-      {
-        type: "answerCard",
-        botId: "bot-1",
-        messageId: "message-1",
-        answer: "Allow once",
-        always: true,
-      },
-      {
-        type: "answerCard",
-        botId: "bot-1",
-        messageId: "message-1",
-        answer: "Allow once",
-        always: true,
-        persistScope: "workspace",
-      },
-      {
-        type: "answerCard",
-        botId: "bot-1",
-        messageId: "message-1",
-        answer: "Deny",
-      },
-      {
-        type: "answerCard",
-        botId: "bot-1",
-        messageId: "message-1",
-        answer: "••••",
-        secret: "test-credential",
-      },
-    ]);
-    for (const action of actions.slice(2)) {
-      expect(action).not.toHaveProperty("always");
-      expect(action).not.toHaveProperty("persistScope");
+    const answerCalls = calls.filter((call) => isIdentifier(call.expression) && call.expression.text === "answer");
+    const optionAnswer = answerCalls.find((call) => isIdentifier(call.arguments[0]) && call.arguments[0].text === "opt");
+    expect(optionAnswer?.arguments).toHaveLength(1);
+    const credentialAnswer = answerCalls.find((call) =>
+      isStringLiteralLike(call.arguments[0]) && call.arguments[0].text === "••••");
+    const credentialResponse = credentialAnswer?.arguments[1];
+    expect(credentialResponse && isObjectLiteralExpression(credentialResponse)
+      ? credentialResponse.properties.map((property) => property.name?.getText(sourceFile))
+      : []).toStrictEqual(["secret"]);
+    for (const call of answerCalls) {
+      const response = call.arguments[1];
+      if (!response || !isObjectLiteralExpression(response)) continue;
+      const names = response.properties.map((property) => property.name?.getText(sourceFile));
+      expect(names).not.toContain("always");
+      expect(names).not.toContain("persistScope");
     }
   });
 
