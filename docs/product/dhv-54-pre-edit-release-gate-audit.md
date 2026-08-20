@@ -6,7 +6,7 @@ Durable QA baseline: 46e9963774a45f90c1414b93a8ce4a6b57ca12e8
 
 Starting HEAD inspected: b4ce6e452e1b97e5d2e2eacd9066a8ff9a9bceee
 
-Candidate parent after non-overlapping concurrent commits:
+Initial candidate parent after non-overlapping concurrent commits:
 ade36472649c2710001d88caf30f42403de13b16
 
 The QA/Test Lead closed DHV-50 with a durable CHANGES REQUIRED ledger for
@@ -64,3 +64,15 @@ Observed before edits:
 This document is an implementation audit, not an approval. A new candidate
 SHA requires separate Test/Release review, QA/Test Lead approval, and successful
 required GitHub CI for that same SHA.
+
+## Superseded local candidate
+
+The first local candidate, 8982765cd406267f5df0b6713f25001322052864, failed
+its isolated release-gate validator because the validator assumed LF input
+while Git had committed the workflow and policy files with CRLF line endings.
+That SHA is blocked and none of its run evidence transfers. Concurrent commits
+advanced main before the correction, so rewriting or amending shared history
+was not safe. The correction normalizes CRLF to LF in memory and is delivered
+as a new commit. The DHV-65 handoff records the replacement SHA and parent;
+independent reviewers must review the replacement SHA's complete release-gate
+tree, not only its parent diff.
