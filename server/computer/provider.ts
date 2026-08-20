@@ -63,6 +63,22 @@ export type ScreenConnection =
    * come from the Electron shell, there is nothing to open. */
   | { kind: "local" };
 
+/** A browser-safe rendered desktop frame. Unlike ScreenConnection, this
+ * boundary cannot carry a URL, credential, provider response, or identifier.
+ * SaaS composition may relay only these encoded image bytes. */
+export interface ComputerViewerFrame {
+  format: "png" | "jpeg";
+  data: Uint8Array;
+}
+
+/** Server-side viewer connection. The provider must resolve only once the
+ * first renderable frame is available; later frames keep the view live until
+ * the supplied AbortSignal closes it. */
+export interface ComputerViewerConnection {
+  initialFrame: ComputerViewerFrame;
+  frames: AsyncIterable<ComputerViewerFrame>;
+}
+
 /** MCP stdio spawn contract for mounting the computer tools on an agent
  * CLI. Built entirely by the provider — secrets ride env, NEVER argv. */
 export interface ComputerMcpSpawn {
@@ -88,6 +104,12 @@ export interface ComputerProvider {
   /** Fresh screen connection — cloud desktops mint a NEW url every call
    * (stream tokens rotate; never persist one). */
   connectScreen(botId: string): Promise<ScreenConnection>;
+  /** Optional SaaS-safe seam, keyed by the durable tenant machine binding.
+   * Existing desktop providers remain compatible through connectScreen(). */
+  openViewer?(
+    machineId: string,
+    options: { signal: AbortSignal },
+  ): Promise<ComputerViewerConnection>;
   suspend(botId: string): Promise<void>;
   destroy(botId: string): Promise<void>;
   screenshot(botId: string): Promise<{ png: string; format: "png" | "jpeg" }>;

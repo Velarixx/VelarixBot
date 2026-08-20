@@ -49,7 +49,7 @@ interface DeniedRoute {
 // rather than whole files, so implementation-only edits do not churn it. A
 // failure requires reviewing deniedRoutes + the approved SaaS routes before
 // accepting the new digest; otherwise a production route cannot land silently.
-const PRODUCTION_ROUTE_INVENTORY_SHA256 = "43303539e86fac3af439ad5c98963930c42e9c9bc8c35dad92ac5b4c569c6b9f";
+const PRODUCTION_ROUTE_INVENTORY_SHA256 = "ac95b495e63ae08e3a1b5a3b2b38bfdd8f4bc96c5a5923d0705f7674f412070c";
 
 function productionRouteTokens(): string[] {
   const routesDirectory = new URL("./routes/", import.meta.url);
@@ -347,6 +347,7 @@ describe("SaaS route exposure matrix", () => {
       route("scoped desktop access", "GET", "/api/desktop-access"),
       route("scoped desktop access", "POST", "/api/desktop-access"),
       route("scoped desktop access", "DELETE", "/api/desktop-access"),
+      route("scoped desktop viewer", "GET", "/api/desktop-access/view"),
     ];
     for (const testCase of cases) {
       const credentials: Record<string, string>[] = [

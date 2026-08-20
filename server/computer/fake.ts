@@ -9,6 +9,7 @@ import {
   type ComputerProvider,
   type ComputerProviderFactory,
   type ComputerStatus,
+  type ComputerViewerConnection,
   type ExecuteEvent,
   type ProvisionResult,
   type ScreenConnection,
@@ -46,6 +47,11 @@ export const FakeComputerProviderFactory: ComputerProviderFactory<FakeProviderCo
       const m = machines.get(botId);
       if (!m) throw new Error("no computer for this bot yet — provision it first");
       return m;
+    };
+    const machineById = (machineId: string): FakeMachine => {
+      const machine = [...machines.values()].find((candidate) => candidate.id === machineId);
+      if (!machine) throw new Error("no computer for this binding");
+      return machine;
     };
 
     const provider: ComputerProvider = {
@@ -93,6 +99,19 @@ export const FakeComputerProviderFactory: ComputerProviderFactory<FakeProviderCo
         const m = machineFor(botId);
         m.state = "running";
         return { kind: "url", url: `fake://desktop/${m.id}`, state: m.state };
+      },
+
+      async openViewer(machineId, { signal }): Promise<ComputerViewerConnection> {
+        const machine = machineById(machineId);
+        if (machine.state !== "running") throw new Error("computer is unavailable");
+        const initialFrame = { data: Buffer.from(FAKE_PNG, "base64"), format: "png" as const };
+        return {
+          initialFrame,
+          frames: (async function* () {
+            if (signal.aborted) return;
+            await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+          })(),
+        };
       },
 
       async suspend(botId) {

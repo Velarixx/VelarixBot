@@ -43,6 +43,7 @@ import { createBotsService, projectPublicBotFrame, type BotsService } from "./se
 import { createGroupsService, type GroupsService } from "./services/groups.ts";
 import { createDiagnosticsService } from "./services/diagnostics.ts";
 import { createDesktopAccessGrantService } from "./services/desktop-access-grants.ts";
+import { createDesktopViewerBroker } from "./services/desktop-viewer-broker.ts";
 import { createSseHub, type Broadcast, type SseHub } from "./services/events.ts";
 import { createListenerPoller } from "./listeners/index.ts";
 import { createRoutinesService, type RoutinesService } from "./services/routines.ts";
@@ -78,8 +79,8 @@ export interface CreateApplicationInput {
   clock?: Clock;
   port: number;
   apiToken: string;
-  /** Desktop is the default. SaaS mounts only identity/OAuth, health, and
-   * the owner-bound catalog (GET plus quota-bound default creation). */
+  /** Desktop is the default. SaaS mounts only identity/OAuth, health,
+   * owner-bound catalog, and scoped desktop-view capabilities. */
   auth?:
     | { mode: "desktop" }
     | { mode: "saas"; applicationOrigin: string; oauthProvider: GithubOAuthProvider };
@@ -185,6 +186,15 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // computer providers: local is core; box is the bundled default and an
   // authored config map can remove it — nothing here needs a Box token
   const computers = input.computers ?? (await createComputerRegistry({ cfg }));
+  const desktopViewerBroker =
+    auth.mode === "saas"
+      ? createDesktopViewerBroker({
+          repos,
+          grants: desktopAccessGrants!,
+          computers,
+          openTimeoutMs: 2_000,
+        })
+      : null;
 
   // default selection resolves asynchronously; bots created before that use
   // the boot placeholder (exactly the pre-refactor behavior)
@@ -327,6 +337,8 @@ export async function createApplication(input: CreateApplicationInput): Promise<
           createSaasBotCatalogRoutes({ bots, audit: securityAudit! }),
           createSaasDesktopAccessRoutes({
             forOwner: (ownerId) => desktopAccessGrants!.forOwner(ownerId),
+            viewerForOwner: (ownerId) => desktopViewerBroker!.forOwner(ownerId),
+            now: () => clock.now(),
           }),
           createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
         ];
