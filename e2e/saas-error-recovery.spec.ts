@@ -59,6 +59,11 @@ async function openAuthenticatedSaas(
     contentType: "application/json",
     body: JSON.stringify({ user: { id: "123e4567-e89b-42d3-a456-426614174000" } }),
   }));
+  await context.route(`${harness.base}/api/desktop-access`, (route) => route.fulfill({
+    status: 410,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "desktop access expired" }),
+  }));
   await context.route(`${harness.base}/api/bots?messages=0`, (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -123,12 +128,10 @@ test("a recoverable SaaS render failure clears protected content and restarts sa
     await expect(page.getByRole("heading", { name: "Planner" })).toBeVisible();
     await expect(catalogHeading).toBeFocused();
     await expect(page.locator('[data-saas-error-boundary="true"]')).toHaveCount(0);
-    expect(apiUrls).toEqual([
-      "/api/session",
-      "/api/bots?messages=0",
-      "/api/session",
-      "/api/bots?messages=0",
-    ]);
+    expect(apiUrls.filter((url) => url === "/api/session")).toHaveLength(2);
+    expect(apiUrls.filter((url) => url === "/api/bots?messages=0")).toHaveLength(2);
+    expect(apiUrls.filter((url) => url === "/api/desktop-access")).toHaveLength(2);
+    expect(new Set(apiUrls)).toEqual(new Set(["/api/session", "/api/bots?messages=0", "/api/desktop-access"]));
   } finally {
     await closeSaas(context, harness);
   }

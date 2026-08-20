@@ -89,6 +89,9 @@ async function openSaas(
   await context.route(`${harness.base}/api/session`, (route) => fulfillJson(route, 200, {
     user: { id: USER_ID },
   }));
+  await context.route(`${harness.base}/api/desktop-access`, (route) => fulfillJson(route, 410, {
+    error: "desktop access expired",
+  }));
   await context.route(`${harness.base}/api/bots?messages=0`, async (route) => {
     counts.catalog += 1;
     if (options.catalog) {

@@ -6,6 +6,7 @@ export default defineConfig({
     "fake-engine-smoke.spec.ts",
     "reduced-motion.spec.ts",
     "saas-creation.spec.ts",
+    "saas-desktop-access.spec.ts",
     "session-boundary.spec.ts",
     "saas-error-recovery.spec.ts",
   ],

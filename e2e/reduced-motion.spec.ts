@@ -55,6 +55,11 @@ test("SaaS progress indicators honor reduced motion and keep live status announc
     let createRoute: Route | undefined;
     let signOutRoute: Route | undefined;
     await context.route(`${harness.base}/api/session`, (route) => { sessionRoute = route; });
+    await context.route(`${harness.base}/api/desktop-access`, (route) => route.fulfill({
+      status: 410,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "desktop access expired" }),
+    }));
     await context.route(`${harness.base}/api/bots?messages=0`, (route) => { catalogRoute = route; });
     await context.route(`${harness.base}/api/bots`, (route) => { createRoute = route; });
     await context.route(`${harness.base}/api/auth/sign-out`, (route) => { signOutRoute = route; });

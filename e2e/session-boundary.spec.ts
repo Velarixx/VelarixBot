@@ -73,6 +73,11 @@ async function openBuiltClient(
       contentType: "application/json",
       body: JSON.stringify({ user: { id: "123e4567-e89b-42d3-a456-426614174000" } }),
     }));
+    await context.route(`${harness.base}/api/desktop-access`, (route) => route.fulfill({
+      status: 410,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "desktop access expired" }),
+    }));
     const catalog = options.catalog ?? { status: 200, body: SAFE_CATALOG };
     await context.route(`${harness.base}/api/bots?messages=0`, (route) => route.fulfill({
       status: catalog.status,
@@ -115,7 +120,7 @@ test.describe.serial("built fail-closed session boundary", () => {
       await page.keyboard.press("Escape");
       await expect(signOut).toBeFocused();
 
-      expect(new Set(apiPaths)).toEqual(new Set(["/api/session", "/api/bots"]));
+      expect(new Set(apiPaths)).toEqual(new Set(["/api/session", "/api/bots", "/api/desktop-access"]));
       expect(apiUrls.filter((url) => url.startsWith("/api/bots"))).toEqual([
         "/api/bots?messages=0",
         "/api/bots?messages=0",
@@ -143,7 +148,7 @@ test.describe.serial("built fail-closed session boundary", () => {
       await expect(page.getByRole("heading", { name: "Your session ended" })).toBeVisible();
       await expect(page.locator('[data-saas-catalog="true"]')).toHaveCount(0);
       await expect(page.getByText("raw-secret-must-not-render")).toHaveCount(0);
-      expect(apiUrls).toEqual(["/api/session", "/api/bots?messages=0"]);
+      expect(new Set(apiUrls)).toEqual(new Set(["/api/session", "/api/bots?messages=0", "/api/desktop-access"]));
     } finally {
       await closeBuiltClient(context, harness);
     }

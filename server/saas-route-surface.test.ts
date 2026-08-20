@@ -49,7 +49,7 @@ interface DeniedRoute {
 // rather than whole files, so implementation-only edits do not churn it. A
 // failure requires reviewing deniedRoutes + the approved SaaS routes before
 // accepting the new digest; otherwise a production route cannot land silently.
-const PRODUCTION_ROUTE_INVENTORY_SHA256 = "a073b21a1df6e834a09f0364d85a62b536a8765adcb17d751b8fde0cb1e63549";
+const PRODUCTION_ROUTE_INVENTORY_SHA256 = "43303539e86fac3af439ad5c98963930c42e9c9bc8c35dad92ac5b4c569c6b9f";
 
 function productionRouteTokens(): string[] {
   const routesDirectory = new URL("./routes/", import.meta.url);
@@ -228,6 +228,7 @@ describe("SaaS route exposure matrix", () => {
     userId = user.id;
     sessionToken = sessions.createSession(user.id, { now: NOW, maxAgeSeconds: 3_600 }).token;
     expiredSessionToken = sessions.createSession(user.id, { now: NOW - 10_000, maxAgeSeconds: 1 }).token;
+    repos.userWorkspaceBindings.forOwner(user.id).record("box", "tenant-machine", NOW);
 
     const cfg: AppConfig = { box: { token: "local-fake-token" } };
     computer = await BoxComputerProviderFactory.create({ id: "box", config: {}, appConfig: cfg });
@@ -340,7 +341,13 @@ describe("SaaS route exposure matrix", () => {
   it("uniformly rejects the matrix without a SaaS session or with a desktop bearer", async () => {
     const beforeChanges = totalChanges(db);
     const beforeAudit = db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log WHERE type = 'security.audit'").get()!.n;
-    const cases = [...deniedRoutes(botId), route("approved bot create", "POST", "/api/bots")];
+    const cases = [
+      ...deniedRoutes(botId),
+      route("approved bot create", "POST", "/api/bots"),
+      route("scoped desktop access", "GET", "/api/desktop-access"),
+      route("scoped desktop access", "POST", "/api/desktop-access"),
+      route("scoped desktop access", "DELETE", "/api/desktop-access"),
+    ];
     for (const testCase of cases) {
       const credentials: Record<string, string>[] = [
         { origin: APPLICATION_ORIGIN },
@@ -363,15 +370,21 @@ describe("SaaS route exposure matrix", () => {
     expect(oauthExchange).not.toHaveBeenCalled();
   });
 
-  it("rejects missing or wrong Origin on the sole SaaS write without changes", async () => {
+  it("rejects missing or wrong Origin on every SaaS capability write without changes", async () => {
     const beforeChanges = totalChanges(db);
-    for (const origin of [undefined, "https://evil.test"] as const) {
-      const result = await jsonRequest(base, { method: "POST", path: "/api/bots" }, {
-        cookie: `${SESSION_COOKIE_NAME}=${sessionToken}`,
-        ...(origin ? { origin } : {}),
-      });
-      expect(result.response.status).toBe(403);
-      expect(result.body).toEqual({ error: "forbidden origin" });
+    for (const testCase of [
+      { method: "POST" as const, path: "/api/bots" },
+      { method: "POST" as const, path: "/api/desktop-access" },
+      { method: "DELETE" as const, path: "/api/desktop-access" },
+    ]) {
+      for (const origin of [undefined, "https://evil.test"] as const) {
+        const result = await jsonRequest(base, testCase, {
+          cookie: `${SESSION_COOKIE_NAME}=${sessionToken}`,
+          ...(origin ? { origin } : {}),
+        });
+        expect(result.response.status).toBe(403);
+        expect(result.body).toEqual({ error: "forbidden origin" });
+      }
     }
     expect(totalChanges(db)).toBe(beforeChanges);
     for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
@@ -409,7 +422,7 @@ describe("SaaS route exposure matrix", () => {
     expect(oauthExchange).not.toHaveBeenCalled();
   });
 
-  it("preserves only the approved health, OAuth, session, and catalog behavior", async () => {
+  it("preserves only health, OAuth, session, catalog, and scoped desktop behavior", async () => {
     const health = await fetch(`${base}/api/health`);
     expect(health.status).toBe(200);
     expect(await health.json()).toEqual({
@@ -456,6 +469,41 @@ describe("SaaS route exposure matrix", () => {
       publicHandle: expect.any(String),
       messages: expect.any(Array),
     });
+    for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
+
+    const issued = await fetch(`${base}/api/desktop-access`, {
+      method: "POST",
+      headers: { ...authHeaders, origin: APPLICATION_ORIGIN, "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(issued.status).toBe(201);
+    expect(await issued.json()).toEqual({ access: { expiresAt: NOW + 60_000 } });
+    expect(issued.headers.get("set-cookie")).toMatch(
+      /^velarix_desktop_access=[A-Za-z0-9_-]{43}; Path=\/api\/desktop-access; Max-Age=60; HttpOnly; Secure; SameSite=Strict$/,
+    );
+    const grantCookie = issued.headers.get("set-cookie")!.split(";", 1)[0];
+
+    const access = await fetch(`${base}/api/desktop-access`, {
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${sessionToken}; ${grantCookie}` },
+    });
+    expect(access.status).toBe(200);
+    expect(await access.json()).toEqual({ access: { expiresAt: NOW + 60_000 } });
+
+    const revoked = await fetch(`${base}/api/desktop-access`, {
+      method: "DELETE",
+      headers: {
+        cookie: `${SESSION_COOKIE_NAME}=${sessionToken}; ${grantCookie}`,
+        origin: APPLICATION_ORIGIN,
+      },
+    });
+    expect(revoked.status).toBe(204);
+    expect(revoked.headers.get("set-cookie")).toContain("velarix_desktop_access=; ");
+
+    const replay = await fetch(`${base}/api/desktop-access`, {
+      headers: { cookie: `${SESSION_COOKIE_NAME}=${sessionToken}; ${grantCookie}` },
+    });
+    expect(replay.status).toBe(410);
+    expect(await replay.json()).toEqual({ error: "desktop access expired" });
     for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
 
     const signOut = await fetch(`${base}/api/auth/sign-out`, {

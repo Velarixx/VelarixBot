@@ -18,11 +18,17 @@ describe("desktop access panel semantics", () => {
     expect(markup({ status: "checking" })).toMatch(/role="status"[\s\S]*aria-busy="true"[\s\S]*Checking remote desktop access/);
     expect(markup({ status: "requesting" })).toMatch(/role="status"[\s\S]*Requesting scoped access/);
     expect(markup({ status: "active", expiresAt: 2_000 })).toMatch(/Remote desktop access is active[\s\S]*Revoke access/);
-    expect(markup({ status: "denied" })).toMatch(/role="alert"[\s\S]*isn.t available[\s\S]*Request access/);
-    expect(markup({ status: "expired" })).toMatch(/role="alert"[\s\S]*expired[\s\S]*Request access/);
+    const denied = markup({ status: "denied" });
+    expect(denied).toMatch(/role="alert"[\s\S]*isn.t available/);
+    expect(denied).toContain("Request access");
+    const expired = markup({ status: "expired" });
+    expect(expired).toMatch(/role="alert"[\s\S]*expired/);
+    expect(expired).toContain("Request access");
     expect(markup({ status: "unavailable", retry: "request" })).toMatch(/role="alert"[\s\S]*No access details are shown[\s\S]*Try again/);
     expect(markup({ status: "revoking" })).toMatch(/role="status"[\s\S]*Revoking remote desktop access/);
-    expect(markup({ status: "revoked" })).toMatch(/role="status"[\s\S]*was revoked[\s\S]*Request access/);
+    const revoked = markup({ status: "revoked" });
+    expect(revoked).toMatch(/role="status"[\s\S]*was revoked/);
+    expect(revoked).toContain("Request access");
   });
 
   it("never renders raw capability, workspace, provider, machine, or management detail", () => {

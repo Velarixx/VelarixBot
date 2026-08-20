@@ -5,6 +5,7 @@ import {
   useReducer,
   useRef,
   useState,
+  type ReactNode,
   type RefObject,
 } from "react";
 import { Bot, Loader2, LogOut, Plus, RefreshCw, ShieldCheck } from "lucide-react";
@@ -17,6 +18,7 @@ import {
 import { catalogReducer, INITIAL_CATALOG_MODEL, type CatalogModel } from "./catalog-state";
 import { createCatalogTransport, type CatalogTransport } from "./catalog-transport";
 import { createBotCreationTransport, type BotCreationTransport } from "./create-bot-transport";
+import { DesktopAccessPanel } from "./DesktopAccessPanel";
 
 const buttonClass =
   "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-line bg-raised px-4 py-2.5 text-[14px] font-medium text-ink transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
@@ -33,6 +35,7 @@ export interface CatalogShellViewProps {
   headingRef?: RefObject<HTMLHeadingElement | null>;
   feedbackRef?: RefObject<HTMLDivElement | null>;
   signOutTriggerRef?: RefObject<HTMLButtonElement | null>;
+  desktopAccess?: ReactNode;
 }
 
 export function CatalogShellView({
@@ -45,6 +48,7 @@ export function CatalogShellView({
   headingRef,
   feedbackRef,
   signOutTriggerRef,
+  desktopAccess,
 }: CatalogShellViewProps) {
   const hidden = model.status === "auth_lost";
   const creationPending = creation.status === "creating" || creation.status === "refetching";
@@ -91,6 +95,8 @@ export function CatalogShellView({
             </button>
           </div>
         </header>
+
+        {desktopAccess}
 
         {creation.status !== "idle" && (
           <div
@@ -284,6 +290,7 @@ export function CatalogShell({
       headingRef={headingRef}
       feedbackRef={feedbackRef}
       signOutTriggerRef={signOutTriggerRef}
+      desktopAccess={<DesktopAccessPanel onSessionLost={onSessionLost} />}
     />
   );
 }

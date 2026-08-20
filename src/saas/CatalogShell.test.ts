@@ -121,5 +121,6 @@ describe("accessible authenticated catalog creation view", () => {
     expect(saasComposition).toContain("<SessionBoundary");
     expect(saasComposition).toContain("<CatalogShell");
     expect(saasComposition).not.toMatch(/StoreProvider|CreateBotModal|DesktopApplication/);
+    expect(readFileSync(join(HERE, "CatalogShell.tsx"), "utf8")).toContain("<DesktopAccessPanel onSessionLost={onSessionLost} />");
   });
 });
