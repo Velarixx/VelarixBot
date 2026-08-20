@@ -7,6 +7,7 @@ export default defineConfig({
     "reduced-motion.spec.ts",
     "saas-creation.spec.ts",
     "saas-desktop-access.spec.ts",
+    "saas-sign-out.spec.ts",
     "session-boundary.spec.ts",
     "saas-error-recovery.spec.ts",
   ],

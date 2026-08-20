@@ -37,6 +37,13 @@ A separate hydration journey completes one turn, restarts the real server on
 the same throwaway home and port, reloads the browser, and verifies the bot,
 prompt, and response each hydrate exactly once in both UI and server snapshot.
 
+The SaaS sign-out matrix uses same-origin route fakes for 204, timeout, network,
+and server outcomes. It covers confirmation focus trapping and restoration,
+pending duplicate-submit suppression, unconfirmed retry, and recovery. A
+page-level fetch probe proves protected catalog content is gone when sign-out
+transport begins; every terminal path also checks live-region semantics,
+redaction, focus, and WCAG A/AA axe results.
+
 The approval journey uses the fake Codex app-server's `approval` mode. It
 asserts the visible risky-command request, denies it through the card, waits for
 one completed response, and verifies no allow rule was persisted.
