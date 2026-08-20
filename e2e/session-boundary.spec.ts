@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +13,7 @@ const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const VITE_CLI = join(REPO, "node_modules", "vite", "bin", "vite.js");
 const AXE_PATH = createRequire(import.meta.url).resolve("axe-core/axe.min.js");
 const UNAPPROVED_PRODUCT_PATH = /^\/api\/(?:instances|config|routines|events|groups|approvals|computers|workspaces)(?:\/|$)/;
+let sessionBuildDir: string;
 
 const SAFE_CATALOG = {
   bots: [{
@@ -30,7 +33,15 @@ if (process.env.VELARIX_PLAYWRIGHT_CHANNEL) {
 }
 
 function buildClient(mode: string): void {
-  execFileSync(process.execPath, [VITE_CLI, "build", "--logLevel", "warn"], {
+  execFileSync(process.execPath, [
+    VITE_CLI,
+    "build",
+    "--logLevel",
+    "warn",
+    "--outDir",
+    sessionBuildDir,
+    "--emptyOutDir",
+  ], {
     cwd: REPO,
     env: { ...process.env, VITE_VELARIX_APP_MODE: mode },
     stdio: "pipe",
@@ -44,11 +55,12 @@ async function openBuiltClient(
     sessionHandler?: (route: Route, attempt: number) => Promise<void> | void;
     catalog?: { status: number; body: unknown };
     path?: string;
+    staticDir?: string;
   },
 ): Promise<{ context: BrowserContext; harness: BootedHarness; page: Page; apiPaths: string[]; apiUrls: string[] }> {
   const harness = await bootHarness({
     instances: {},
-    env: { OMB_STATIC_DIR: join(REPO, "dist") },
+    env: { OMB_STATIC_DIR: options.staticDir ?? sessionBuildDir },
   });
   const context = await browser.newContext({
     extraHTTPHeaders: { authorization: `Bearer ${harness.token}` },
@@ -138,7 +150,11 @@ async function fulfillSession(route: Route, status: 200 | 401): Promise<void> {
 }
 
 test.describe.serial("built fail-closed session boundary", () => {
-  test.beforeAll(() => buildClient("saas"));
+  test.beforeAll(() => {
+    sessionBuildDir = mkdtempSync(join(tmpdir(), "velarix-session-boundary-"));
+    buildClient("saas");
+  });
+  test.afterAll(() => rmSync(sessionBuildDir, { recursive: true, force: true }));
 
   test("keeps initial loading closed, then exposes an accessible unauthenticated sign-in", async ({ browser }) => {
     let pendingProbe: Route | undefined;
@@ -401,6 +417,19 @@ test.describe.serial("built fail-closed session boundary", () => {
       ))).toBe(false);
     } finally {
       await closeBuiltClient(context, harness);
+    }
+  });
+
+  test("keeps the shared release build intact after the isolated invalid-mode build", async ({ browser }) => {
+    const release = await openBuiltClient(browser, {
+      session: "unauthenticated",
+      staticDir: join(REPO, "dist"),
+    });
+    try {
+      await expect(release.page.getByRole("heading", { name: "Welcome to VelarixBot" })).toBeVisible();
+      await expect(release.page.getByRole("alert").filter({ hasText: /start safely/ })).toHaveCount(0);
+    } finally {
+      await closeBuiltClient(release.context, release.harness);
     }
   });
 });

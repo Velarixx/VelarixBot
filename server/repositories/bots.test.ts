@@ -239,7 +239,7 @@ describe("bots repository", () => {
     bots.forOwner(user.id).insert(existing);
 
     const botCollision = makeBot({ id: existing.id, threadId: "fresh-thread" });
-    expect(() => bots.forOwner(user.id).insert(botCollision)).toThrow(/UNIQUE/i);
+    expect(() => bots.forOwner(user.id).insert(botCollision)).toThrow(/UNIQUE|reservation cannot be replaced/i);
     expect(db.prepare("SELECT 1 FROM threads WHERE id = ?").get(botCollision.threadId)).toBeUndefined();
 
     const threadCollision = makeBot({ id: "fresh-bot", threadId: existing.threadId });

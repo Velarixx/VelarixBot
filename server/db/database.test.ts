@@ -116,6 +116,7 @@ describe("database + migrations", () => {
       "tenant-bot-public-handles",
       "immutable-security-audit-events",
       "security-audit-replace-guard",
+      "retain-public-bot-handle-reservations",
     ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM bots WHERE id = ?").get("legacy-bot")).toEqual({
       owner_id: null,
@@ -163,6 +164,7 @@ describe("database + migrations", () => {
       "tenant-bot-public-handles",
       "immutable-security-audit-events",
       "security-audit-replace-guard",
+      "retain-public-bot-handle-reservations",
     ]);
     const rows = db.prepare<{ id: string; public_handle: string | null }>(
       "SELECT id, public_handle FROM bots ORDER BY id",
@@ -184,6 +186,7 @@ describe("database + migrations", () => {
       ).all(),
     ).toEqual([
       { name: "public_bot_handle_reservation_immutable" },
+      { name: "public_bot_handle_reservation_no_replace" },
       { name: "public_bot_handle_reservation_retained" },
     ]);
     expect(migrate(db)).toEqual([]);
@@ -193,6 +196,38 @@ describe("database + migrations", () => {
     expect(
       db.prepare<{ public_handle: string }>("SELECT public_handle FROM bots WHERE id = 'owned-a'").get()?.public_handle,
     ).toBe(handles[0]);
+  });
+
+  it("upgrades an already-recorded original v14 database with retained reservation guards", () => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    db = new (loadBetterSqlite3())(join(DATA_DIR, "original-public-handle-v14.db"));
+    migrate(db, MIGRATIONS.slice(0, 14));
+    db.exec(`
+      DROP TRIGGER public_bot_handle_reservation_immutable;
+      DROP TRIGGER public_bot_handle_reservation_retained;
+    `);
+    db.prepare(
+      "INSERT INTO public_bot_handles(handle, bot_id, created_at) VALUES (?, ?, ?)",
+    ).run("A".repeat(PUBLIC_BOT_HANDLE_LENGTH), "retired-bot", 1_000);
+
+    expect(migrate(db)).toEqual([
+      "immutable-security-audit-events",
+      "security-audit-replace-guard",
+      "retain-public-bot-handle-reservations",
+    ]);
+    expect(() => db!.prepare("UPDATE public_bot_handles SET bot_id = ? WHERE handle = ?")
+      .run("reused-bot", "A".repeat(PUBLIC_BOT_HANDLE_LENGTH))).toThrow(/reservation is immutable/);
+    expect(() => db!.prepare("DELETE FROM public_bot_handles WHERE handle = ?")
+      .run("A".repeat(PUBLIC_BOT_HANDLE_LENGTH))).toThrow(/reservation cannot be deleted/);
+    expect(() => db!.prepare(
+      "INSERT OR REPLACE INTO public_bot_handles(handle, bot_id, created_at) VALUES (?, ?, ?)",
+    ).run("A".repeat(PUBLIC_BOT_HANDLE_LENGTH), "reused-bot", 2_000)).toThrow(/reservation cannot be replaced/);
+    expect(
+      db.prepare<{ handle: string; bot_id: string; created_at: number }>(
+        "SELECT handle, bot_id, created_at FROM public_bot_handles",
+      ).all(),
+    ).toEqual([{ handle: "A".repeat(PUBLIC_BOT_HANDLE_LENGTH), bot_id: "retired-bot", created_at: 1_000 }]);
+    expect(migrate(db)).toEqual([]);
   });
 
   it("adds group ownership without claiming legacy groups or their threads", () => {
@@ -223,6 +258,7 @@ describe("database + migrations", () => {
       "tenant-bot-public-handles",
       "immutable-security-audit-events",
       "security-audit-replace-guard",
+      "retain-public-bot-handle-reservations",
     ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM groups WHERE id = ?").get("legacy-group")).toEqual({
       owner_id: null,
@@ -255,6 +291,7 @@ describe("database + migrations", () => {
       "tenant-bot-public-handles",
       "immutable-security-audit-events",
       "security-audit-replace-guard",
+      "retain-public-bot-handle-reservations",
     ]);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM user_workspace_bindings").get()?.n).toBe(0);
     expect(
@@ -291,6 +328,7 @@ describe("database + migrations", () => {
       "tenant-bot-public-handles",
       "immutable-security-audit-events",
       "security-audit-replace-guard",
+      "retain-public-bot-handle-reservations",
     ]);
     expect(
       db.prepare<{ authorization_generation: number }>(

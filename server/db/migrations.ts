@@ -701,6 +701,36 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Migration 14 originally shipped without reservation-ledger guards.
+    // Keep this forward migration additive so databases that already recorded
+    // tenant-bot-public-handles receive the same protections as fresh installs.
+    version: 17,
+    name: "retain-public-bot-handle-reservations",
+    up(db) {
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS public_bot_handle_reservation_immutable
+          BEFORE UPDATE ON public_bot_handles
+          BEGIN
+            SELECT RAISE(ABORT, 'public bot handle reservation is immutable');
+          END;
+        CREATE TRIGGER IF NOT EXISTS public_bot_handle_reservation_retained
+          BEFORE DELETE ON public_bot_handles
+          BEGIN
+            SELECT RAISE(ABORT, 'public bot handle reservation cannot be deleted');
+          END;
+        CREATE TRIGGER IF NOT EXISTS public_bot_handle_reservation_no_replace
+          BEFORE INSERT ON public_bot_handles
+          WHEN EXISTS(
+            SELECT 1 FROM public_bot_handles existing
+            WHERE existing.handle = NEW.handle OR existing.bot_id = NEW.bot_id
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'public bot handle reservation cannot be replaced');
+          END;
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {
