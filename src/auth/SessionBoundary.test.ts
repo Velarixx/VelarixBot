@@ -48,8 +48,13 @@ describe("accessible fail-closed session boundary", () => {
     expect(markup("service_unavailable", { manualAttempt: false })).toContain('role="status"');
     expect(markup("service_unavailable", { manualAttempt: true })).toContain('role="alert"');
     expect(markup("sign_out_confirm")).toMatch(/role="dialog"[\s\S]*aria-modal="true"/);
-    expect(markup("sign_out_pending")).toMatch(/role="dialog"[\s\S]*aria-busy="true"/);
+    expect(markup("sign_out_pending")).toMatch(/role="dialog"[\s\S]*aria-busy="true"[\s\S]*role="status"[\s\S]*aria-live="polite"/);
     expect(markup("sign_in_required")).toContain('tabindex="-1"');
+  });
+
+  it("marks session and sign-out progress icons for the reduced-motion treatment", () => {
+    expect(markup("session_checking")).toContain('data-saas-progress-indicator="true"');
+    expect(markup("sign_out_pending")).toContain('data-saas-progress-indicator="true"');
   });
 
   it("offers only safe actions for ended and sign-out states", () => {

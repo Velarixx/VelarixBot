@@ -110,7 +110,12 @@ export function SessionBoundaryView({
       return (
         <BoundaryFrame busy>
           <div role="status" aria-live="polite" className="flex items-center gap-3">
-            <Loader2 size={20} className="animate-spin text-accent" aria-hidden="true" />
+            <Loader2
+              size={20}
+              className="animate-spin text-accent"
+              data-saas-progress-indicator="true"
+              aria-hidden="true"
+            />
             <div>
               {heading("Checking your session…")}
               {description("Product access stays closed until this check completes.")}
@@ -232,14 +237,29 @@ export function SessionBoundaryView({
             aria-busy={pending || undefined}
             onKeyDown={onDialogKeyDown}
           >
-            <h1 id="sign-out-title" ref={headingRef} tabIndex={-1} className="text-[20px] font-semibold outline-none">
-              {pending ? "Signing out…" : "Sign out on this device?"}
-            </h1>
-            <p id="sign-out-description" className="mt-2 text-[14px] leading-6 text-ink-secondary">
-              {pending
-                ? "Protected content is hidden while sign-out is confirmed."
-                : "Unsent work will be cleared from this client."}
-            </p>
+            <div role={pending ? "status" : undefined} aria-live={pending ? "polite" : undefined}>
+              <h1
+                id="sign-out-title"
+                ref={headingRef}
+                tabIndex={-1}
+                className="flex items-center gap-2 text-[20px] font-semibold outline-none"
+              >
+                {pending && (
+                  <Loader2
+                    size={20}
+                    className="animate-spin text-accent"
+                    data-saas-progress-indicator="true"
+                    aria-hidden="true"
+                  />
+                )}
+                {pending ? "Signing out…" : "Sign out on this device?"}
+              </h1>
+              <p id="sign-out-description" className="mt-2 text-[14px] leading-6 text-ink-secondary">
+                {pending
+                  ? "Protected content is hidden while sign-out is confirmed."
+                  : "Unsent work will be cleared from this client."}
+              </p>
+            </div>
             {!pending && (
               <Actions>
                 <button ref={cancelRef} type="button" className={secondaryButton} onClick={actions.cancelSignOut}>Cancel</button>

@@ -80,7 +80,7 @@ export function CatalogShellView({
                 aria-describedby={creation.status === "idle" ? undefined : "creation-feedback"}
               >
                 {creationPending
-                  ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                  ? <Loader2 size={16} className="animate-spin" data-saas-progress-indicator="true" aria-hidden="true" />
                   : <Plus size={16} aria-hidden="true" />}
                 {creationPending ? "Creating…" : "Create bot"}
               </button>
@@ -116,7 +116,12 @@ export function CatalogShellView({
 
         {model.status === "loading" && (
           <section role="status" aria-live="polite" className="flex min-h-56 items-center justify-center gap-3 text-ink-secondary">
-            <Loader2 size={20} className="animate-spin text-accent" aria-hidden="true" />
+            <Loader2
+              size={20}
+              className="animate-spin text-accent"
+              data-saas-progress-indicator="true"
+              aria-hidden="true"
+            />
             Loading bot catalog…
           </section>
         )}
@@ -133,7 +138,7 @@ export function CatalogShellView({
               aria-describedby={creation.status === "idle" ? undefined : "creation-feedback"}
             >
               {creationPending
-                ? <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                ? <Loader2 size={16} className="animate-spin" data-saas-progress-indicator="true" aria-hidden="true" />
                 : <Plus size={16} aria-hidden="true" />}
               {creationPending ? "Creating…" : "Create first bot"}
             </button>

@@ -31,6 +31,7 @@ describe("accessible authenticated catalog creation view", () => {
     const loading = markup({ status: "loading", requestId: 1, items: [] });
     expect(loading).toMatch(/aria-busy="true"[\s\S]*role="status"[\s\S]*aria-live="polite"/);
     expect(loading).toContain("Loading bot catalog");
+    expect(loading).toContain('data-saas-progress-indicator="true"');
     expect(loading).not.toContain("Create bot");
 
     const empty = markup({ status: "empty", requestId: 1, items: [] });
@@ -75,6 +76,7 @@ describe("accessible authenticated catalog creation view", () => {
       expect((pending.match(/<button[^>]*disabled=""/g) ?? [])).toHaveLength(2);
       expect(pending).toContain('id="creation-feedback"');
       expect(pending).toContain('role="status"');
+      expect(pending).toContain('data-saas-progress-indicator="true"');
     }
   });
 

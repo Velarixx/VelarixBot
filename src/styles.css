@@ -515,6 +515,10 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  [data-saas-progress-indicator="true"] {
+    animation: none !important;
+  }
+
   .maus-motion *,
   .maus-motion {
     animation: none !important;
