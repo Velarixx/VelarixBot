@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMap, isScalar, parseDocument } from "yaml";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(join(root, path), "utf8").replace(/\r\n/g, "\n");
@@ -17,32 +18,54 @@ function rejectText(failures, source, fragment, location) {
   }
 }
 
-function inventoryWorkflowJobs(workflows) {
+function inventoryWorkflowJobs(workflows, failures) {
   const jobs = [];
   for (const [path, source] of Object.entries(workflows)) {
-    let inJobs = false;
-    let currentJob;
-    for (const line of source.split("\n")) {
-      if (/^jobs:\s*$/.test(line)) {
-        inJobs = true;
-        currentJob = undefined;
+    const document = parseDocument(source, {
+      prettyErrors: false,
+      strict: true,
+      uniqueKeys: true,
+    });
+    if (document.errors.length > 0) {
+      for (const error of document.errors) {
+        failures.push(path + ": malformed YAML: " + error.message);
+      }
+      continue;
+    }
+    if (document.warnings.length > 0) {
+      for (const warning of document.warnings) {
+        failures.push(path + ": unsupported YAML: " + warning.message);
+      }
+      continue;
+    }
+    if (!isMap(document.contents)) {
+      failures.push(path + ": workflow root must be a YAML mapping");
+      continue;
+    }
+
+    const jobsNode = document.contents.get("jobs", true);
+    if (jobsNode === undefined) continue;
+    if (!isMap(jobsNode)) {
+      failures.push(path + ": jobs must be a YAML mapping");
+      continue;
+    }
+
+    for (const pair of jobsNode.items) {
+      if (!isScalar(pair.key) || typeof pair.key.value !== "string") {
+        failures.push(path + ": every job key must be a string scalar");
         continue;
       }
-      if (inJobs && /^[A-Za-z0-9_-]+:/.test(line)) {
-        inJobs = false;
-        currentJob = undefined;
-      }
-      if (!inJobs) continue;
-      const jobKey = line.match(/^  ([A-Za-z0-9_-]+):\s*$/);
-      if (jobKey) {
-        currentJob = jobKey[1];
-        jobs.push({ path, key: currentJob, name: undefined });
+      if (!isMap(pair.value)) {
+        failures.push(path + "#" + pair.key.value + ": job must be a YAML mapping");
         continue;
       }
-      const jobName = line.match(/^    name:\s*(.+?)\s*$/);
-      if (currentJob && jobName) {
-        jobs.at(-1).name = jobName[1].replace(/^['"]|['"]$/g, "");
+
+      const nameNode = pair.value.get("name", true);
+      if (nameNode !== undefined && (!isScalar(nameNode) || typeof nameNode.value !== "string")) {
+        failures.push(path + "#" + pair.key.value + ": job name must be a string scalar");
+        continue;
       }
+      jobs.push({ path, key: pair.key.value, name: nameNode?.value });
     }
   }
   return jobs;
@@ -65,6 +88,9 @@ function validateGate(bundle, runtimeMajor) {
   }
   if (pkg.packageManager !== "pnpm@10.33.0") {
     failures.push("package.json: packageManager must remain pinned to pnpm@10.33.0");
+  }
+  if (pkg.devDependencies?.yaml !== "2.8.1") {
+    failures.push("package.json: yaml parser must remain pinned to 2.8.1");
   }
 
   const exactScripts = {
@@ -138,7 +164,7 @@ function validateGate(bundle, runtimeMajor) {
     failures.push(".github/workflows/ci.yml: exactly one job key named release-gate is required");
   }
 
-  const requiredContexts = inventoryWorkflowJobs(workflows).filter(
+  const requiredContexts = inventoryWorkflowJobs(workflows, failures).filter(
     (job) => job.name === "exact-sha-release-gate",
   );
   if (
@@ -256,7 +282,7 @@ const mutationTests = [
       ),
   },
   {
-    name: "duplicate required context",
+    name: "inline comment duplicate required context",
     expected: "exactly one job context named exact-sha-release-gate",
     run: () =>
       validateGate(
@@ -265,7 +291,70 @@ const mutationTests = [
           workflows: {
             ...bundle.workflows,
             ".github/workflows/duplicate.yml":
-              "jobs:\n  duplicate:\n    name: exact-sha-release-gate\n    runs-on: ubuntu-latest\n",
+              "jobs:\n  duplicate:\n    name: exact-sha-release-gate # semantic duplicate\n    runs-on: ubuntu-latest\n",
+          },
+        },
+        runtimeMajor,
+      ),
+  },
+  {
+    name: "single-quoted duplicate required context",
+    expected: "exactly one job context named exact-sha-release-gate",
+    run: () =>
+      validateGate(
+        {
+          ...bundle,
+          workflows: {
+            ...bundle.workflows,
+            ".github/workflows/single-quoted.yml":
+              "jobs:\n  duplicate:\n    name: 'exact-sha-release-gate'\n    runs-on: ubuntu-latest\n",
+          },
+        },
+        runtimeMajor,
+      ),
+  },
+  {
+    name: "double-quoted duplicate in yaml extension",
+    expected: "exactly one job context named exact-sha-release-gate",
+    run: () =>
+      validateGate(
+        {
+          ...bundle,
+          workflows: {
+            ...bundle.workflows,
+            ".github/workflows/double-quoted.yaml":
+              'jobs:\n  duplicate:\n    name: "exact-sha-release-gate"\n    runs-on: ubuntu-latest\n',
+          },
+        },
+        runtimeMajor,
+      ),
+  },
+  {
+    name: "quoted hash remains part of job name",
+    expectedAbsent: "exactly one job context named exact-sha-release-gate",
+    run: () =>
+      validateGate(
+        {
+          ...bundle,
+          workflows: {
+            ...bundle.workflows,
+            ".github/workflows/hash-in-name.yml":
+              'jobs:\n  decoy:\n    name: "exact-sha-release-gate # not a comment"\n    runs-on: ubuntu-latest\n',
+          },
+        },
+        runtimeMajor,
+      ),
+  },
+  {
+    name: "malformed workflow YAML",
+    expected: "malformed YAML:",
+    run: () =>
+      validateGate(
+        {
+          ...bundle,
+          workflows: {
+            ...bundle.workflows,
+            ".github/workflows/malformed.yml": "jobs:\n  broken: [\n",
           },
         },
         runtimeMajor,
@@ -368,7 +457,11 @@ const mutationTests = [
 const selfTestFailures = [];
 for (const test of mutationTests) {
   const observed = test.run();
-  if (!observed.some((failure) => failure.includes(test.expected))) {
+  if (test.expectedAbsent && observed.some((failure) => failure.includes(test.expectedAbsent))) {
+    selfTestFailures.push(
+      test.name + ": validator unexpectedly rejected with " + JSON.stringify(test.expectedAbsent),
+    );
+  } else if (test.expected && !observed.some((failure) => failure.includes(test.expected))) {
     selfTestFailures.push(test.name + ": validator did not reject with " + JSON.stringify(test.expected));
   }
 }
