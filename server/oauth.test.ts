@@ -30,6 +30,7 @@ import { createRepositories, type Repositories } from "./repositories/index.ts";
 import {
   createSecurityAuditService,
   SECURITY_AUDIT_SYSTEM_STREAM,
+  SecurityAuditWriteError,
   type SecurityAuditService,
 } from "./services/security-audit.ts";
 
@@ -330,11 +331,15 @@ describe("SaaS OAuth routes", () => {
 
     expect(audit.eventsForTenant(firstUser.user.id).map(({ action, decision, reason }) => ({ action, decision, reason }))).toEqual([
       { action: "oauth.callback", decision: "allow", reason: "completed" },
+      { action: "session.resolve", decision: "allow", reason: "resolved" },
+      { action: "session.resolve", decision: "allow", reason: "resolved" },
       { action: "session.revoke", decision: "allow", reason: "revoked" },
       { action: "session.resolve", decision: "deny", reason: "replay" },
       { action: "session.revoke", decision: "deny", reason: "replay" },
       { action: "session.resolve", decision: "deny", reason: "replay" },
+      { action: "session.resolve", decision: "allow", reason: "resolved" },
       { action: "oauth.callback", decision: "allow", reason: "completed" },
+      { action: "session.resolve", decision: "allow", reason: "resolved" },
     ]);
     expect(
       repos.eventLog.replayAfter(SECURITY_AUDIT_SYSTEM_STREAM, 0).map(({ payload }) => [
@@ -346,6 +351,41 @@ describe("SaaS OAuth routes", () => {
       ["oauth.start", "allow", "initiated"],
       ["oauth.start", "allow", "initiated"],
     ]);
+  });
+
+  it("rolls back OAuth start state when the allow audit cannot be written", async () => {
+    const failingAudit = createSecurityAuditService({
+      db,
+      eventLog: {
+        ...repos.eventLog,
+        appendToStream() {
+          throw new Error("forced audit failure with secret path and stack");
+        },
+      },
+      sessions,
+      desktopAccessGrants: repos.desktopAccessGrants,
+      now: () => now,
+    });
+    const route = createOAuthRoutes({
+      applicationOrigin: APPLICATION_ORIGIN,
+      provider,
+      transactions: new OAuthTransactionStore(db),
+      sessions: failingAudit.sessions,
+      audit: failingAudit,
+      now: () => now,
+    });
+    const url = new URL(`${APPLICATION_ORIGIN}/api/auth/github/start`);
+    const ctx = {
+      req: { headers: {} },
+      res: { statusCode: 200, setHeader() {}, end() {} },
+      url,
+      path: url.pathname,
+      method: "GET",
+    } as unknown as RouteCtx;
+
+    await expect(route(ctx)).rejects.toThrow(SecurityAuditWriteError);
+    expect(provider.authorizationInputs).toHaveLength(1);
+    expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM github_oauth_transactions").get()?.n).toBe(0);
   });
 
   it("collapses missing, ambiguous, tampered, expired, unknown, and replayed state", async () => {

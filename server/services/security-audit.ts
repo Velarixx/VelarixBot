@@ -75,6 +75,7 @@ export interface SecurityAuditEvent extends SecurityAuditDecisionInput {
 export interface SecurityAuditRecorder {
   recordSystem(decision: SecurityAuditDecisionInput): void;
   recordTenant(ownerId: string, decision: SecurityAuditDecisionInput): void;
+  decideSystem<T>(decide: () => { value: T; decision: SecurityAuditDecisionInput }): T;
   decideTenant<T>(
     ownerId: string,
     decide: () => { value: T; decision: SecurityAuditDecisionInput },
@@ -231,6 +232,12 @@ export function createSecurityAuditService(input: {
 
   const recordSystem = (decision: SecurityAuditDecisionInput): void => write(null, decision);
   const recordTenant = (ownerId: string, decision: SecurityAuditDecisionInput): void => write(ownerId, decision);
+  const decideSystem = <T>(decide: () => { value: T; decision: SecurityAuditDecisionInput }): T =>
+    input.db.transaction(() => {
+      const result = decide();
+      write(null, result.decision);
+      return result.value;
+    })();
   const decideTenant = <T>(
     ownerId: string,
     decide: () => { value: T; decision: SecurityAuditDecisionInput },
@@ -264,7 +271,10 @@ export function createSecurityAuditService(input: {
     },
     resolveSession(token, at = now()) {
       const resolved = input.sessions.resolveSession(token, at);
-      if (resolved) return resolved;
+      if (resolved) {
+        write(resolved.id, { action: "session.resolve", decision: "allow", reason: "resolved" });
+        return resolved;
+      }
       const row = sessionRow(token);
       write(row?.user_id ?? null, {
         action: "session.resolve",
@@ -364,6 +374,7 @@ export function createSecurityAuditService(input: {
   return {
     recordSystem,
     recordTenant,
+    decideSystem,
     decideTenant,
     sessions,
     desktopAccessGrants: auditedGrants,

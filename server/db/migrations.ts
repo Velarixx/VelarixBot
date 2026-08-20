@@ -677,6 +677,30 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // SQLite REPLACE resolves uniqueness conflicts by deleting the old row
+    // before inserting the replacement. Guard every conflict key explicitly
+    // because delete triggers are not recursive by default.
+    version: 16,
+    name: "security-audit-replace-guard",
+    up(db) {
+      db.exec(`
+        CREATE TRIGGER security_audit_event_no_replace
+          BEFORE INSERT ON event_log
+          WHEN EXISTS(
+            SELECT 1 FROM event_log existing
+            WHERE (
+              existing.seq = NEW.seq OR
+              (existing.stream_id = NEW.stream_id AND existing.sequence = NEW.sequence)
+            )
+            AND (existing.type = 'security.audit' OR NEW.type = 'security.audit')
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'security audit events are append-only');
+          END;
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

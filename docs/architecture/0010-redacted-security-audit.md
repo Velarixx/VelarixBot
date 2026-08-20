@@ -23,8 +23,14 @@ continuity.
   reachable through tenant reads.
 - Make security audit rows immutable with database triggers. Wrap state-changing
   allows and their append in one SQLite transaction, so an audit failure rolls
-  back session, catalog, and grant mutations. Read/deny paths surface audit
+  back OAuth-start state, session, catalog, and grant mutations. Successful and
+  denied session resolution are both recorded; read/deny paths surface audit
   failure as a closed request.
+- Guard both ordinary UPDATE/DELETE and every `INSERT OR REPLACE` conflict key.
+  SQLite does not recursively fire the replacement DELETE trigger by default,
+  so relying on that trigger alone would permit audit-row replacement. A narrow
+  insert guard was chosen instead of changing recursive-trigger behavior for
+  every existing application trigger.
 - Wrap existing identity and desktop-grant capabilities in composition. Their
   underlying security modules remain unchanged and independently testable.
 

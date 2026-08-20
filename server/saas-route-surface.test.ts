@@ -321,18 +321,22 @@ describe("SaaS route exposure matrix", () => {
     bestEffortRm(home);
   });
 
-  it("returns public 404s for every authenticated unapproved route without side effects", async () => {
+  it("returns public 404s for every authenticated unapproved route without non-audit side effects", async () => {
     const beforeChanges = totalChanges(db);
+    const beforeAudit = db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log WHERE type = 'security.audit'").get()!.n;
     const headers = {
       cookie: `${SESSION_COOKIE_NAME}=${sessionToken}`,
       origin: APPLICATION_ORIGIN,
     };
-    for (const testCase of deniedRoutes(botId)) {
+    const cases = deniedRoutes(botId);
+    for (const testCase of cases) {
       const result = await jsonRequest(base, testCase, headers);
       expect(result.response.status, `${testCase.family}: ${testCase.method} ${testCase.path}`).toBe(404);
       expect(result.body).toEqual({ error: expect.stringMatching(/^no route: /) });
     }
-    expect(totalChanges(db)).toBe(beforeChanges);
+    const afterAudit = db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log WHERE type = 'security.audit'").get()!.n;
+    expect(afterAudit - beforeAudit).toBe(cases.length);
+    expect(totalChanges(db) - beforeChanges).toBe(afterAudit - beforeAudit);
     for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
     expect(oauthAuthorizationUrl).not.toHaveBeenCalled();
     expect(oauthExchange).not.toHaveBeenCalled();
@@ -371,14 +375,17 @@ describe("SaaS route exposure matrix", () => {
     expect(oauthExchange).not.toHaveBeenCalled();
   });
 
-  it("rejects missing or wrong Origin on every SaaS capability write without changes", async () => {
+  it("rejects missing or wrong Origin on every SaaS capability write without non-audit changes", async () => {
     const beforeChanges = totalChanges(db);
-    for (const testCase of [
+    const beforeAudit = db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log WHERE type = 'security.audit'").get()!.n;
+    const cases = [
       { method: "POST" as const, path: "/api/bots" },
       { method: "POST" as const, path: "/api/desktop-access" },
       { method: "DELETE" as const, path: "/api/desktop-access" },
-    ]) {
-      for (const origin of [undefined, "https://evil.test"] as const) {
+    ];
+    const origins = [undefined, "https://evil.test"] as const;
+    for (const testCase of cases) {
+      for (const origin of origins) {
         const result = await jsonRequest(base, testCase, {
           cookie: `${SESSION_COOKIE_NAME}=${sessionToken}`,
           ...(origin ? { origin } : {}),
@@ -387,7 +394,9 @@ describe("SaaS route exposure matrix", () => {
         expect(result.body).toEqual({ error: "forbidden origin" });
       }
     }
-    expect(totalChanges(db)).toBe(beforeChanges);
+    const afterAudit = db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log WHERE type = 'security.audit'").get()!.n;
+    expect(afterAudit - beforeAudit).toBe(cases.length * origins.length);
+    expect(totalChanges(db) - beforeChanges).toBe(afterAudit - beforeAudit);
     for (const spy of sideEffectSpies) expect(spy).not.toHaveBeenCalled();
     expect(oauthAuthorizationUrl).not.toHaveBeenCalled();
     expect(oauthExchange).not.toHaveBeenCalled();

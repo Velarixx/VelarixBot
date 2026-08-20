@@ -115,6 +115,7 @@ describe("database + migrations", () => {
       "workspace-binding-authorization-generations",
       "tenant-bot-public-handles",
       "immutable-security-audit-events",
+      "security-audit-replace-guard",
     ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM bots WHERE id = ?").get("legacy-bot")).toEqual({
       owner_id: null,
@@ -158,7 +159,11 @@ describe("database + migrations", () => {
         .run(id, threadId, 1_000, JSON.stringify({ id, threadId }), owner);
     }
 
-    expect(migrate(db)).toEqual(["tenant-bot-public-handles", "immutable-security-audit-events"]);
+    expect(migrate(db)).toEqual([
+      "tenant-bot-public-handles",
+      "immutable-security-audit-events",
+      "security-audit-replace-guard",
+    ]);
     const rows = db.prepare<{ id: string; public_handle: string | null }>(
       "SELECT id, public_handle FROM bots ORDER BY id",
     ).all();
@@ -217,6 +222,7 @@ describe("database + migrations", () => {
       "workspace-binding-authorization-generations",
       "tenant-bot-public-handles",
       "immutable-security-audit-events",
+      "security-audit-replace-guard",
     ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM groups WHERE id = ?").get("legacy-group")).toEqual({
       owner_id: null,
@@ -248,6 +254,7 @@ describe("database + migrations", () => {
       "workspace-binding-authorization-generations",
       "tenant-bot-public-handles",
       "immutable-security-audit-events",
+      "security-audit-replace-guard",
     ]);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM user_workspace_bindings").get()?.n).toBe(0);
     expect(
@@ -283,6 +290,7 @@ describe("database + migrations", () => {
       "workspace-binding-authorization-generations",
       "tenant-bot-public-handles",
       "immutable-security-audit-events",
+      "security-audit-replace-guard",
     ]);
     expect(
       db.prepare<{ authorization_generation: number }>(

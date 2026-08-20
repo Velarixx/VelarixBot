@@ -24,6 +24,9 @@ const selection = () => ({ instanceId: "claude", model: "claude-sonnet-5" });
 const audit: SecurityAuditRecorder = {
   recordSystem() {},
   recordTenant() {},
+  decideSystem(decide) {
+    return decide().value;
+  },
   decideTenant(_ownerId, decide) {
     return decide().value;
   },

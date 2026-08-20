@@ -63,6 +63,7 @@ describe("redacted SaaS security audit", () => {
     expect(audit.sessions.resolveSession(expired.token, 3_000)).toBeNull();
 
     const revoked = rawSessions.createSession(ownerA, { now: 4_000, maxAgeSeconds: 10 });
+    expect(audit.sessions.resolveSession(revoked.token, 4_000)?.id).toBe(ownerA);
     expect(audit.sessions.revokeSession(revoked.token, 4_001)).toBe(true);
     expect(audit.sessions.resolveSession(revoked.token, 4_002)).toBeNull();
 
@@ -84,6 +85,7 @@ describe("redacted SaaS security audit", () => {
     const expectedA: Array<Pick<SecurityAuditEvent, "action" | "decision" | "reason">> = [
       { action: "oauth.callback", decision: "allow", reason: "completed" },
       { action: "session.resolve", decision: "deny", reason: "expired" },
+      { action: "session.resolve", decision: "allow", reason: "resolved" },
       { action: "session.revoke", decision: "allow", reason: "revoked" },
       { action: "session.resolve", decision: "deny", reason: "replay" },
       { action: "catalog.read", decision: "allow", reason: "listed" },
@@ -97,7 +99,7 @@ describe("redacted SaaS security audit", () => {
       { action: "grant.revoke", decision: "allow", reason: "revoked" },
     ];
     const tenantA = audit.eventsForTenant(ownerA);
-    expect(tenantA).toHaveLength(13);
+    expect(tenantA).toHaveLength(14);
     expect(tenantA.map(({ action, decision, reason }) => ({ action, decision, reason }))).toEqual(expectedA);
     expect(tenantA.every((event) => Object.keys(event).sort().join(",") === "action,auditVersion,decision,occurredAt,reason")).toBe(true);
 
@@ -117,7 +119,7 @@ describe("redacted SaaS security audit", () => {
     const rows = db.prepare<{ stream_id: string; data: string }>(
       "SELECT stream_id, data FROM event_log WHERE type = 'security.audit' ORDER BY seq",
     ).all();
-    expect(rows).toHaveLength(16);
+    expect(rows).toHaveLength(17);
     for (const row of rows) {
       const payload = JSON.parse(row.data) as Record<string, unknown>;
       expect(Object.keys(payload).sort()).toEqual(
@@ -193,6 +195,8 @@ describe("redacted SaaS security audit", () => {
 
     const expired = rawSessions.createSession(ownerA, { now: 5_000, maxAgeSeconds: 1 });
     expect(() => audit.sessions.resolveSession(expired.token, 6_000)).toThrow(SecurityAuditWriteError);
+    const live = rawSessions.createSession(ownerA, { now: 7_000, maxAgeSeconds: 10 });
+    expect(() => audit.sessions.resolveSession(live.token, 7_001)).toThrow(SecurityAuditWriteError);
   });
 
   it("enforces append-only audit rows below the repository layer", () => {
@@ -216,6 +220,15 @@ describe("redacted SaaS security audit", () => {
     const row = db.prepare<{ seq: number }>("SELECT seq FROM event_log WHERE type = 'security.audit'").get()!;
     expect(() => db.prepare("UPDATE event_log SET type = 'tampered' WHERE seq = ?").run(row.seq)).toThrow(/append-only/i);
     expect(() => db.prepare("DELETE FROM event_log WHERE seq = ?").run(row.seq)).toThrow(/append-only/i);
+    expect(() =>
+      db.prepare(
+        `INSERT OR REPLACE INTO event_log(
+           seq, event_id, thread_id, type, created_at, data, stream_id, sequence, schema_version
+         )
+         SELECT seq, event_id, thread_id, 'other', created_at, data, stream_id, sequence, schema_version
+         FROM event_log WHERE seq = ?`,
+      ).run(row.seq),
+    ).toThrow(/append-only/i);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM event_log WHERE type = 'security.audit'").get()!.n).toBe(1);
   });
 });

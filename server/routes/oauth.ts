@@ -65,33 +65,48 @@ export function createOAuthRoutes(input: CreateOAuthRoutesInput): RouteHandler {
 
   return async ({ req, res, url, path, method }) => {
     if (method === "GET" && path === GITHUB_OAUTH_START_PATH) {
-      const transaction = input.transactions.create(now());
-      let authorizationUrl: URL;
+      let providerFailure = false;
+      let started: {
+        transaction: ReturnType<OAuthTransactionStore["create"]>;
+        authorizationUrl: URL;
+      };
       try {
-        authorizationUrl = input.provider.authorizationUrl({
-          state: transaction.state,
-          codeChallenge: transaction.codeChallenge,
+        started = input.audit.decideSystem(() => {
+          const transaction = input.transactions.create(now());
+          let authorizationUrl: URL;
+          try {
+            authorizationUrl = input.provider.authorizationUrl({
+              state: transaction.state,
+              codeChallenge: transaction.codeChallenge,
+            });
+            if (
+              authorizationUrl.origin !== GITHUB_AUTHORIZE_ORIGIN ||
+              authorizationUrl.pathname !== GITHUB_AUTHORIZE_PATH ||
+              authorizationUrl.protocol !== "https:" ||
+              authorizationUrl.username !== "" ||
+              authorizationUrl.password !== "" ||
+              authorizationUrl.hash !== ""
+            ) {
+              throw new Error("invalid authorization URL");
+            }
+          } catch {
+            providerFailure = true;
+            throw new Error("OAuth provider could not create a safe authorization URL");
+          }
+          return {
+            value: { transaction, authorizationUrl },
+            decision: { action: "oauth.start", decision: "allow", reason: "initiated" },
+          };
         });
-      } catch {
+      } catch (error) {
+        if (!providerFailure) throw error;
         input.audit.recordSystem({ action: "oauth.start", decision: "deny", reason: "provider_failure" });
         throw new Error("OAuth provider could not create an authorization URL");
       }
-      if (
-        authorizationUrl.origin !== GITHUB_AUTHORIZE_ORIGIN ||
-        authorizationUrl.pathname !== GITHUB_AUTHORIZE_PATH ||
-        authorizationUrl.protocol !== "https:" ||
-        authorizationUrl.username !== "" ||
-        authorizationUrl.password !== "" ||
-        authorizationUrl.hash !== ""
-      ) {
-        input.audit.recordSystem({ action: "oauth.start", decision: "deny", reason: "provider_failure" });
-        throw new Error("OAuth provider returned an invalid authorization URL");
-      }
-      input.audit.recordSystem({ action: "oauth.start", decision: "allow", reason: "initiated" });
       res.statusCode = 302;
-      res.setHeader("location", authorizationUrl.href);
+      res.setHeader("location", started.authorizationUrl.href);
       res.setHeader("cache-control", "no-store");
-      res.setHeader("set-cookie", oauthTransactionCookie(transaction.cookie));
+      res.setHeader("set-cookie", oauthTransactionCookie(started.transaction.cookie));
       res.end();
       return true;
     }
