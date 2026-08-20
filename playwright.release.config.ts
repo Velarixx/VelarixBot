@@ -5,6 +5,7 @@ export default defineConfig({
   testMatch: [
     "fake-engine-smoke.spec.ts",
     "session-boundary.spec.ts",
+    "saas-error-recovery.spec.ts",
   ],
   fullyParallel: false,
   workers: 1,
