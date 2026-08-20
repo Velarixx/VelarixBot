@@ -25,6 +25,10 @@ import { createTeachService } from "./teach.ts";
 import { createTurnsService, type TurnsService } from "./turns.ts";
 import { makeFakeDriver } from "../testing/fake-driver.ts";
 
+let screenshotCalls: string[] = [];
+let screenshotResolvers: Array<() => void> = [];
+let holdScreenshots = false;
+
 /** Every bot resolves to the ONE machine `m-shared` — the provider-internal
  * consequence of shared mode, seen through the untouched SPI. */
 const SharedMachineFactory: ComputerProviderFactory<Record<string, never>> = {
@@ -36,7 +40,7 @@ const SharedMachineFactory: ComputerProviderFactory<Record<string, never>> = {
       id,
       kind: "sharedfake",
       displayName: "Shared fake",
-      capabilities: { exec: false, screenshot: false, files: false, desktopUrl: false, suspend: false, destroy: false, mcp: false },
+      capabilities: { exec: false, screenshot: true, files: false, desktopUrl: false, suspend: false, destroy: false, mcp: false },
       turnPrompt: "",
       status: async () => ({ configured: true, machine: { id: "m-shared", state: "running" } }),
       provision: async () => ({ machineId: "m-shared", reused: true, state: "running" }),
@@ -47,7 +51,11 @@ const SharedMachineFactory: ComputerProviderFactory<Record<string, never>> = {
       connectScreen: async () => ({ kind: "url" as const, url: "fake://desktop" }),
       suspend: async () => {},
       destroy: async () => {},
-      screenshot: async () => ({ png: "", format: "png" as const }),
+      screenshot: async (botId) => {
+        screenshotCalls.push(botId);
+        if (holdScreenshots) await new Promise<void>((resolve) => screenshotResolvers.push(resolve));
+        return { png: `screen-${botId}`, format: "png" as const };
+      },
       readFile: async () => ({ content: "", path: "/" }),
       mcpIntegration: async () => null,
     };
@@ -103,6 +111,28 @@ describe("shared-computer lease at turn dispatch", () => {
     ok: true,
   });
 
+  const runtimeError = (threadId: string): RuntimeEvent => ({
+    eventId: `ev-error-${threadId}-${Math.random()}`,
+    provider: "fake",
+    providerInstanceId: "fake",
+    threadId,
+    createdAt: new Date().toISOString(),
+    type: "runtime.error",
+    message: "shared computer failed",
+  });
+
+  const toolCompleted = (threadId: string): RuntimeEvent => ({
+    eventId: `ev-tool-${threadId}-${Math.random()}`,
+    provider: "fake",
+    providerInstanceId: "fake",
+    threadId,
+    createdAt: new Date().toISOString(),
+    itemId: `item-${Math.random()}`,
+    type: "item.completed",
+    itemType: "tool",
+    ok: true,
+  });
+
   const flush = async () => {
     for (let i = 0; i < 6; i++) await Promise.resolve();
   };
@@ -134,6 +164,9 @@ describe("shared-computer lease at turn dispatch", () => {
     sendTurns = [];
     broadcasts = [];
     broadcastWaiters = [];
+    screenshotCalls = [];
+    screenshotResolvers = [];
+    holdScreenshots = false;
 
     const fake = makeFakeDriver();
     registry = new ProviderRegistry([fake.driver]);
@@ -307,5 +340,42 @@ describe("shared-computer lease at turn dispatch", () => {
     await turns.interrupt(ada.id);
     await flush();
     expect(sendTurns).toEqual([ada.threadId, bea.threadId]);
+  });
+
+  it("stops stale screenshot capture on runtime error and interrupt before lease handoff", async () => {
+    const ada = sharedBot("Ada");
+    const bea = sharedBot("Bea");
+    holdScreenshots = true;
+
+    await turns.startTurn(ada.id, "hold");
+    await flush();
+    bus.publish(toolCompleted(ada.threadId));
+    await flush();
+    expect(screenshotCalls).toEqual([ada.id]);
+
+    await turns.startTurn(bea.id, "queue");
+    await flush();
+    bus.publish(runtimeError(ada.threadId));
+    await flush();
+    expect(sendTurns).toEqual([ada.threadId, bea.threadId]);
+
+    // A screenshot that began before the failure may resolve later, but it
+    // must not broadcast under the former holder after lease handoff.
+    screenshotResolvers.shift()?.();
+    holdScreenshots = false;
+    await flush();
+    expect(broadcasts.filter((frame) => frame.kind === "screen")).toEqual([]);
+
+    // The failed holder's poller is gone; the new holder alone can capture.
+    bus.publish(toolCompleted(ada.threadId));
+    bus.publish(toolCompleted(bea.threadId));
+    await flush();
+    expect(screenshotCalls).toEqual([ada.id, bea.id]);
+    expect(broadcasts.filter((frame) => frame.kind === "screen").map((frame) => frame.botId)).toEqual([bea.id]);
+
+    await turns.interrupt(bea.id);
+    bus.publish(toolCompleted(bea.threadId));
+    await flush();
+    expect(screenshotCalls).toEqual([ada.id, bea.id]);
   });
 });

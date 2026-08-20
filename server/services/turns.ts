@@ -779,6 +779,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       case "runtime.error": {
         if (event.turnId) responseOptionsByTurn.delete(event.turnId);
         if (event.message) lastRuntimeMessage.set(event.threadId, event.message);
+        stopScreenPoller(bot.id);
         releaseComputerLease(bot.id);
         const blocked = userFacingBlock({ runtimeMessage: event.message, stopReason: isSpawnFailure(undefined, event.message) ? "spawn_error" : undefined });
         pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${blocked.stateDetail.slice(0, 160)}`, ok: false } });
@@ -791,10 +792,10 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         break;
       }
       case "turn.completed": {
-        releaseComputerLease(bot.id);
         // the last live frame becomes a settled inline screen message —
         // the screenshot-in-chat moment
         const frame = stopScreenPoller(bot.id);
+        releaseComputerLease(bot.id);
         if (frame) pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
         const tokens = (event.turnId ? turnUsage.get(event.turnId) : undefined) ?? { input: 0, output: 0, cost: null };
         bots.recordTurnUsage(bot.id, { ...tokens, cost: event.cost ?? null });
@@ -926,6 +927,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       inFlight = true;
       try {
         const { png, format } = await provider.screenshot(botId);
+        // Clearing an interval cannot cancel a screenshot already in flight.
+        // Ignore that late result once this exact poller has been stopped or
+        // replaced so a released shared machine never broadcasts under its
+        // former holder's bot id.
+        if (screenPollers.get(botId) !== entry) return;
         const frame = { png, mime: format === "jpeg" ? "image/jpeg" : "image/png" };
         entry.last = frame;
         teach.noteFrame(botId);
@@ -1204,6 +1210,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         // and an aborted queue wait as well as sendTurn failures: the error
         // lands in the transcript and the bot goes BLOCKED — never a silent
         // proceed without the computer
+        stopScreenPoller(bot.id);
         releaseComputerLease(bot.id);
         const message = e instanceof Error ? e.message : String(e);
         const blocked = userFacingBlock({ runtimeMessage: message, stopReason: isSpawnFailure(undefined, message) ? "spawn_error" : undefined });
@@ -1299,8 +1306,8 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const instance = registry.get(bot.modelSelection.instanceId);
     // Abort releases the machine lease (or queued wait) and its screenshot
     // interval immediately. A later turn.completed cleanup is idempotent.
-    releaseComputerLease(botId);
     stopScreenPoller(botId);
+    releaseComputerLease(botId);
     await instance?.adapter.interruptTurn(bot.threadId);
     bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
     proactive.noteState(bot.id, "BLOCKED");
