@@ -20,6 +20,11 @@ import {
   type ClientApplicationMode,
 } from "@/auth/mode";
 import { CatalogShell } from "@/saas/CatalogShell";
+import { SaasErrorBoundary } from "@/saas/SaasErrorBoundary";
+import { SaasRenderFailureProbe } from "@/saas/SaasRenderFailureProbe";
+
+const ENABLE_SAAS_E2E_RENDER_FAILURE =
+  import.meta.env.VITE_VELARIX_E2E_RENDER_FAILURE === "enabled";
 
 function Shell() {
   const { state, dispatch } = useStore();
@@ -114,7 +119,7 @@ export function InvalidApplicationMode() {
 }
 
 export function SaasApplication() {
-  return (
+  const application = (
     <SessionBoundary
       renderAuthenticated={({ onSessionLost, onRequestSignOut, signOutTriggerRef }) => (
         <CatalogShell
@@ -124,6 +129,13 @@ export function SaasApplication() {
         />
       )}
     />
+  );
+  return (
+    <SaasErrorBoundary>
+      {ENABLE_SAAS_E2E_RENDER_FAILURE
+        ? <SaasRenderFailureProbe>{application}</SaasRenderFailureProbe>
+        : application}
+    </SaasErrorBoundary>
   );
 }
 

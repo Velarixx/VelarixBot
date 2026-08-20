@@ -50,6 +50,7 @@
     "@types/react": "^19.1.9",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^4.7.0",
+    "axe-core": "4.10.3",
     "electron": "^43.4.0",
     "electron-builder": "^26.15.3",
     "playwright": "^1.62.1",
