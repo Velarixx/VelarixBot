@@ -36,11 +36,13 @@ import { createIntegrationsRoutes } from "./routes/integrations.ts";
 import { createOAuthRoutes } from "./routes/oauth.ts";
 import { createRoutinesRoutes } from "./routes/routines.ts";
 import { createSaasBotCatalogRoutes } from "./routes/saas-bot-catalog.ts";
+import { createSaasDesktopAccessRoutes } from "./routes/saas-desktop-access.ts";
 import { createSessionRoutes } from "./routes/session.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
 import { createBotsService, projectPublicBotFrame, type BotsService } from "./services/bots.ts";
 import { createGroupsService, type GroupsService } from "./services/groups.ts";
 import { createDiagnosticsService } from "./services/diagnostics.ts";
+import { createDesktopAccessGrantService } from "./services/desktop-access-grants.ts";
 import { createSseHub, type Broadcast, type SseHub } from "./services/events.ts";
 import { createListenerPoller } from "./listeners/index.ts";
 import { createRoutinesService, type RoutinesService } from "./services/routines.ts";
@@ -120,6 +122,22 @@ export async function createApplication(input: CreateApplicationInput): Promise<
         })
       : null;
   const identitySessions = securityAudit?.sessions ?? null;
+  const desktopAccessGrants =
+    auth.mode === "saas"
+      ? createDesktopAccessGrantService({
+          repos: { ...repos, desktopAccessGrants: securityAudit!.desktopAccessGrants },
+          policy: {
+            maxActiveGrantsPerOwner: 2,
+            defaultTtlMs: 60_000,
+            maxTtlMs: 120_000,
+          },
+          // The repository capability above records transactional issue,
+          // resolve, and revoke audit decisions. This service-level sink is
+          // intentionally metadata-only and must not duplicate those events.
+          audit() {},
+          now: () => clock.now(),
+        })
+      : null;
   const authentication: ApplicationAuthentication =
     auth.mode === "desktop"
       ? { mode: "desktop", token: apiToken, port }
@@ -307,6 +325,9 @@ export async function createApplication(input: CreateApplicationInput): Promise<
           }),
           createSessionRoutes(),
           createSaasBotCatalogRoutes({ bots, audit: securityAudit! }),
+          createSaasDesktopAccessRoutes({
+            forOwner: (ownerId) => desktopAccessGrants!.forOwner(ownerId),
+          }),
           createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
         ];
 
