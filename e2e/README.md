@@ -44,6 +44,15 @@ page-level fetch probe proves protected catalog content is gone when sign-out
 transport begins; every terminal path also checks live-region semantics,
 redaction, focus, and WCAG A/AA axe results.
 
+The SaaS session-boundary matrix holds the initial session probe to prove the
+product stays closed, exercises the exact GitHub handoff URL, and covers
+declined, malformed/rejected, and authenticated callbacks with immediate URL
+scrubbing. Controlled same-origin routes deterministically reproduce probe
+timeouts, network failures, and server failures, then recover through the
+manual retry control. Assertions cover roles and names, live-region priority,
+keyboard focus and visible focus styling, protected-content suppression,
+secret redaction, and unmasked local axe-core WCAG A/AA scans.
+
 The approval journey uses the fake Codex app-server's `approval` mode. It
 asserts the visible risky-command request, denies it through the card, waits for
 one completed response, and verifies no allow rule was persisted.

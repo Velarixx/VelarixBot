@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expect, test, type Browser, type BrowserContext, type Page } from "playwright/test";
+import { expect, test, type Browser, type BrowserContext, type Page, type Route } from "playwright/test";
 
 import { bootHarness, type BootedHarness } from "../server/testing/harness.ts";
 
@@ -41,6 +41,7 @@ async function openBuiltClient(
   browser: Browser,
   options: {
     session?: "authenticated" | "unauthenticated";
+    sessionHandler?: (route: Route, attempt: number) => Promise<void> | void;
     catalog?: { status: number; body: unknown };
     path?: string;
   },
@@ -70,7 +71,10 @@ async function openBuiltClient(
     };
     new MutationObserver(inspect).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
   });
-  if (options.session) {
+  if (options.sessionHandler) {
+    let attempt = 0;
+    await context.route(`${harness.base}/api/session`, (route) => options.sessionHandler!(route, ++attempt));
+  } else if (options.session) {
     await context.route(`${harness.base}/api/session`, (route) => route.fulfill({
       status: options.session === "authenticated" ? 200 : 401,
       contentType: "application/json",
@@ -116,11 +120,41 @@ async function axeScan(page: Page, label: string): Promise<void> {
   expect(violations, `${label} axe violations:\n${JSON.stringify(violations, null, 2)}`).toEqual([]);
 }
 
+async function expectClosedAndRedacted(page: Page, secrets: string[] = []): Promise<void> {
+  await expect(page.locator('[data-saas-catalog="true"]')).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Bot catalog" })).toHaveCount(0);
+  const body = page.locator("body");
+  for (const secret of secrets) await expect(body).not.toContainText(secret);
+}
+
+async function fulfillSession(route: Route, status: 200 | 401): Promise<void> {
+  await route.fulfill({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(status === 200
+      ? { user: { id: "123e4567-e89b-42d3-a456-426614174000" } }
+      : { error: "unauthorized" }),
+  });
+}
+
 test.describe.serial("built fail-closed session boundary", () => {
-  test("announces sign-in and callback states with unmasked axe and keyboard-visible focus", async ({ browser }) => {
-    buildClient("saas");
-    const signIn = await openBuiltClient(browser, { session: "unauthenticated" });
+  test.beforeAll(() => buildClient("saas"));
+
+  test("keeps initial loading closed, then exposes an accessible unauthenticated sign-in", async ({ browser }) => {
+    let pendingProbe: Route | undefined;
+    const signIn = await openBuiltClient(browser, {
+      sessionHandler: (route) => { pendingProbe = route; },
+    });
     try {
+      const checking = signIn.page.getByRole("status").filter({ hasText: "Checking your session" });
+      await expect(checking).toBeVisible();
+      await expect(checking).toHaveAttribute("aria-live", "polite");
+      await expect(signIn.page.locator("main[data-session-boundary]")).toHaveAttribute("aria-busy", "true");
+      await expectClosedAndRedacted(signIn.page, ["123e4567-e89b-42d3-a456-426614174000"]);
+      await axeScan(signIn.page, "initial session check");
+
+      await expect.poll(() => Boolean(pendingProbe)).toBe(true);
+      await fulfillSession(pendingProbe!, 401);
       const heading = signIn.page.getByRole("heading", { name: "Sign in to continue" });
       await expect(heading).toBeFocused();
       await axeScan(signIn.page, "sign-in required");
@@ -134,11 +168,156 @@ test.describe.serial("built fail-closed session boundary", () => {
       });
       expect(focusStyle.outlineStyle).not.toBe("none");
       expect(focusStyle.outlineWidth).not.toBe("0px");
-      expect(new Set(signIn.apiPaths)).toEqual(new Set(["/api/session"]));
+      expect(signIn.apiPaths).toEqual(["/api/session"]);
+      await expectClosedAndRedacted(signIn.page, ["123e4567-e89b-42d3-a456-426614174000"]);
     } finally {
       await closeBuiltClient(signIn.context, signIn.harness);
     }
+  });
 
+  test("starts only the reviewed GitHub handoff and keeps product data closed", async ({ browser }) => {
+    const client = await openBuiltClient(browser, { session: "unauthenticated" });
+    try {
+      await client.context.route(`${client.harness.base}/api/auth/github/start`, (route) => route.abort("aborted"));
+      const requestPromise = client.page.waitForRequest((request) =>
+        request.url() === `${client.harness.base}/api/auth/github/start`,
+      );
+      await client.page.getByRole("button", { name: "Continue with GitHub" }).click();
+      const request = await requestPromise;
+      expect(request.method()).toBe("GET");
+      expect(new URL(request.url()).search).toBe("");
+
+      const status = client.page.getByRole("status").filter({ hasText: "Continue in GitHub to sign in" });
+      await expect(status).toBeVisible();
+      await expect(status).toHaveAttribute("aria-live", "polite");
+      await expect(client.page.locator("main[data-session-boundary]")).toHaveAttribute("aria-busy", "true");
+      await expectClosedAndRedacted(client.page);
+      await axeScan(client.page, "GitHub handoff pending");
+
+      await client.page.getByRole("button", { name: "Cancel" }).click();
+      await expect(client.page.getByRole("heading", { name: "Sign in to continue" })).toBeFocused();
+    } finally {
+      await closeBuiltClient(client.context, client.harness);
+    }
+  });
+
+  test("scrubs callback URLs and distinguishes declined from rejected handoffs", async ({ browser }) => {
+    const scenarios = [
+      {
+        label: "declined callback",
+        path: "/auth/result?outcome=sign_in_declined",
+        heading: /Sign-in wasn.t completed/,
+        secret: "provider-secret-declined",
+      },
+      {
+        label: "rejected callback",
+        path: "/auth/result?outcome=authenticated&code=provider-secret-rejected",
+        heading: /verify that sign-in attempt/,
+        secret: "provider-secret-rejected",
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const callback = await openBuiltClient(browser, { path: scenario.path });
+      try {
+        const alert = callback.page.getByRole("alert");
+        const heading = callback.page.getByRole("heading", { name: scenario.heading });
+        await expect(alert).toBeVisible();
+        await expect(heading).toBeFocused();
+        await expect(callback.page).toHaveURL(`${callback.harness.base}/`);
+        await expectClosedAndRedacted(callback.page, [scenario.secret]);
+        await axeScan(callback.page, scenario.label);
+        expect(callback.apiPaths).toEqual([]);
+      } finally {
+        await closeBuiltClient(callback.context, callback.harness);
+      }
+    }
+  });
+
+  test("re-probes an authenticated callback before mounting protected content", async ({ browser }) => {
+    let pendingProbe: Route | undefined;
+    const callback = await openBuiltClient(browser, {
+      path: "/auth/result?outcome=authenticated",
+      sessionHandler: (route) => { pendingProbe = route; },
+    });
+    try {
+      await expect(callback.page).toHaveURL(`${callback.harness.base}/`);
+      await expect(callback.page.getByRole("status").filter({ hasText: "Checking your session" })).toBeVisible();
+      await expectClosedAndRedacted(callback.page, ["123e4567-e89b-42d3-a456-426614174000"]);
+      expect(callback.apiPaths).toEqual(["/api/session"]);
+
+      await expect.poll(() => Boolean(pendingProbe)).toBe(true);
+      await callback.context.route(`${callback.harness.base}/api/desktop-access`, (route) => route.fulfill({
+        status: 410,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "desktop access expired" }),
+      }));
+      await callback.context.route(`${callback.harness.base}/api/bots?messages=0`, (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(SAFE_CATALOG),
+      }));
+      await fulfillSession(pendingProbe!, 200);
+
+      await expect(callback.page.getByRole("heading", { name: "Bot catalog" })).toBeFocused();
+      await expect(callback.page.getByRole("heading", { name: "Planner" })).toBeVisible();
+      await expect(callback.page.locator("body")).not.toContainText("123e4567-e89b-42d3-a456-426614174000");
+      await axeScan(callback.page, "authenticated callback recovery");
+      expect(new Set(callback.apiPaths)).toEqual(new Set(["/api/session", "/api/bots", "/api/desktop-access"]));
+    } finally {
+      await closeBuiltClient(callback.context, callback.harness);
+    }
+  });
+
+  test("announces timeout, network, and server probe failures and recovers by manual retry", async ({ browser }) => {
+    test.setTimeout(45_000);
+    const scenarios = ["timeout", "network", "server"] as const;
+
+    for (const scenario of scenarios) {
+      const secret = `raw-${scenario}-session-secret`;
+      const client = await openBuiltClient(browser, {
+        sessionHandler: async (route, attempt) => {
+          if (attempt > 2) return fulfillSession(route, 401);
+          if (scenario === "network") return route.abort("connectionrefused");
+          if (scenario === "server") {
+            return route.fulfill({
+              status: 503,
+              contentType: "application/json",
+              body: JSON.stringify({ error: "provider unavailable", token: secret }),
+            });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5_250));
+          try {
+            await route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({ user: { id: secret } }),
+            });
+          } catch {
+            // The app's reviewed five-second AbortController deadline wins.
+          }
+        },
+      });
+      try {
+        const heading = client.page.getByRole("heading", { name: /check your session right now/ });
+        await expect(heading).toBeFocused({ timeout: 15_000 });
+        const status = client.page.getByRole("status").filter({ has: heading });
+        await expect(status).toHaveAttribute("aria-live", "polite");
+        expect(client.apiPaths).toEqual(["/api/session", "/api/session"]);
+        await expectClosedAndRedacted(client.page, [secret]);
+        await axeScan(client.page, `${scenario} session failure`);
+
+        await client.page.getByRole("button", { name: "Try again" }).click();
+        await expect(client.page.getByRole("heading", { name: "Sign in to continue" })).toBeFocused();
+        expect(client.apiPaths).toEqual(["/api/session", "/api/session", "/api/session"]);
+        await expectClosedAndRedacted(client.page, [secret]);
+      } finally {
+        await closeBuiltClient(client.context, client.harness);
+      }
+    }
+  });
+
+  test("renders an explicitly rejected callback as an assertive, focused alert", async ({ browser }) => {
     const callback = await openBuiltClient(browser, { path: "/auth/result?outcome=callback_rejected" });
     try {
       const alert = callback.page.getByRole("alert");
@@ -154,7 +333,6 @@ test.describe.serial("built fail-closed session boundary", () => {
   });
 
   test("exact saas mode mounts only the boundary and restores sign-out focus", async ({ browser }) => {
-    buildClient("saas");
     const { context, harness, page, apiPaths, apiUrls } = await openBuiltClient(browser, { session: "authenticated" });
     try {
       await expect(page.getByRole("heading", { name: "Bot catalog" })).toBeVisible();
@@ -193,7 +371,6 @@ test.describe.serial("built fail-closed session boundary", () => {
   });
 
   test("a catalog 401 clears protected content and returns to the ended-session boundary", async ({ browser }) => {
-    buildClient("saas");
     const { context, harness, page, apiUrls } = await openBuiltClient(browser, {
       session: "authenticated",
       catalog: {
