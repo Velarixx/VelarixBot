@@ -3,9 +3,15 @@
 // No sleeps; HOME is the vitest temp dir.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { readFileSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import {
+  approvalResponse,
+  submitCardResponse,
+  type CardDispatchAction,
+  type CardResponse,
+} from "../src/components/OptionCard.tsx";
 import { DATA_DIR } from "./config.ts";
 import { defaultDbPath, openDatabase } from "./db/database.ts";
 import type { SqliteDatabase } from "./db/sqlite-native.ts";
@@ -95,15 +101,60 @@ describe("PRO suggestion cards", () => {
     }
   });
 
-  it("does not change P0.1 Allow copy or persist rules", () => {
-    const card = readFileSync(new URL("../src/components/OptionCard.tsx", import.meta.url), "utf8");
-    const approvals = readFileSync(new URL("./approvals.ts", import.meta.url), "utf8");
-    expect(card).toContain("Always allow for this bot");
-    expect(card).toContain("Advanced: always allow for all bots");
-    expect(card).toContain('answer: "Allow once"');
-    expect(card).toContain('persistScope: "workspace"');
-    expect(approvals).toContain("Allow once");
-    expect(approvals).toContain("Always allow for this bot");
+  it("submits canonical P0.1 approval scopes without persisting Deny or credentials", () => {
+    const actions: CardDispatchAction[] = [];
+    const submit = (response: CardResponse) => submitCardResponse({
+      botId: "bot-1",
+      messageId: "message-1",
+      liveRequest: false,
+      response,
+      submitting: { current: false },
+      dispatch: (action) => actions.push(action),
+      setSubmitting: () => undefined,
+      setResponseError: () => undefined,
+      setRetainedResponse: () => undefined,
+      clearSecret: () => undefined,
+    });
+
+    submit(approvalResponse("bot"));
+    submit(approvalResponse("workspace"));
+    submit({ answer: "Deny" });
+    submit({ answer: "••••", secret: "test-credential" });
+
+    expect(actions).toStrictEqual([
+      {
+        type: "answerCard",
+        botId: "bot-1",
+        messageId: "message-1",
+        answer: "Allow once",
+        always: true,
+      },
+      {
+        type: "answerCard",
+        botId: "bot-1",
+        messageId: "message-1",
+        answer: "Allow once",
+        always: true,
+        persistScope: "workspace",
+      },
+      {
+        type: "answerCard",
+        botId: "bot-1",
+        messageId: "message-1",
+        answer: "Deny",
+      },
+      {
+        type: "answerCard",
+        botId: "bot-1",
+        messageId: "message-1",
+        answer: "••••",
+        secret: "test-credential",
+      },
+    ]);
+    for (const action of actions.slice(2)) {
+      expect(action).not.toHaveProperty("always");
+      expect(action).not.toHaveProperty("persistScope");
+    }
   });
 
   it("card answers never start a turn for suggestion or live asks", () => {
