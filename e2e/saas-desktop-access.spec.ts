@@ -87,11 +87,10 @@ async function axeScan(page: Page, label: string): Promise<void> {
   }
   const violations = await page.evaluate(async () => {
     const axe = (window as typeof window & {
-      axe: { run(context: { exclude: string[][] }, options: unknown): Promise<{ violations: unknown[] }> };
+      axe: { run(context: Document, options: unknown): Promise<{ violations: unknown[] }> };
     }).axe;
     const result = await axe.run(
-      // The independently owned DHV-63 fix removes this temporary exclusion.
-      { exclude: [[".bg-accent"]] },
+      document,
       { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } },
     );
     return result.violations;

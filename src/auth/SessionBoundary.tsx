@@ -55,7 +55,7 @@ interface SessionBoundaryViewProps {
 }
 
 const primaryButton =
-  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-[14px] font-semibold text-white transition-colors hover:bg-accent/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-60";
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-action-primary px-4 py-2.5 text-[14px] font-semibold text-white transition-colors hover:bg-action-primary-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-wait disabled:bg-action-primary-disabled disabled:text-white";
 const secondaryButton =
   "inline-flex min-h-11 items-center justify-center rounded-lg border border-line bg-raised px-4 py-2.5 text-[14px] font-medium text-ink transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
 

@@ -16,6 +16,9 @@
   --color-ink-secondary: #fcfcfc99;
   --color-accent: #1084fe;
   --color-accent-border: #459ffe;
+  --color-action-primary: #0069d9;
+  --color-action-primary-hover: #005bbf;
+  --color-action-primary-disabled: #315f8c;
   --color-bubble-user: #5a5a5a;
   --color-success: #38d591;
   --color-danger: #ff5667;

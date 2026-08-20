@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,6 +9,7 @@ import { bootHarness, type BootedHarness } from "../server/testing/harness.ts";
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 const VITE_CLI = join(REPO, "node_modules", "vite", "bin", "vite.js");
+const AXE_PATH = createRequire(import.meta.url).resolve("axe-core/axe.min.js");
 const UNAPPROVED_PRODUCT_PATH = /^\/api\/(?:instances|config|routines|events|groups|approvals|computers|workspaces)(?:\/|$)/;
 
 const SAFE_CATALOG = {
@@ -38,8 +40,9 @@ function buildClient(mode: string): void {
 async function openBuiltClient(
   browser: Browser,
   options: {
-    session?: "authenticated";
+    session?: "authenticated" | "unauthenticated";
     catalog?: { status: number; body: unknown };
+    path?: string;
   },
 ): Promise<{ context: BrowserContext; harness: BootedHarness; page: Page; apiPaths: string[]; apiUrls: string[] }> {
   const harness = await bootHarness({
@@ -67,12 +70,16 @@ async function openBuiltClient(
     };
     new MutationObserver(inspect).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
   });
-  if (options.session === "authenticated") {
+  if (options.session) {
     await context.route(`${harness.base}/api/session`, (route) => route.fulfill({
-      status: 200,
+      status: options.session === "authenticated" ? 200 : 401,
       contentType: "application/json",
-      body: JSON.stringify({ user: { id: "123e4567-e89b-42d3-a456-426614174000" } }),
+      body: JSON.stringify(options.session === "authenticated"
+        ? { user: { id: "123e4567-e89b-42d3-a456-426614174000" } }
+        : { error: "unauthorized" }),
     }));
+  }
+  if (options.session === "authenticated") {
     await context.route(`${harness.base}/api/desktop-access`, (route) => route.fulfill({
       status: 410,
       contentType: "application/json",
@@ -86,7 +93,7 @@ async function openBuiltClient(
     }));
   }
   const page = await context.newPage();
-  await page.goto(harness.base, { waitUntil: "domcontentloaded" });
+  await page.goto(`${harness.base}${options.path ?? ""}`, { waitUntil: "domcontentloaded" });
   return { context, harness, page, apiPaths, apiUrls };
 }
 
@@ -95,7 +102,57 @@ async function closeBuiltClient(context: BrowserContext, harness: BootedHarness)
   await harness.stop();
 }
 
+async function axeScan(page: Page, label: string): Promise<void> {
+  await page.addScriptTag({ path: AXE_PATH });
+  const violations = await page.evaluate(async () => {
+    const axe = (window as typeof window & {
+      axe: { run(context: Document, options: unknown): Promise<{ violations: unknown[] }> };
+    }).axe;
+    const result = await axe.run(document, {
+      runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+    });
+    return result.violations;
+  });
+  expect(violations, `${label} axe violations:\n${JSON.stringify(violations, null, 2)}`).toEqual([]);
+}
+
 test.describe.serial("built fail-closed session boundary", () => {
+  test("announces sign-in and callback states with unmasked axe and keyboard-visible focus", async ({ browser }) => {
+    buildClient("saas");
+    const signIn = await openBuiltClient(browser, { session: "unauthenticated" });
+    try {
+      const heading = signIn.page.getByRole("heading", { name: "Sign in to continue" });
+      await expect(heading).toBeFocused();
+      await axeScan(signIn.page, "sign-in required");
+
+      await signIn.page.keyboard.press("Tab");
+      const primaryAction = signIn.page.getByRole("button", { name: "Continue with GitHub" });
+      await expect(primaryAction).toBeFocused();
+      const focusStyle = await primaryAction.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
+      });
+      expect(focusStyle.outlineStyle).not.toBe("none");
+      expect(focusStyle.outlineWidth).not.toBe("0px");
+      expect(new Set(signIn.apiPaths)).toEqual(new Set(["/api/session"]));
+    } finally {
+      await closeBuiltClient(signIn.context, signIn.harness);
+    }
+
+    const callback = await openBuiltClient(browser, { path: "/auth/result?outcome=callback_rejected" });
+    try {
+      const alert = callback.page.getByRole("alert");
+      const heading = callback.page.getByRole("heading", { name: /verify that sign-in attempt/ });
+      await expect(alert).toBeVisible();
+      await expect(heading).toBeFocused();
+      await expect(callback.page).toHaveURL(`${callback.harness.base}/`);
+      await axeScan(callback.page, "callback rejected");
+      expect(callback.apiPaths).toEqual([]);
+    } finally {
+      await closeBuiltClient(callback.context, callback.harness);
+    }
+  });
+
   test("exact saas mode mounts only the boundary and restores sign-out focus", async ({ browser }) => {
     buildClient("saas");
     const { context, harness, page, apiPaths, apiUrls } = await openBuiltClient(browser, { session: "authenticated" });

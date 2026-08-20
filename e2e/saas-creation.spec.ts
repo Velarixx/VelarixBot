@@ -8,6 +8,7 @@ import {
   test,
   type Browser,
   type BrowserContext,
+  type Locator,
   type Page,
   type Route,
 } from "playwright/test";
@@ -131,20 +132,36 @@ async function axeScan(page: Page, label: string): Promise<void> {
     const axe = (window as typeof window & {
       axe: {
         run(
-          context: { exclude: string[][] },
+          context: Document,
           options: unknown,
         ): Promise<{ violations: unknown[] }>;
       };
     }).axe;
     const result = await axe.run(
-      // DHV-63 owns the audited baseline contrast defect on accent actions.
-      // Keep every other WCAG A/AA rule active for this outcome matrix.
-      { exclude: [[".bg-accent"]] },
+      document,
       { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } },
     );
     return result.violations;
   });
   expect(violations, `${label} axe violations:\n${JSON.stringify(violations, null, 2)}`).toEqual([]);
+}
+
+async function expectContrastAtLeast(locator: Locator, minimum = 4.5): Promise<void> {
+  const contrast = await locator.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const luminance = (color: string) => {
+      const channels = color.match(/[\d.]+/g)?.slice(0, 3).map((value) => Number(value) / 255);
+      if (!channels || channels.length !== 3) throw new Error(`Unsupported computed color: ${color}`);
+      const linear = channels.map((channel) => (
+        channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+      ));
+      return (0.2126 * linear[0]) + (0.7152 * linear[1]) + (0.0722 * linear[2]);
+    };
+    const foreground = luminance(style.color);
+    const background = luminance(style.backgroundColor);
+    return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+  });
+  expect(contrast).toBeGreaterThanOrEqual(minimum);
 }
 
 async function expectNoRawDetail(page: Page): Promise<void> {
@@ -184,6 +201,20 @@ test.describe("SaaS default-bot creation outcomes", () => {
       const createButton = page.getByRole("button", { name: "Create bot" });
       const stableCreateButton = page.locator("header button").first();
 
+      await axeScan(page, "catalog default action");
+      await expectContrastAtLeast(createButton);
+      await page.keyboard.press("Tab");
+      await expect(createButton).toBeFocused();
+      const focusStyle = await createButton.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
+      });
+      expect(focusStyle.outlineStyle).not.toBe("none");
+      expect(focusStyle.outlineWidth).not.toBe("0px");
+      await createButton.hover();
+      await expectContrastAtLeast(createButton);
+      await axeScan(page, "catalog hovered action");
+
       await createButton.evaluate((button: HTMLButtonElement) => {
         button.click();
         button.click();
@@ -192,6 +223,7 @@ test.describe("SaaS default-bot creation outcomes", () => {
       await expect(page.getByRole("status").filter({ hasText: "Creating your bot" })).toBeVisible();
       await expect(page.locator("main[data-saas-catalog]")).toHaveAttribute("aria-busy", "true");
       await expect(stableCreateButton).toBeDisabled();
+      await expectContrastAtLeast(stableCreateButton);
       await expect(page.getByRole("button", { name: "Sign out" })).toBeEnabled();
       await expect(page.getByRole("heading", { name: "Planner" })).toBeVisible();
       await axeScan(page, "creating");

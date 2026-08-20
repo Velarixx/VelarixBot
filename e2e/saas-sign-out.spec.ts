@@ -128,14 +128,13 @@ async function axeScan(page: Page, label: string): Promise<void> {
     const axe = (window as typeof window & {
       axe: {
         run(
-          context: { exclude: string[][] },
+          context: Document,
           options: unknown,
         ): Promise<{ violations: unknown[] }>;
       };
     }).axe;
     const result = await axe.run(
-      // DHV-63 owns the audited baseline contrast defect on accent actions.
-      { exclude: [[".bg-accent"]] },
+      document,
       { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } },
     );
     return result.violations;
