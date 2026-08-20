@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -85,7 +85,7 @@ describe("win32 cua connection from a faked binary/socket contract", () => {
       resourcesPath: "C:\\\\VelarixBot\\\\resources",
       exists: (p) => p.endsWith("cua-driver.exe"),
     });
-    expect(found).toBe(join("C:\\\\VelarixBot\\\\resources", "cua-driver.exe"));
+    expect(found).toBe(win32.join("C:\\\\VelarixBot\\\\resources", "cua-driver.exe"));
     expect(bundledDriverNames("win32")).toEqual(["cua-driver.exe", "cua-driver"]);
   });
 });
