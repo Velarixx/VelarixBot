@@ -44,6 +44,7 @@ export const SECURITY_AUDIT_REASONS = [
   "replay",
   "unauthenticated",
   "invalid_request",
+  "no_current_binding",
   "quota",
   "internal_failure",
   "created",

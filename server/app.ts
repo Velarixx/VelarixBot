@@ -132,10 +132,22 @@ export async function createApplication(input: CreateApplicationInput): Promise<
             defaultTtlMs: 60_000,
             maxTtlMs: 120_000,
           },
-          // The repository capability above records transactional issue,
-          // resolve, and revoke audit decisions. This service-level sink is
-          // intentionally metadata-only and must not duplicate those events.
-          audit() {},
+          // Successful issue plus resolve/revoke decisions reach the audited
+          // repository capability above. Pre-mint issue denials do not, so
+          // persist only those here and leave success ownership in one place.
+          audit(event) {
+            if (
+              event.action === "issue" &&
+              event.outcome !== "succeeded" &&
+              (event.reason === "no_current_binding" || event.reason === "quota")
+            ) {
+              securityAudit!.recordTenant(event.ownerId, {
+                action: "grant.issue",
+                decision: "deny",
+                reason: event.reason,
+              });
+            }
+          },
           now: () => clock.now(),
         })
       : null;
