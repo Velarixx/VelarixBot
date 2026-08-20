@@ -4,6 +4,7 @@ export default defineConfig({
   testDir: "./e2e",
   testMatch: [
     "fake-engine-smoke.spec.ts",
+    "saas-creation.spec.ts",
     "session-boundary.spec.ts",
     "saas-error-recovery.spec.ts",
   ],

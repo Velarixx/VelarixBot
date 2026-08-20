@@ -40,3 +40,12 @@ prompt, and response each hydrate exactly once in both UI and server snapshot.
 The approval journey uses the fake Codex app-server's `approval` mode. It
 asserts the visible risky-command request, denies it through the card, waits for
 one completed response, and verifies no allow rule was persisted.
+
+The built SaaS creation matrix uses only same-origin Playwright route fakes. It
+covers creating and post-create refetch progress, `201` plus an authoritative
+catalog replacement, create/refetch `401`, quota `409`, client timeout, network
+and server failures, duplicate-submit suppression, POST retry, refresh-only
+retry, and recovery. Every terminal state asserts request counts, protected
+content handling, focus/live-region behavior, disabled controls, redacted error
+details, and a local axe-core WCAG A/AA scan. The scan temporarily excludes only
+the independently audited accent-action contrast defect tracked by DHV-63.
