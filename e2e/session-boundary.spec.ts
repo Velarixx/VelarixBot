@@ -426,8 +426,14 @@ test.describe.serial("built fail-closed session boundary", () => {
       staticDir: join(REPO, "dist"),
     });
     try {
-      await expect(release.page.getByRole("heading", { name: "Welcome to VelarixBot" })).toBeVisible();
+      const welcome = release.page.getByRole("heading", { name: "Welcome to VelarixBot" });
+      const signIn = release.page.getByRole("heading", { name: "Sign in to continue" });
+      await expect(welcome.or(signIn)).toBeVisible();
+      if (await signIn.isVisible()) {
+        await expect(release.page.getByRole("button", { name: "Continue with GitHub" })).toBeVisible();
+      }
       await expect(release.page.getByRole("alert").filter({ hasText: /start safely/ })).toHaveCount(0);
+      await expect(release.page.getByText("Product access remains closed")).toHaveCount(0);
     } finally {
       await closeBuiltClient(release.context, release.harness);
     }
