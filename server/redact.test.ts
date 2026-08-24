@@ -74,6 +74,26 @@ describe("redactSecrets", () => {
     expect(out).toContain('"1"'); // a non-secret value is untouched
   });
 
+  it("masks bearer, cookies, and client secrets in diagnostic-shaped payloads", () => {
+    const nonce = `qvx${Date.now().toString(36)}`;
+    const bearer = ["Bearer", nonce].join(" ");
+    const cookie = `sid=${["sess", nonce].join("_")}`;
+    const client = ["cs", nonce].join("_");
+    const out = flat(
+      redactSecrets({
+        authorization: bearer,
+        Cookie: cookie,
+        client_secret: client,
+        note: "ordinary diagnostic text",
+      }),
+    );
+    expect(out).not.toContain(nonce);
+    expect(out).not.toContain(cookie);
+    expect(out).not.toContain(client);
+    expect(out).toContain("ordinary diagnostic text");
+    expect(out).toMatch(/redacted/);
+  });
+
   it("leaves ordinary protocol traffic alone", () => {
     const update = {
       method: "session/update",

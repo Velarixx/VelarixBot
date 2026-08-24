@@ -5,11 +5,22 @@
 import readline from "node:readline";
 
 import { parseAllowedToolkits, toolAllowedForApps } from "./composio-filter.ts";
+import {
+  cacheToolList,
+  cachedToolList,
+  currentToolListGeneration,
+  invalidateToolLists,
+  normalizeConnectorFailure,
+  shouldInvalidateToolList,
+} from "./connector-lifecycle.ts";
 
 const CONNECT_URL = "https://connect.composio.dev/mcp";
 const URL = (process.env.OMB_COMPOSIO_URL || "").trim() || CONNECT_URL;
 const KEY = process.env.OMB_COMPOSIO_KEY ?? "";
 const ALLOWED = parseAllowedToolkits(process.env.OMB_ALLOWED_TOOLKITS ?? "");
+const TOOL_CACHE_ID = (process.env.OMB_COMPOSIO_CACHE_ID || "").trim() || "composio";
+const SPAWN_TOOL_GEN = Number.parseInt(process.env.OMB_COMPOSIO_TOOL_GEN || "", 10);
+const TOOL_GEN = Number.isFinite(SPAWN_TOOL_GEN) ? SPAWN_TOOL_GEN : currentToolListGeneration();
 
 function sessionHeaders(): Record<string, string> {
   const raw = (process.env.OMB_COMPOSIO_MCP_HEADERS || "").trim();
@@ -83,12 +94,20 @@ async function handle(msg: Json) {
         ok(id, { tools: [] });
         return;
       }
+      const cached = cachedToolList(TOOL_CACHE_ID, TOOL_GEN);
+      if (cached) {
+        ok(id, { tools: cached });
+        return;
+      }
       try {
         const result = (await remote("tools/list", {})) as { tools?: Array<{ name?: string }> } | null;
         const tools = (result?.tools ?? []).filter((t) => toolAllowedForApps(String(t?.name ?? ""), ALLOWED));
+        cacheToolList(TOOL_CACHE_ID, tools, TOOL_GEN);
         ok(id, { tools });
       } catch (e) {
-        rpcErr(id, -32603, (e as Error).message);
+        const n = normalizeConnectorFailure(e);
+        if (shouldInvalidateToolList(n)) invalidateToolLists("stale");
+        rpcErr(id, -32603, n.message);
       }
       return;
     }
@@ -102,7 +121,9 @@ async function handle(msg: Json) {
         const result = await remote("tools/call", { name, arguments: params.arguments ?? {} });
         ok(id, result);
       } catch (e) {
-        textResult(id, (e as Error).message, true);
+        const n = normalizeConnectorFailure(e);
+        if (shouldInvalidateToolList(n)) invalidateToolLists("stale");
+        textResult(id, n.message, true);
       }
       return;
     }

@@ -152,7 +152,11 @@ export async function pollSlackListener(
   deps: {
     cfg: AppConfig;
     feed: SlackFeed;
-    connectionStatus?: typeof composio.connectionStatus;
+    connectionStatus?: (
+      cfg: AppConfig,
+      slugs: string[],
+      botId?: string,
+    ) => Promise<Record<string, { connected: boolean; status?: string }>>;
   },
 ): Promise<{ status: "match" | "no-match" | "skip"; reason?: string; cursor: string | null }> {
   const channel = schedule.channel?.trim();

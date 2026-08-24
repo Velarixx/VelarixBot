@@ -28,6 +28,7 @@ describe("composio-proxy MCP surface", () => {
   let stubPort = 0;
   let lastAuth: string | undefined;
   let lastCall: { name?: string } | null = null;
+  let listHits = 0;
   let child: ChildProcess;
   const pending = new Map<number, (msg: any) => void>();
   let nextId = 100;
@@ -51,6 +52,7 @@ describe("composio-proxy MCP surface", () => {
       req.on("end", () => {
         const msg = JSON.parse(data || "{}");
         if (msg.method === "tools/list") {
+          listHits += 1;
           res.writeHead(200, { "content-type": "application/json" });
           return res.end(
             JSON.stringify({
@@ -67,6 +69,10 @@ describe("composio-proxy MCP surface", () => {
         }
         if (msg.method === "tools/call") {
           lastCall = msg.params;
+          if (msg.params?.name === "GOOGLEDRIVE_STALE") {
+            res.writeHead(401, { "content-type": "application/json" });
+            return res.end(JSON.stringify({ error: "unauthorized" }));
+          }
           res.writeHead(200, { "content-type": "application/json" });
           return res.end(
             JSON.stringify({
@@ -88,6 +94,8 @@ describe("composio-proxy MCP surface", () => {
         OMB_COMPOSIO_URL: `http://127.0.0.1:${stubPort}`,
         OMB_COMPOSIO_KEY: KEY,
         OMB_ALLOWED_TOOLKITS: "googledrive",
+        OMB_COMPOSIO_TOOL_GEN: "7",
+        OMB_COMPOSIO_CACHE_ID: "drive-bot",
       },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -118,6 +126,10 @@ describe("composio-proxy MCP surface", () => {
     const names = list.result.tools.map((t: { name: string }) => t.name);
     expect(names).toEqual(["GOOGLEDRIVE_LIST_FILES"]);
     expect(lastAuth).toBe(KEY);
+    expect(listHits).toBe(1);
+    const again = await rpc("tools/list");
+    expect(again.result.tools.map((t: { name: string }) => t.name)).toEqual(["GOOGLEDRIVE_LIST_FILES"]);
+    expect(listHits).toBe(1);
   });
 
   it("forwards an allowed Drive call and refuses Gmail", async () => {
@@ -128,5 +140,16 @@ describe("composio-proxy MCP surface", () => {
     expect(denied.result.isError).toBe(true);
     expect(denied.result.content[0].text).toMatch(/not allowed/i);
     expect(JSON.stringify(ok)).not.toContain(KEY);
+  });
+
+  it("invalidates the cached tool list after a stale-auth failure", async () => {
+    const hitsBefore = listHits;
+    const stale = await rpc("tools/call", { name: "GOOGLEDRIVE_STALE", arguments: {} });
+    expect(stale.result.isError).toBe(true);
+    expect(stale.result.content[0].text).toMatch(/401|unauthorized|stale/i);
+    expect(JSON.stringify(stale)).not.toContain(KEY);
+    const list = await rpc("tools/list");
+    expect(list.result.tools.map((t: { name: string }) => t.name)).toEqual(["GOOGLEDRIVE_LIST_FILES"]);
+    expect(listHits).toBe(hitsBefore + 1);
   });
 });

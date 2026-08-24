@@ -42,6 +42,11 @@ import {
   type DiscordService,
 } from "../discord.ts";
 import { parseAllowlists, parseDiscordBindings } from "../channels/discord-protocol.ts";
+import {
+  ConnectorError,
+  publicConnectorFailure,
+  redactConnectorDiagnostics,
+} from "../connector-lifecycle.ts";
 import { json, readBody, type RouteHandler } from "./context.ts";
 
 export interface IntegrationsRoutes {
@@ -594,20 +599,28 @@ export function createIntegrationsRoutes(deps: {
         return true;
       }
       const status = await composio.connectionStatus(cfg, services.length ? services : composio.CURATED_SLUGS, botId);
-      json(res, 200, { configured: true, services: status });
+      json(res, 200, redactConnectorDiagnostics({ configured: true, services: status }));
       return true;
     }
     let m = path.match(/^\/api\/connectors\/([\w-]+)\/authorize$/);
     if (m && method === "POST") {
       const body = await readBody(req);
       const botId = typeof body.botId === "string" ? body.botId : url.searchParams.get("botId") || undefined;
-      json(res, 200, await composio.authorizeService(cfg, m[1], botId));
+      try {
+        json(res, 200, await composio.authorizeService(cfg, m[1], botId));
+      } catch (e) {
+        json(res, e instanceof ConnectorError ? e.status : 400, publicConnectorFailure(e));
+      }
       return true;
     }
     m = path.match(/^\/api\/connectors\/([\w-]+)$/);
     if (m && method === "DELETE") {
       const botId = url.searchParams.get("botId") || undefined;
-      json(res, 200, await composio.removeService(cfg, m[1], botId));
+      try {
+        json(res, 200, await composio.removeService(cfg, m[1], botId));
+      } catch (e) {
+        json(res, 400, publicConnectorFailure(e));
+      }
       return true;
     }
     return false;

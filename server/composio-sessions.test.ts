@@ -14,6 +14,7 @@ import {
   sessionProxyEnv,
   sessionUserId,
 } from "./composio-sessions.ts";
+import { currentToolListGeneration, invalidateToolLists } from "./connector-lifecycle.ts";
 import { toolAllowedForApps } from "./composio-filter.ts";
 import { bootHarness, type BootedHarness } from "./testing/harness.ts";
 
@@ -113,8 +114,22 @@ describe("session identity + mount env (no live Composio)", () => {
     expect(env.OMB_COMPOSIO_URL).toBe("http://127.0.0.1/mcp/sess-1");
     expect(JSON.parse(env.OMB_COMPOSIO_MCP_HEADERS)).toEqual({ "x-session": "sess-1" });
     expect(env.OMB_ALLOWED_TOOLKITS).toBe("gmail");
+    expect(env.OMB_COMPOSIO_TOOL_GEN).toBe(String(currentToolListGeneration()));
     expect(env.OMB_COMPOSIO_KEY).toBeUndefined();
     expect(JSON.stringify(env)).not.toMatch(/ak_|ck_/);
+    const after = invalidateToolLists("auth_change");
+    const refreshed = sessionProxyEnv(
+      {
+        sessionId: "sess-1",
+        userId: "velarix_bot-a",
+        botId: "bot-a",
+        url: "http://127.0.0.1/mcp/sess-1",
+        headers: { "x-session": "sess-1" },
+      },
+      ["gmail"],
+    );
+    expect(refreshed.OMB_COMPOSIO_TOOL_GEN).toBe(String(after));
+    expect(refreshed.OMB_COMPOSIO_TOOL_GEN).not.toBe(env.OMB_COMPOSIO_TOOL_GEN);
   });
 
   it("COMPOSIO_MANAGE_* stays blocked even when an app is enabled", () => {
