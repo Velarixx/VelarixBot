@@ -167,10 +167,17 @@ describe("harness HTTP API", () => {
     expect(body.stamp).toBe("ensureBotWorkspace+mcpOverlay");
   });
 
-  it("exposes a read-only empty channel-connector registry", async () => {
+  it("exposes a read-only channel-connector registry with Discord disconnected", async () => {
     const { status, body } = await api("GET", "/api/channels");
     expect(status).toBe(200);
-    expect(body).toEqual({ connectors: [] });
+    expect(body.connectors).toEqual([
+      expect.objectContaining({
+        id: "discord",
+        kind: "discord",
+        configured: false,
+        status: "disconnected",
+      }),
+    ]);
     expect((await api("GET", "/api/channels/nope")).status).toBe(404);
     expect((await api("POST", "/api/channels", {})).status).toBe(404);
   });
@@ -525,6 +532,39 @@ describe("harness HTTP API", () => {
       status: "disconnected",
     });
     expect(JSON.stringify(put.body)).not.toMatch(/telegram\.token|secret:\/\//);
+  });
+
+  it("exposes Discord as disconnected by default and persists allowlists/bindings without echoing a token", async () => {
+    const before = await api("GET", "/api/config");
+    expect(before.body.discord).toMatchObject({
+      configured: false,
+      enabled: false,
+      guildAllowlist: [],
+      channelAllowlist: [],
+      userAllowlist: [],
+      status: "disconnected",
+    });
+    expect(before.body.discord.nextStep).toMatch(/allowlist/i);
+    const bots = await api("GET", "/api/bots");
+    const botId = (bots.body.bots[0]?.id ?? (await api("POST", "/api/bots", { name: "Discord Agent" })).body.bot.id) as string;
+    const put = await api("PUT", "/api/config", {
+      discord: {
+        enabled: false,
+        defaultBotId: botId,
+        guildAllowlist: ["10"],
+        userAllowlist: ["30", "@ada"],
+      },
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.discord).toMatchObject({
+      configured: false,
+      enabled: false,
+      defaultBotId: botId,
+      guildAllowlist: ["10"],
+      userAllowlist: ["30", "@ada"],
+      status: "disconnected",
+    });
+    expect(JSON.stringify(put.body)).not.toMatch(/discord\.token|secret:\/\//);
   });
 
   it("boot migrated the seeded plaintext secret out of config.json", async () => {

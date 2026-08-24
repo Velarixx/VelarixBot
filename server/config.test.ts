@@ -132,6 +132,34 @@ describe("config persistence hardening", () => {
     expect(cfg.telegram?.allowlist).toEqual(["12345", "@alice"]);
   });
 
+  it("seals the Discord bot token and persists allowlists and bindings in plaintext", async () => {
+    ensureDirs();
+    const token = canary("discord");
+    await saveConfig({
+      discord: {
+        token,
+        enabled: true,
+        defaultBotId: "bot-1",
+        guildAllowlist: ["10"],
+        channelAllowlist: ["20"],
+        userAllowlist: ["30"],
+        bindings: [{ guildId: "10", channelId: "20", botId: "bot-1" }],
+      },
+    });
+    const raw = readFileSync(join(DATA_DIR, "config.json"), "utf8");
+    expect(raw).not.toContain(token);
+    const disk = JSON.parse(raw);
+    expect(disk.discord.token).toBe("secret://discord.token");
+    expect(disk.discord.enabled).toBe(true);
+    expect(disk.discord.defaultBotId).toBe("bot-1");
+    expect(disk.discord.guildAllowlist).toEqual(["10"]);
+    expect(disk.discord.bindings).toEqual([{ guildId: "10", channelId: "20", botId: "bot-1" }]);
+    const cfg = loadConfig();
+    expect(cfg.discord?.token).toBe(token);
+    expect(cfg.discord?.enabled).toBe(true);
+    expect(cfg.discord?.guildAllowlist).toEqual(["10"]);
+  });
+
   it("clearing a key deletes the ref from config.json and the stored secret", async () => {
     ensureDirs();
     const key = canary("omni");

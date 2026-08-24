@@ -50,6 +50,25 @@ export interface AppConfig {
   /** Bitwarden Secrets Manager machine-account access token. Write-only.
    * Optional identityUrl/apiUrl override US cloud (tests + self-host). */
   bitwarden?: { accessToken?: string; identityUrl?: string; apiUrl?: string };
+  /** Optional Discord Gateway connector. token is write-only (SecretStore).
+   * Allowlists and bot/group bindings are settings, not secrets. Empty
+   * allowlist authorizes nobody. */
+  discord?: {
+    token?: string;
+    enabled?: boolean;
+    defaultBotId?: string;
+    defaultGroupId?: string;
+    guildAllowlist?: string[];
+    channelAllowlist?: string[];
+    userAllowlist?: string[];
+    bindings?: Array<{
+      guildId?: string;
+      channelId?: string;
+      threadId?: string;
+      botId?: string;
+      groupId?: string;
+    }>;
+  };
 
   instances?: InstanceConfigMap;
 
@@ -109,9 +128,10 @@ export const SECRET_FIELDS = [
   { section: "omnirouter", prop: "key" },
   { section: "telegram", prop: "token" },
   { section: "bitwarden", prop: "accessToken" },
+  { section: "discord", prop: "token" },
 ] as const;
 
-const CONFIG_SECTIONS = ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter", "telegram", "bitwarden"] as const;
+const CONFIG_SECTIONS = ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter", "telegram", "bitwarden", "discord"] as const;
 
 export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};
