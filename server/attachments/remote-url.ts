@@ -36,8 +36,13 @@ const BLOCKED_HOSTS = new Set([
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_REDIRECTS = 5;
 
+function unwrapIpv6Host(host: string): string {
+  if (host.startsWith("[") && host.endsWith("]")) return host.slice(1, -1);
+  return host;
+}
+
 function normalizeHost(host: string): string {
-  return host.trim().toLowerCase().replace(/\.$/, "");
+  return unwrapIpv6Host(host.trim().toLowerCase().replace(/\.$/, ""));
 }
 
 function ipv4Parts(address: string): number[] | null {
@@ -177,7 +182,7 @@ export async function downloadRemoteAttachment(raw: string, opts: RemoteDownload
   for (let hops = 0; hops <= maxRedirects; hops++) {
     const assessed = assessRemoteAttachmentUrl(current.href, opts);
     if (!assessed.ok) return assessed;
-    const resolved = await resolveAndCheck(current.hostname, lookup, allowLinkLocal);
+    const resolved = await resolveAndCheck(normalizeHost(current.hostname), lookup, allowLinkLocal);
     if (!resolved.ok) return resolved;
     let response: Response;
     try {

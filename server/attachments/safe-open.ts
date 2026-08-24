@@ -1,5 +1,5 @@
 // Safe-open policy: reveal or read an attachment without executing it.
-// This module never imports child_process and never builds a command string.
+// This module never spawns a process and never builds a command string.
 
 import { extname } from "node:path";
 

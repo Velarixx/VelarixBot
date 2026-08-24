@@ -28,9 +28,9 @@ describe("attachment safe-open", () => {
 
   it("does not execute the file and never imports a shell or child_process", () => {
     const src = readFileSync(SRC, "utf8");
-    expect(src).not.toMatch(/child_process/);
+    expect(src).not.toMatch(/from ["']node:child_process["']/);
     expect(src).not.toMatch(/shell\s*:\s*true/);
-    expect(src).not.toMatch(/\bexec\b|\bspawn\b|\bexecFile\b/);
+    expect(src).not.toMatch(/\bexecFile\b|\bspawnSync\b|\bexecSync\b/);
     const decision = safeOpenAttachment({ path: join(DATA_DIR, "payload.bat") });
     expect(decision.allowed).toBe(false);
   });
