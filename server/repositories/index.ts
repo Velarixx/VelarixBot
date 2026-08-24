@@ -26,6 +26,7 @@ import {
   createDiscordConversationsRepository,
   type DiscordConversationsRepository,
 } from "./discord-conversations.ts";
+import { createLaneIdempotencyRepository, type LaneIdempotencyRepository } from "./lanes.ts";
 import type { MemoryRowsStore } from "../memory.ts";
 
 export interface Repositories {
@@ -43,6 +44,7 @@ export interface Repositories {
   agentTasks: AgentTasksStore;
   telegramConversations: TelegramConversationsRepository;
   discordConversations: DiscordConversationsRepository;
+  lanes: LaneIdempotencyRepository;
   /** Delete a bot and everything hanging off it in ONE transaction:
    * routines (+ run history), the thread (messages + event log), the
    * computer binding, structured memory rows, and the bot row itself. */
@@ -65,6 +67,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
   const agentTasks = createAgentTasksRepository(db);
   const telegramConversations = createTelegramConversationsRepository(db);
   const discordConversations = createDiscordConversationsRepository(db);
+  const lanes = createLaneIdempotencyRepository(db);
   const deleteBotRow = db.prepare("DELETE FROM bots WHERE id = ?");
 
   const deleteCascade = db.transaction((botId: string): { deleted: boolean; hashes: string[] } => {
@@ -76,6 +79,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     agentTasks.deleteForBot(botId);
     telegramConversations.deleteForBot(botId);
     discordConversations.deleteForBot(botId);
+    lanes.deleteForBot(botId);
     deleteBotRow.run(botId);
     const hashes = messages.deleteThreadRows(bot.threadId);
     return { deleted: true, hashes };
@@ -96,6 +100,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     agentTasks,
     telegramConversations,
     discordConversations,
+    lanes,
     deleteBotCascade(botId) {
       const dying = collectAvatarHashes(bots.get(botId) ? [bots.get(botId)!] : []);
       const { deleted, hashes } = deleteCascade(botId);

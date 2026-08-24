@@ -1,10 +1,11 @@
 // Turn lifecycle over HTTP: send a message, answer a pending card, interrupt.
 import { attachmentPathRefs, expandAttachmentPaths } from "../attachments.ts";
+import type { LaneScheduler } from "../services/lanes.ts";
 import type { TurnsService } from "../services/turns.ts";
 import { json, readBody, type RouteHandler } from "./context.ts";
 
-export function createTurnsRoutes(deps: { turns: TurnsService }): RouteHandler {
-  const { turns } = deps;
+export function createTurnsRoutes(deps: { turns: TurnsService; lanes: LaneScheduler }): RouteHandler {
+  const { turns, lanes } = deps;
   return async ({ req, res, path, method }) => {
     let m = path.match(/^\/api\/bots\/([\w-]+)\/messages$/);
     if (m && method === "POST") {
@@ -27,11 +28,27 @@ export function createTurnsRoutes(deps: { turns: TurnsService }): RouteHandler {
       const extraSkillIds = Array.isArray(body.mentionSkillIds)
         ? body.mentionSkillIds.map((id: unknown) => String(id).trim()).filter(Boolean)
         : [];
-      const started = await turns.startTurn(m[1], text, { attachments, extraSkillIds });
+      const idempotencyKey = typeof body.idempotencyKey === "string" && body.idempotencyKey.trim() ? body.idempotencyKey.trim() : undefined;
+      const accepted = await lanes.enqueue({
+        lane: "user",
+        botId: m[1],
+        text,
+        opts: { attachments, extraSkillIds },
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      });
+      if (accepted.status === "cancelled") {
+        await accepted.settled;
+      }
       // [VERIFY] 2026-08-18: existing clients only read `ok`. Extra
       // threadId/messageId let a client correlate the POST with the SSE
       // {kind:"message"} frame without a contract break.
-      json(res, 202, { ok: true, threadId: started.threadId, messageId: started.messageId });
+      json(res, 202, {
+        ok: true,
+        workId: accepted.workId,
+        lane: accepted.lane,
+        status: accepted.status,
+        ...(accepted.started ?? {}),
+      });
       return true;
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/respond$/);

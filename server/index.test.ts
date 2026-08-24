@@ -434,6 +434,31 @@ describe("harness HTTP API", () => {
     expect(send.body.error).toContain("unavailable");
   });
 
+  it("exposes lane scheduler snapshot and cancel", async () => {
+    const snap = await api("GET", "/api/lanes");
+    expect(snap.status).toBe(200);
+    expect(snap.body).toEqual({
+      queued: expect.any(Array),
+      running: expect.any(Array),
+      cancelled: expect.any(Array),
+    });
+    for (const item of [...snap.body.queued, ...snap.body.running, ...snap.body.cancelled]) {
+      expect(item).toEqual(
+        expect.objectContaining({
+          workId: expect.any(String),
+          lane: expect.stringMatching(/^(user|channel|agent|background)$/),
+          botId: expect.any(String),
+          status: expect.stringMatching(/^(queued|running|cancelled)$/),
+        }),
+      );
+    }
+    const missing = await api("POST", "/api/lanes/cancel", {});
+    expect(missing.status).toBe(400);
+    const cancel = await api("POST", "/api/lanes/cancel", { botId: "missing-bot" });
+    expect(cancel.status).toBe(200);
+    expect(cancel.body).toMatchObject({ ok: true, cancelled: [] });
+  });
+
   it("PATCH rejects whitespace-only names and 404s /api/models (use /api/instances)", async () => {
     const created = await api("POST", "/api/bots", { name: "Keep Me" });
     const blank = await api("PATCH", `/api/bots/${created.body.bot.id}`, { name: "   " });

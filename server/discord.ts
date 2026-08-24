@@ -356,6 +356,7 @@ export function createDiscordService(deps: {
     try {
       await deps.startTurn(target.botId, message.text, {
         unattended: true,
+        idempotencyKey: `channel:discord:${message.id}`,
         ...(target.groupId ? { groupThreadId: target.threadId } : {}),
       });
       lastWorkflow.set(message.address.target, "working");

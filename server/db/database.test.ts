@@ -35,6 +35,7 @@ const MANDATED_TABLES = [
   "agent_tasks",
   "telegram_conversations",
   "discord_conversations",
+  "lane_idempotency",
 ];
 
 describe("database + migrations", () => {
@@ -123,6 +124,7 @@ describe("database + migrations", () => {
       "agent-tasks",
       "telegram-conversations",
       "discord-conversations",
+      "lane-idempotency",
     ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM bots WHERE id = ?").get("legacy-bot")).toEqual({
       owner_id: null,
@@ -174,6 +176,7 @@ describe("database + migrations", () => {
       "agent-tasks",
       "telegram-conversations",
       "discord-conversations",
+      "lane-idempotency",
     ]);
     const rows = db.prepare<{ id: string; public_handle: string | null }>(
       "SELECT id, public_handle FROM bots ORDER BY id",
@@ -226,6 +229,7 @@ describe("database + migrations", () => {
       "agent-tasks",
       "telegram-conversations",
       "discord-conversations",
+      "lane-idempotency",
     ]);
     expect(() => db!.prepare("UPDATE public_bot_handles SET bot_id = ? WHERE handle = ?")
       .run("reused-bot", "A".repeat(PUBLIC_BOT_HANDLE_LENGTH))).toThrow(/reservation is immutable/);
@@ -274,6 +278,7 @@ describe("database + migrations", () => {
       "agent-tasks",
       "telegram-conversations",
       "discord-conversations",
+      "lane-idempotency",
     ]);
     expect(db.prepare<{ owner_id: string | null }>("SELECT owner_id FROM groups WHERE id = ?").get("legacy-group")).toEqual({
       owner_id: null,
@@ -310,6 +315,7 @@ describe("database + migrations", () => {
       "agent-tasks",
       "telegram-conversations",
       "discord-conversations",
+      "lane-idempotency",
     ]);
     expect(db.prepare<{ n: number }>("SELECT count(*) AS n FROM user_workspace_bindings").get()?.n).toBe(0);
     expect(
@@ -350,6 +356,7 @@ describe("database + migrations", () => {
       "agent-tasks",
       "telegram-conversations",
       "discord-conversations",
+      "lane-idempotency",
     ]);
     expect(
       db.prepare<{ authorization_generation: number }>(

@@ -802,6 +802,34 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // P6: durable idempotency keys for the lane scheduler. A retried
+    // inbound or routine fire with the same key cannot start a second
+    // turn. The live queue itself stays in-memory; routine_runs claims
+    // and bot interruption recovery stay authoritative for crash
+    // recovery. Not request lineage (P7).
+    version: 21,
+    name: "lane-idempotency",
+    up(db) {
+      db.exec(`
+        CREATE TABLE lane_idempotency (
+          key TEXT PRIMARY KEY NOT NULL
+            CHECK(typeof(key) = 'text' AND length(key) BETWEEN 1 AND 512),
+          work_id TEXT NOT NULL
+            CHECK(typeof(work_id) = 'text' AND length(work_id) > 0),
+          lane TEXT NOT NULL
+            CHECK(lane IN ('user', 'channel', 'agent', 'background')),
+          bot_id TEXT NOT NULL
+            CHECK(typeof(bot_id) = 'text' AND length(bot_id) > 0),
+          created_at INTEGER NOT NULL
+            CHECK(typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 9007199254740991),
+          status TEXT NOT NULL
+            CHECK(status IN ('queued', 'running', 'cancelled', 'done'))
+        );
+        CREATE INDEX lane_idempotency_bot ON lane_idempotency(bot_id, created_at);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

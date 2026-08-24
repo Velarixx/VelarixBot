@@ -40,6 +40,7 @@ import { createRoutinesRoutes } from "./routes/routines.ts";
 import { createSaasBotCatalogRoutes } from "./routes/saas-bot-catalog.ts";
 import { createSaasDesktopAccessRoutes } from "./routes/saas-desktop-access.ts";
 import { createSessionRoutes } from "./routes/session.ts";
+import { createLaneRoutes } from "./routes/lanes.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
 import { createBotsService, projectPublicBotFrame, type BotsService } from "./services/bots.ts";
 import { createChannelsService, type ChannelsService } from "./services/channels.ts";
@@ -58,6 +59,7 @@ import { createDiscordChannelConnector, type DiscordConnectInput } from "./chann
 import { createRoutinesService, type RoutinesService } from "./services/routines.ts";
 import { createSecurityAuditService } from "./services/security-audit.ts";
 import { createTeachService, type TeachService } from "./services/teach.ts";
+import { createLaneScheduler, splitLaneTurnOpts, type LaneScheduler, type LaneTurnOpts, type SchedulerLane } from "./services/lanes.ts";
 import { createTurnsService, type TurnsService } from "./services/turns.ts";
 import type { ModelSelection } from "./contracts.ts";
 import { configureAgentTasks } from "./agent-tasks.ts";
@@ -121,6 +123,7 @@ export interface Application {
     telegram: TelegramService;
     discord: DiscordService;
     channels: ChannelsService;
+    lanes: LaneScheduler;
   };
 }
 
@@ -250,7 +253,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     patchBot: (id, patch) => bots.patchBot(id, patch),
   });
 
-  let turnsRef: TurnsService | null = null;
+  let lanesRef: LaneScheduler | null = null;
   const proactive = createProactive({
     now: () => clock.now(),
     onNudge: (botId) => {
@@ -261,7 +264,9 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       broadcast({ kind: "nudge", botId, reason: "stall" });
     },
     onTrigger: (botId, prompt) => {
-      void turnsRef?.startTurn(botId, prompt).catch(() => {});
+      void lanesRef
+        ?.enqueue({ lane: "background", botId, text: prompt })
+        .catch(() => {});
     },
   });
 
@@ -286,8 +291,44 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     commsToken,
     now: () => clock.now(),
     leases: computerLeases,
+    onIdle: (botId) => lanesRef?.noteIdle(botId),
+    lanes: () => lanesRef,
   });
-  turnsRef = turns;
+
+  const lanes = createLaneScheduler({
+    keys: repos.lanes,
+    broadcast,
+    now: () => clock.now(),
+    startTurn: (botId, text, opts) => turns.startTurn(botId, text, opts),
+    interrupt: (botId) => turns.interrupt(botId),
+    isBusy: (id) => bots.bot(id)?.busy === true,
+  });
+  lanesRef = lanes;
+
+  async function enqueueLane(
+    lane: SchedulerLane,
+    botId: string,
+    text: string,
+    opts?: LaneTurnOpts,
+  ): Promise<{ threadId: string; messageId: string }> {
+    const { turnOpts, idempotencyKey } = splitLaneTurnOpts(opts);
+    const accepted = await lanes.enqueue({
+      lane,
+      botId,
+      text,
+      opts: turnOpts,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+    if (accepted.status === "cancelled") {
+      try {
+        await accepted.settled;
+      } catch (error) {
+        throw error;
+      }
+      throw Object.assign(new Error("cancelled"), { status: 409 });
+    }
+    return accepted.started ?? { threadId: bots.bot(botId)?.threadId ?? "", messageId: accepted.workId };
+  }
 
   const routines = createRoutinesService({
     repos,
@@ -297,7 +338,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       const b = bots.bot(id);
       return b ? { id: b.id, threadId: b.threadId, busy: b.busy, hidden: b.hidden === true } : null;
     },
-    startTurn: (botId, text, opts) => turns.startTurn(botId, text, opts),
+    startTurn: (botId, text, opts) => enqueueLane("background", botId, text, opts),
     getSkill,
     skillPrompt,
     pollListener: createListenerPoller({ cfg: () => cfg }),
@@ -327,7 +368,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     api: input.telegramApi ?? createTelegramApi(),
     conversations: repos.telegramConversations,
     bots,
-    startTurn: (botId, text) => turns.startTurn(botId, text),
+    startTurn: (botId, text, opts) => enqueueLane("channel", botId, text, opts),
     now: () => clock.now(),
     onStatusChange: () => {
       const snapshot = integrationsRef?.configStatus();
@@ -342,7 +383,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     conversations: repos.discordConversations,
     bots,
     groups,
-    startTurn: (botId, text, opts) => turns.startTurn(botId, text, { ...opts, unattended: true }),
+    startTurn: (botId, text, opts) => enqueueLane("channel", botId, text, { ...opts, unattended: true }),
     now: () => clock.now(),
     connectOpts: input.discordConnect,
     onStatusChange: () => {
@@ -400,7 +441,8 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       broadcast,
       generateAvatarImages: input.generateAvatarImages ?? defaultAvatarImageGenerator(),
     }),
-    createTurnsRoutes({ turns }),
+    createTurnsRoutes({ turns, lanes }),
+    createLaneRoutes({ lanes }),
     createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
     createDiagnosticsRoutes({ diagnostics }),
     createChannelsRoutes({ channels }),
@@ -513,6 +555,6 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       proactive.tick(now);
     },
     hub,
-    services: { bots, groups, turns, routines, teach, proactive, telegram, discord, channels },
+    services: { bots, groups, turns, routines, teach, proactive, telegram, discord, channels, lanes },
   };
 }
