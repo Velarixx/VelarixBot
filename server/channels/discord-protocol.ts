@@ -96,7 +96,7 @@ export function parseSnowflakeList(raw: unknown): string[] {
 export function normalizeAllowlistEntry(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  if (/^\d{5,32}$/.test(trimmed)) return trimmed;
+  if (/^\d{1,32}$/.test(trimmed)) return trimmed;
   const name = trimmed.replace(/^@/, "").trim();
   if (!name || /\s/.test(name) || name.includes("/")) return null;
   return `@${name}`;
@@ -259,7 +259,10 @@ export function enforceDiscordAttachmentBounds(
 export class BoundedIdSet {
   private readonly ids = new Set<string>();
   private readonly order: string[] = [];
-  constructor(private readonly max: number) {}
+  private readonly max: number;
+  constructor(max: number) {
+    this.max = max;
+  }
 
   has(id: string): boolean {
     return this.ids.has(id);
@@ -280,8 +283,11 @@ export class BoundedIdSet {
 export class ChannelConcurrency {
   private readonly inflight = new Map<string, number>();
   private readonly waiters = new Map<string, Array<() => void>>();
+  private readonly max: number;
 
-  constructor(private readonly max: number) {}
+  constructor(max: number) {
+    this.max = max;
+  }
 
   async acquire(channelId: string): Promise<() => void> {
     const key = channelId || "*";

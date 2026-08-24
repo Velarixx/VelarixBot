@@ -190,7 +190,13 @@ describe("discord channel connector", () => {
     const gateway = createFakeDiscordGateway();
     const rest = createFakeDiscordRest();
     const connector = createDiscordChannelConnector({ id: "discord", config: { enabled: true } });
-    const connecting = connector.connect({ token: canary(), transport: gateway.transport, rest });
+    const connecting = connector.connect({
+      token: canary(),
+      transport: gateway.transport,
+      rest,
+      scheduler: { every() { return () => {}; } },
+    });
+    await gateway.whenConnected();
     gateway.hello();
     gateway.ready();
     await connecting;
