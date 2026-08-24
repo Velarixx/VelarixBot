@@ -1,11 +1,13 @@
 // Discord Gateway/REST protocol helpers. VelarixBot-native — no vendor SDK.
 // Token values must never appear in logs, events, or thrown messages.
 
+import { channelUploadLimits, enforceChannelUploadLimits } from "../attachments/channel-limits.ts";
+
 export const DISCORD_CHANNEL_KIND = "discord";
 export const DISCORD_API_VERSION = 10;
 export const DISCORD_MAX_CONTENT = 2000;
-export const DISCORD_MAX_ATTACHMENTS = 10;
-export const DISCORD_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+export const DISCORD_MAX_ATTACHMENTS = channelUploadLimits("discord").maxCount;
+export const DISCORD_MAX_ATTACHMENT_BYTES = channelUploadLimits("discord").maxBytes;
 export const DISCORD_MAX_DEDUP = 2_048;
 export const DISCORD_DEFAULT_CONCURRENCY = 1;
 
@@ -239,21 +241,7 @@ export function enforceDiscordAttachmentBounds(
   attachments: DiscordAttachmentBound[] | undefined,
   limits: { maxCount?: number; maxBytes?: number } = {},
 ): { ok: true; attachments: DiscordAttachmentBound[] } | { ok: false; error: string } {
-  const list = attachments ?? [];
-  const maxCount = limits.maxCount ?? DISCORD_MAX_ATTACHMENTS;
-  const maxBytes = limits.maxBytes ?? DISCORD_MAX_ATTACHMENT_BYTES;
-  if (list.length > maxCount) {
-    return { ok: false, error: `Discord allows at most ${maxCount} attachments per message` };
-  }
-  for (const item of list) {
-    if (item.sizeBytes !== undefined && (item.sizeBytes < 0 || !Number.isFinite(item.sizeBytes))) {
-      return { ok: false, error: "Discord attachment size is invalid" };
-    }
-    if ((item.sizeBytes ?? 0) > maxBytes) {
-      return { ok: false, error: `Discord attachment "${item.name}" exceeds the ${maxBytes} byte limit` };
-    }
-  }
-  return { ok: true, attachments: list };
+  return enforceChannelUploadLimits("discord", attachments, limits);
 }
 
 export class BoundedIdSet {
