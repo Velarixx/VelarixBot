@@ -13,7 +13,19 @@
 
 /** Key names whose value is a credential. Matched case-insensitively as a
  * substring, so KEY catches ANTHROPIC_API_KEY and x-api-key. */
-const SECRET_KEY_PARTS = ["token", "secret", "password", "passwd", "apikey", "api_key", "authorization", "auth_token"];
+const SECRET_KEY_PARTS = [
+  "token",
+  "secret",
+  "password",
+  "passwd",
+  "apikey",
+  "api_key",
+  "authorization",
+  "auth_token",
+  "cookie",
+  "bearer",
+  "client_secret",
+];
 
 /** `key` alone is too broad — it matches `keyboard`, `keys`, `hotkey`. Only
  * treat it as a credential when it stands alone or is a suffix, which is how

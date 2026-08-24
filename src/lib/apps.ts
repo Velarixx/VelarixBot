@@ -53,6 +53,38 @@ export interface ComposioSession {
   sessionId: string;
 }
 
+export const CONNECTOR_HEALTHS = ["connected", "needsAuth", "error", "stale"] as const;
+export type ConnectorHealth = (typeof CONNECTOR_HEALTHS)[number];
+
+export interface ConnectorServiceStatus {
+  connected?: boolean;
+  status?: string;
+  health?: ConnectorHealth;
+  nextStep?: string;
+  identity?: string;
+  oauth?: string;
+  errorCode?: string;
+}
+
+export function isConnectorHealth(value: unknown): value is ConnectorHealth {
+  return typeof value === "string" && (CONNECTOR_HEALTHS as readonly string[]).includes(value);
+}
+
+export function connectorHealthLabel(health?: string): string {
+  if (health === "connected") return "Connected";
+  if (health === "needsAuth") return "Needs sign-in";
+  if (health === "stale") return "Sign-in expired";
+  if (health === "error") return "Error";
+  return "";
+}
+
+export function connectorHealthTone(health?: string): "success" | "warning" | "danger" | "muted" {
+  if (health === "connected") return "success";
+  if (health === "stale" || health === "needsAuth") return "warning";
+  if (health === "error") return "danger";
+  return "muted";
+}
+
 export const CONNECTOR_PATHS = {
   catalog: "/api/connectors/catalog",
   sessions: "/api/connectors/sessions",

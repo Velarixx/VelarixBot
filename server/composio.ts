@@ -7,6 +7,21 @@
 //     catalog below (logos then resolve via favicon fallback client-side).
 import type { AppConfig } from "./config.ts";
 import { composioBackendUrl, composioSessionKey, sessionUserId } from "./composio-sessions.ts";
+import {
+  allocateConnectorIdentity,
+  claimConnectorIdentity,
+  clearOAuth,
+  detectStaleAuth,
+  invalidateToolLists,
+  markOAuth,
+  oauthRecord,
+  redactConnectorDiagnostics,
+  snapshotForConnector,
+  writeIdentityMap,
+  ConnectorError,
+  type ClaimedConnectorIdentity,
+  type ConnectorHealthSnapshot,
+} from "./connector-lifecycle.ts";
 
 const CONNECT_URL = "https://connect.composio.dev/mcp";
 const BACKEND_URL = "https://backend.composio.dev/api/v3";
@@ -46,29 +61,110 @@ export async function composioTool(cfg: AppConfig, name: string, args: unknown) 
   return parseMcpResponse(await res.text());
 }
 
-/** Connection status per service slug: { slack: { connected, status } }.
- * Sessions path (apiKey + user_id) first; Connect ck_ is the fallback. */
-export async function connectionStatus(cfg: AppConfig, slugs: string[], botId?: string) {
-  if (composioSessionKey(cfg) && botId) {
-    return connectionStatusForUser(cfg, slugs, sessionUserId(botId));
+export type ConnectorServiceStatus = ConnectorHealthSnapshot & {
+  accounts?: ConnectorHealthSnapshot[];
+};
+
+function accountKeyOf(account: any): string {
+  return String(account?.id ?? account?.account_id ?? account?.nanoid ?? "").trim();
+}
+
+function accountRemoteStatus(account: any, fallback = "unknown"): string {
+  return String(account?.status ?? account?.connection_status ?? fallback);
+}
+
+function snapshotsForAccounts(
+  slug: string,
+  accounts: any[],
+  botId: string | undefined,
+  fallbackStatus: string,
+): ConnectorHealthSnapshot[] {
+  const claimed: ClaimedConnectorIdentity[] = [];
+  const out: ConnectorHealthSnapshot[] = [];
+  const prev = oauthRecord(botId, slug);
+  const list = accounts.length ? accounts : [null];
+  for (const account of list) {
+    const key = account ? accountKeyOf(account) : undefined;
+    const allocated = allocateConnectorIdentity(claimed, slug, key || undefined);
+    claimed.push({ identity: allocated.identity, ...(key ? { accountKey: key } : {}) });
+    const remote = account ? accountRemoteStatus(account, fallbackStatus) : fallbackStatus;
+    const snap = snapshotForConnector({
+      slug,
+      identity: allocated.identity,
+      remoteStatus: remote,
+      previousHealth: prev?.health,
+      previousOauth: prev?.phase,
+    });
+    if (snap.health === "stale" || detectStaleAuth({ remoteStatus: remote, previousHealth: prev?.health, previousOauth: prev?.phase })) {
+      invalidateToolLists("stale");
+    }
+    if (snap.health === "connected") markOAuth({ botId, slug, identity: snap.identity }, "completed", "connected");
+    out.push(snap);
   }
-  if (!cfg.composio?.key) {
-    const status: Record<string, { connected: boolean; status: string }> = {};
-    for (const slug of slugs) status[slug] = { connected: false, status: "unknown" };
-    return status;
-  }
-  const out = await composioTool(cfg, "COMPOSIO_MANAGE_CONNECTIONS", {
-    toolkits: slugs.map((name) => ({ name, action: "list" })),
-  });
-  const results = out?.data?.results ?? {};
-  const status: Record<string, { connected: boolean; status: string }> = {};
+  return out;
+}
+
+function serviceFromSnapshots(slug: string, snapshots: ConnectorHealthSnapshot[]): ConnectorServiceStatus {
+  const primary = snapshots.find((s) => s.identity === slug) ?? snapshots[0]!;
+  const extras = snapshots.filter((s) => s.identity !== primary.identity);
+  return {
+    ...primary,
+    connected: snapshots.some((s) => s.connected),
+    ...(extras.length ? { accounts: snapshots } : {}),
+  };
+}
+
+function emptyServices(slugs: string[], configured: boolean): Record<string, ConnectorServiceStatus> {
+  const status: Record<string, ConnectorServiceStatus> = {};
   for (const slug of slugs) {
-    const r = results[slug];
-    const active =
-      (r?.accounts ?? []).some((a: any) => /active/i.test(a.status ?? "")) || /^active$/i.test(r?.status ?? "");
-    status[slug] = { connected: active, status: r?.status ?? "unknown" };
+    const snap = snapshotForConnector({ slug, configured, remoteStatus: configured ? "unknown" : "not_configured" });
+    status[slug] = snap;
   }
   return status;
+}
+
+/** Connection status per service slug. Sessions path (apiKey + user_id)
+ * first; Connect ck_ is the fallback. Each entry is a health snapshot
+ * (connected / needsAuth / error / stale) plus a next step. `connected`
+ * stays for Slack listeners and older clients. */
+export async function connectionStatus(cfg: AppConfig, slugs: string[], botId?: string) {
+  if (composioSessionKey(cfg) && botId) {
+    return connectionStatusForUser(cfg, slugs, sessionUserId(botId), botId);
+  }
+  if (!cfg.composio?.key) {
+    return emptyServices(slugs, false);
+  }
+  try {
+    const out = await composioTool(cfg, "COMPOSIO_MANAGE_CONNECTIONS", {
+      toolkits: slugs.map((name) => ({ name, action: "list" })),
+    });
+    const results = out?.data?.results ?? {};
+    const status: Record<string, ConnectorServiceStatus> = {};
+    for (const slug of slugs) {
+      const r = results[slug];
+      const accounts = Array.isArray(r?.accounts) ? r.accounts : [];
+      const fallback = String(r?.status ?? (accounts.length ? "unknown" : "unknown"));
+      const snapshots = snapshotsForAccounts(slug, accounts, botId, fallback);
+      const service = serviceFromSnapshots(slug, snapshots);
+      const wrote = writeIdentityMap(status, service.identity, service);
+      if (!wrote.ok) {
+        const alt = allocateConnectorIdentity(
+          Object.keys(status).map((identity) => ({ identity })),
+          slug,
+          accountKeyOf(accounts[0]),
+        );
+        status[alt.identity] = { ...service, identity: alt.identity };
+      }
+      if (service.identity !== slug && !status[slug]) status[slug] = service;
+    }
+    return redactConnectorDiagnostics(status) as Record<string, ConnectorServiceStatus>;
+  } catch (e) {
+    const status: Record<string, ConnectorServiceStatus> = {};
+    for (const slug of slugs) {
+      status[slug] = snapshotForConnector({ slug, error: e, previousOauth: oauthRecord(botId, slug)?.phase });
+    }
+    return redactConnectorDiagnostics(status) as Record<string, ConnectorServiceStatus>;
+  }
 }
 
 async function backendGet(cfg: AppConfig, path: string): Promise<{ ok: boolean; status: number; body: any }> {
@@ -109,22 +205,44 @@ function accountsOf(body: any): any[] {
   return Array.isArray(items) ? items : [];
 }
 
-async function connectionStatusForUser(cfg: AppConfig, slugs: string[], userId: string) {
-  const q = new URLSearchParams({ user_ids: userId });
-  if (slugs.length) q.set("toolkit_slugs", slugs.join(","));
-  const { body } = await backendGet(cfg, `/connected_accounts?${q}`);
-  const accounts = accountsOf(body);
-  const status: Record<string, { connected: boolean; status: string }> = {};
-  for (const slug of slugs) {
-    const mine = accounts.filter((a: any) => String(a.toolkit?.slug ?? a.toolkit_slug ?? a.appName ?? "").toLowerCase() === slug);
-    const active = mine.some((a: any) => /active/i.test(String(a.status ?? a.connection_status ?? "")));
-    status[slug] = { connected: active, status: active ? "ACTIVE" : "unknown" };
+async function connectionStatusForUser(cfg: AppConfig, slugs: string[], userId: string, botId?: string) {
+  try {
+    const q = new URLSearchParams({ user_ids: userId });
+    if (slugs.length) q.set("toolkit_slugs", slugs.join(","));
+    const { body } = await backendGet(cfg, `/connected_accounts?${q}`);
+    const accounts = accountsOf(body);
+    const status: Record<string, ConnectorServiceStatus> = {};
+    for (const slug of slugs) {
+      const mine = accounts.filter(
+        (a: any) => String(a.toolkit?.slug ?? a.toolkit_slug ?? a.appName ?? "").toLowerCase() === slug,
+      );
+      const snapshots = snapshotsForAccounts(slug, mine, botId, mine.length ? "unknown" : "unknown");
+      const service = serviceFromSnapshots(slug, snapshots);
+      const wrote = writeIdentityMap(status, service.identity, service);
+      if (!wrote.ok) {
+        const alt = allocateConnectorIdentity(
+          Object.keys(status).map((identity) => ({ identity })),
+          slug,
+        );
+        status[alt.identity] = { ...service, identity: alt.identity };
+      }
+      if (service.identity !== slug && !status[slug]) status[slug] = service;
+    }
+    return redactConnectorDiagnostics(status) as Record<string, ConnectorServiceStatus>;
+  } catch (e) {
+    const status: Record<string, ConnectorServiceStatus> = {};
+    for (const slug of slugs) {
+      status[slug] = snapshotForConnector({ slug, error: e, previousOauth: oauthRecord(botId, slug)?.phase });
+    }
+    return redactConnectorDiagnostics(status) as Record<string, ConnectorServiceStatus>;
   }
-  return status;
 }
 
 /** Disconnect a service: remove every connected account for the slug. */
 export async function removeService(cfg: AppConfig, slug: string, botId?: string) {
+  invalidateToolLists("disconnect");
+  clearOAuth(botId, slug);
+  markOAuth({ botId, slug }, "idle", "needsAuth");
   if (composioSessionKey(cfg) && botId) {
     const userId = sessionUserId(botId);
     const q = new URLSearchParams({ user_ids: userId, toolkit_slugs: slug });
@@ -135,7 +253,13 @@ export async function removeService(cfg: AppConfig, slug: string, botId?: string
     for (const id of ids) {
       await backendDelete(cfg, `/connected_accounts/${encodeURIComponent(String(id))}`);
     }
-    return { removed: ids.length };
+    return redactConnectorDiagnostics({
+      removed: ids.length,
+      identity: slug,
+      health: "needsAuth",
+      oauth: "idle",
+      nextStep: snapshotForConnector({ slug, remoteStatus: "unknown" }).nextStep,
+    });
   }
   const out = await composioTool(cfg, "COMPOSIO_MANAGE_CONNECTIONS", {
     toolkits: [{ name: slug, action: "list" }],
@@ -147,32 +271,97 @@ export async function removeService(cfg: AppConfig, slug: string, botId?: string
       toolkits: [{ name: slug, action: "remove", account_id: id }],
     });
   }
-  return { removed: ids.length };
+  return redactConnectorDiagnostics({
+    removed: ids.length,
+    identity: slug,
+    health: "needsAuth",
+    oauth: "idle",
+    nextStep: snapshotForConnector({ slug, remoteStatus: "unknown" }).nextStep,
+  });
 }
 
-/** Mint a browser auth link for one service. Returns { url } or throws. */
-export async function authorizeService(cfg: AppConfig, slug: string, botId?: string) {
+async function existingAccountsForSlug(cfg: AppConfig, slug: string, botId?: string): Promise<any[]> {
   if (composioSessionKey(cfg) && botId) {
-    const { ok, status, body } = await backendPost(cfg, "/connected_accounts", {
-      user_id: sessionUserId(botId),
-      toolkit: slug,
+    const q = new URLSearchParams({ user_ids: sessionUserId(botId), toolkit_slugs: slug });
+    const { body } = await backendGet(cfg, `/connected_accounts?${q}`);
+    return accountsOf(body);
+  }
+  if (!cfg.composio?.key) return [];
+  const out = await composioTool(cfg, "COMPOSIO_MANAGE_CONNECTIONS", {
+    toolkits: [{ name: slug, action: "list" }],
+  });
+  return out?.data?.results?.[slug]?.accounts ?? [];
+}
+
+function claimAuthorizeIdentity(slug: string, accounts: any[]): string {
+  const claimed: ClaimedConnectorIdentity[] = [];
+  for (const account of accounts) {
+    const key = accountKeyOf(account);
+    const allocated = allocateConnectorIdentity(claimed, slug, key || undefined);
+    claimed.push({ identity: allocated.identity, ...(key ? { accountKey: key } : {}) });
+  }
+  const active = accounts.find((a) => /active/i.test(accountRemoteStatus(a)));
+  if (active) return allocateConnectorIdentity(claimed, slug, accountKeyOf(active) || undefined).identity;
+  if (claimed.length) return claimed[0]!.identity;
+  const claim = claimConnectorIdentity(claimed, slug);
+  if ("collision" in claim) {
+    throw new ConnectorError("identity_collision", claim.reason);
+  }
+  return claim.identity;
+}
+
+/** Mint a browser auth link for one service. Tracks OAuth lifecycle,
+ * rejects identity collisions, and invalidates cached tool lists. */
+export async function authorizeService(cfg: AppConfig, slug: string, botId?: string) {
+  if (!composioSessionKey(cfg) && !cfg.composio?.key) {
+    throw new ConnectorError("not_configured", "no Composio key configured");
+  }
+  const existing = await existingAccountsForSlug(cfg, slug, botId).catch(() => []);
+  const identity = claimAuthorizeIdentity(slug, existing);
+  markOAuth({ botId, slug, identity }, "initiated", "needsAuth");
+  invalidateToolLists("auth_change");
+
+  try {
+    if (composioSessionKey(cfg) && botId) {
+      const { ok, status, body } = await backendPost(cfg, "/connected_accounts", {
+        user_id: sessionUserId(botId),
+        toolkit: slug,
+      });
+      if (!ok) throw new ConnectorError("auth_failed", `Composio authorize failed (${status})`);
+      const raw = JSON.stringify(body);
+      const urls = raw.match(/https:\/\/[^"\\\s]+/g) ?? [];
+      const url = urls.find((u) => /composio|connect|auth/i.test(u)) ?? urls[0];
+      if (!url) throw new ConnectorError("upstream", `Composio returned no auth link for ${slug}`);
+      markOAuth({ botId, slug, identity }, "pending", "needsAuth");
+      return redactConnectorDiagnostics({
+        url,
+        identity,
+        health: "needsAuth",
+        oauth: "pending",
+        nextStep: snapshotForConnector({ slug, identity, remoteStatus: "INITIATED", previousOauth: "pending" }).nextStep,
+      });
+    }
+    const out = await composioTool(cfg, "COMPOSIO_MANAGE_CONNECTIONS", {
+      toolkits: [{ name: slug, action: "add" }],
     });
-    if (!ok) throw new Error(`Composio authorize failed (${status})`);
-    const raw = JSON.stringify(body);
+    const raw = JSON.stringify(out);
     const urls = raw.match(/https:\/\/[^"\\\s]+/g) ?? [];
     const url = urls.find((u) => /composio|connect|auth/i.test(u)) ?? urls[0];
-    if (!url) throw new Error(`Composio returned no auth link for ${slug}`);
-    return { url };
+    if (!url) throw new ConnectorError("upstream", `Composio returned no auth link for ${slug}`);
+    markOAuth({ botId, slug, identity }, "pending", "needsAuth");
+    return redactConnectorDiagnostics({
+      url,
+      identity,
+      health: "needsAuth",
+      oauth: "pending",
+      nextStep: snapshotForConnector({ slug, identity, remoteStatus: "INITIATED", previousOauth: "pending" }).nextStep,
+    });
+  } catch (e) {
+    if (e instanceof ConnectorError && e.code === "identity_collision") throw e;
+    const failed = e instanceof ConnectorError ? e : e;
+    markOAuth({ botId, slug, identity }, "failed", "error");
+    throw failed;
   }
-  const out = await composioTool(cfg, "COMPOSIO_MANAGE_CONNECTIONS", {
-    toolkits: [{ name: slug, action: "add" }],
-  });
-  // be liberal: any https URL mentioning composio/auth wins, else the first
-  const raw = JSON.stringify(out);
-  const urls = raw.match(/https:\/\/[^"\\\s]+/g) ?? [];
-  const url = urls.find((u) => /composio|connect|auth/i.test(u)) ?? urls[0];
-  if (!url) throw new Error(`Composio returned no auth link for ${slug}`);
-  return { url };
 }
 
 // ── marketplace catalog ────────────────────────────────────────────────

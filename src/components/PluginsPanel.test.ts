@@ -25,6 +25,10 @@ describe("Apps hub surface", () => {
     expect(hub).toContain("Create session");
     expect(hub).toContain("Revoke");
     expect(hub).toContain("hubUnconfiguredCopy");
+    expect(hub).toContain("connectorHealthLabel");
+    expect(hub).toContain("data-next-step");
+    expect(hub).toContain("data-connector-health");
+    expect(hub).toContain("Next step:");
   });
 
   it("does not become a custom MCP store or expose connection management to a bot", () => {

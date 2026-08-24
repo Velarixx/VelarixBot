@@ -6,6 +6,8 @@ import { Loader2, RefreshCw, X } from "lucide-react";
 import { api, useStore } from "@/state/store";
 import {
   CONNECTOR_PATHS,
+  connectorHealthLabel,
+  connectorHealthTone,
   enabledAppSlugs,
   filterCatalogCards,
   hubUnconfiguredCopy,
@@ -13,6 +15,7 @@ import {
   toggleEnabledApp,
   type CatalogCard,
   type ComposioSession,
+  type ConnectorServiceStatus,
 } from "@/lib/apps";
 import { cn } from "@/lib/cn";
 
@@ -47,7 +50,7 @@ export function PluginsPanel() {
   const [configured, setConfigured] = useState(true);
   const [sessionsConfigured, setSessionsConfigured] = useState(false);
   const [sessions, setSessions] = useState<ComposioSession[]>([]);
-  const [status, setStatus] = useState<Record<string, { connected: boolean }>>({});
+  const [status, setStatus] = useState<Record<string, ConnectorServiceStatus>>({});
   const [busySlug, setBusySlug] = useState<string | null>(null);
   const [sessionBusy, setSessionBusy] = useState<"create" | string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -280,7 +283,12 @@ export function PluginsPanel() {
             </div>
           ) : (
             visible.map((card, i) => {
-              const connected = status[card.slug]?.connected;
+              const service = status[card.slug];
+              const connected = Boolean(service?.connected);
+              const health = service?.health;
+              const nextStep = service?.nextStep;
+              const tone = connectorHealthTone(health);
+              const healthLabel = connectorHealthLabel(health);
               const busy = busySlug === card.slug;
               const enabled = bot ? enabledAppSlugs(bot).includes(card.slug) : false;
               return (
@@ -295,9 +303,33 @@ export function PluginsPanel() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 text-[14px] font-medium text-ink">
                       {card.label}
-                      {connected && <span className="size-1.5 rounded-full bg-success" title="Connected" />}
+                      {healthLabel ? (
+                        <span
+                          className={cn(
+                            "size-1.5 rounded-full",
+                            tone === "success" && "bg-success",
+                            tone === "warning" && "bg-warning",
+                            tone === "danger" && "bg-danger",
+                            tone === "muted" && "bg-ink-secondary",
+                          )}
+                          title={healthLabel}
+                          data-health={health}
+                        />
+                      ) : connected ? (
+                        <span className="size-1.5 rounded-full bg-success" title="Connected" />
+                      ) : null}
                     </div>
                     <div className="truncate text-[12px] text-ink-secondary">{card.blurb}</div>
+                    {healthLabel ? (
+                      <div className="mt-0.5 truncate text-[12px] text-ink-secondary" data-connector-health={health}>
+                        {healthLabel}
+                      </div>
+                    ) : null}
+                    {nextStep ? (
+                      <div className="truncate text-[12px] text-ink-secondary" data-next-step>
+                        Next step: {nextStep}
+                      </div>
+                    ) : null}
                   </div>
                   <button
                     type="button"

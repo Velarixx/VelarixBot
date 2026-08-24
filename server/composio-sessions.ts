@@ -15,6 +15,7 @@ import { atomicWriteFileSync, ensurePrivateDir } from "./atomic.ts";
 import type { AppConfig } from "./config.ts";
 import { DATA_DIR } from "./config.ts";
 import { parseAllowedToolkits } from "./composio-filter.ts";
+import { currentToolListGeneration, invalidateToolLists } from "./connector-lifecycle.ts";
 
 export const COMPOSIO_V31 = "https://backend.composio.dev/api/v3.1";
 export const SESSION_USER_PREFIX = "velarix_";
@@ -159,6 +160,7 @@ export async function createSession(cfg: AppConfig, botId: string, enabledApps: 
   const mcp = mcpFromBody(body, botId, userId);
   if (!mcp) throw new Error("Composio session create returned no session_id/mcp.url");
   upsertStored({ botId, userId, sessionId: mcp.sessionId });
+  invalidateToolLists("reconnect");
   return mcp;
 }
 
@@ -173,6 +175,7 @@ export async function revokeSession(cfg: AppConfig, sessionId: string): Promise<
     method: "DELETE",
   });
   dropStored(sessionId);
+  invalidateToolLists("disconnect");
   if (!ok && status !== 404) throw new Error(`Composio session revoke failed (${status})`);
   return { revoked: true };
 }
@@ -195,6 +198,7 @@ export async function ensureBotSession(cfg: AppConfig, botId: string, enabledApp
     const live = await getSession(cfg, stored.sessionId, botId).catch(() => null);
     if (live) return live;
     dropStored(stored.sessionId);
+    invalidateToolLists("reconnect");
   }
   return createSession(cfg, botId, enabledApps);
 }
@@ -206,6 +210,7 @@ export function sessionProxyEnv(mcp: SessionMcp, allowedApps: string[]): Record<
     OMB_COMPOSIO_URL: mcp.url,
     OMB_COMPOSIO_MCP_HEADERS: JSON.stringify(headers),
     OMB_ALLOWED_TOOLKITS: parseAllowedToolkits(allowedApps).join(","),
+    OMB_COMPOSIO_TOOL_GEN: String(currentToolListGeneration()),
   };
 }
 

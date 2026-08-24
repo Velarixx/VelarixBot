@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   CONNECTOR_PATHS,
+  connectorHealthLabel,
+  connectorHealthTone,
   enabledAppSlugs,
   filterCatalogCards,
   hubUnconfiguredCopy,
+  isConnectorHealth,
   toggleEnabledApp,
 } from "./apps";
 
@@ -54,6 +57,25 @@ describe("hub empty state", () => {
     const copy = hubUnconfiguredCopy();
     expect(copy.title).toMatch(/No Composio API key/i);
     expect(copy.action).toMatch(/App Settings/);
+  });
+});
+
+describe("connector health on the hub", () => {
+  it("labels connected / needsAuth / error / stale and keeps unknown values inert", () => {
+    expect(isConnectorHealth("connected")).toBe(true);
+    expect(isConnectorHealth("needsAuth")).toBe(true);
+    expect(isConnectorHealth("stale")).toBe(true);
+    expect(isConnectorHealth("error")).toBe(true);
+    expect(isConnectorHealth("running")).toBe(false);
+    expect(connectorHealthLabel("connected")).toBe("Connected");
+    expect(connectorHealthLabel("needsAuth")).toBe("Needs sign-in");
+    expect(connectorHealthLabel("stale")).toBe("Sign-in expired");
+    expect(connectorHealthLabel("error")).toBe("Error");
+    expect(connectorHealthLabel("nope")).toBe("");
+    expect(connectorHealthTone("connected")).toBe("success");
+    expect(connectorHealthTone("needsAuth")).toBe("warning");
+    expect(connectorHealthTone("stale")).toBe("warning");
+    expect(connectorHealthTone("error")).toBe("danger");
   });
 });
 

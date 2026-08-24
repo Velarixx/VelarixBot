@@ -149,11 +149,102 @@ describe("apps hub connect/disconnect (fake Composio)", () => {
     expect(on.status).toBe(200);
     expect(on.body.configured).toBe(true);
     expect(on.body.services.gmail.connected).toBe(true);
+    expect(on.body.services.gmail.health).toBe("connected");
+    expect(on.body.services.gmail.identity).toBe("gmail");
+    expect(on.body.services.gmail.nextStep).toMatch(/Enable it for this bot/i);
     expect(JSON.stringify(on.body)).not.toContain(KEY);
 
     const removed = await h.api("DELETE", "/api/connectors/gmail");
     expect(removed.status).toBe(200);
+    expect(removed.body.health).toBe("needsAuth");
     const off = await h.api("GET", "/api/connectors?services=gmail");
     expect(off.body.services.gmail.connected).toBe(false);
+    expect(off.body.services.gmail.health).toBe("needsAuth");
+    expect(off.body.services.gmail.nextStep).toMatch(/Connect this app/i);
+  });
+
+  it("authorize returns OAuth pending + next step and never echoes the key", async () => {
+    const auth = await h.api("POST", "/api/connectors/slack/authorize");
+    expect(auth.status).toBe(200);
+    expect(auth.body.url).toMatch(/\/auth\/slack$/);
+    expect(auth.body.health).toBe("needsAuth");
+    expect(auth.body.oauth).toBe("pending");
+    expect(auth.body.nextStep).toMatch(/finish sign-in/i);
+    expect(JSON.stringify(auth.body)).not.toContain(KEY);
+  });
+});
+
+describe("apps hub health + collisions (fake Composio)", () => {
+  let stub: Server;
+  let h: BootedHarness;
+
+  beforeAll(async () => {
+    stub = createServer((req, res) => {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => {
+        const msg = JSON.parse(data || "{}");
+        const args = msg.params?.arguments ?? {};
+        const toolkit = args.toolkits?.[0] ?? {};
+        const slug = String(toolkit.name ?? "");
+        const action = String(toolkit.action ?? "");
+        let payload: unknown = {};
+        if (action === "list" && slug === "gmail") {
+          payload = {
+            data: {
+              results: {
+                gmail: {
+                  status: "EXPIRED",
+                  accounts: [
+                    { id: "acc_1", status: "EXPIRED" },
+                    { id: "acc_2", status: "ACTIVE" },
+                  ],
+                },
+              },
+            },
+          };
+        } else if (action === "list") {
+          payload = { data: { results: { [slug]: { status: "INITIATED", accounts: [] } } } };
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { content: [{ type: "text", text: JSON.stringify(payload) }] },
+          }),
+        );
+      });
+    });
+    await new Promise<void>((r) => stub.listen(0, "127.0.0.1", r));
+    const stubPort = (stub.address() as { port: number }).port;
+    h = await bootHarness({
+      instances: { ghost: { driver: "not-a-real-driver", displayName: "Ghost" } },
+    });
+    const saved = await h.api("PUT", "/api/config", {
+      composio: { key: KEY, url: `http://127.0.0.1:${stubPort}` },
+    });
+    expect(saved.status).toBe(200);
+  }, 30_000);
+
+  afterAll(async () => {
+    await h?.stop();
+    await new Promise<void>((r) => stub.close(() => r()));
+  });
+
+  it("detects stale auth and suffixes a second account so it does not overwrite", async () => {
+    const listed = await h.api("GET", "/api/connectors?services=gmail");
+    expect(listed.status).toBe(200);
+    expect(listed.body.services.gmail.health).toBe("stale");
+    expect(listed.body.services.gmail.errorCode).toBe("auth_stale");
+    expect(listed.body.services.gmail.nextStep).toMatch(/expired/i);
+    expect(listed.body.services.gmail.identity).toBe("gmail");
+    const accounts = listed.body.services.gmail.accounts ?? [];
+    const identities = [listed.body.services.gmail.identity, ...accounts.map((a: { identity: string }) => a.identity)];
+    expect(identities).toContain("gmail");
+    expect(identities).toContain("gmail:acc_2");
+    expect(new Set(identities).size).toBeGreaterThanOrEqual(2);
+    expect(JSON.stringify(listed.body)).not.toContain(KEY);
+    expect(JSON.stringify(listed.body)).not.toMatch(/Bearer /);
   });
 });
