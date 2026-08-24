@@ -4,6 +4,7 @@
 //   - /api/instances — the provider fleet for the model picker
 //   - /api/config — API keys, write-only (booleans out, never values)
 //   - /api/connectors — Composio catalog + per-service connect state
+import { completedNote } from "../activity-status.ts";
 import {
   COMMS_DEPTH_ERROR,
   MAX_COMMS_DEPTH,
@@ -201,7 +202,7 @@ export function createIntegrationsRoutes(deps: {
           const note = bots.appendMessage(from.threadId, {
             role: "bot",
             kind: "activity",
-            tool: { name: `created @${created.name}` },
+            tool: completedNote(`created @${created.name}`),
           });
           broadcast({ kind: "message", threadId: from.threadId, message: note });
         }
@@ -234,7 +235,7 @@ export function createIntegrationsRoutes(deps: {
           const note = bots.appendMessage(from.threadId, {
             role: "bot",
             kind: "activity",
-            tool: { name: `removed @${removed.bot.name}` },
+            tool: completedNote(`removed @${removed.bot.name}`),
           });
           broadcast({ kind: "message", threadId: from.threadId, message: note });
         }
@@ -283,7 +284,7 @@ export function createIntegrationsRoutes(deps: {
           const note = bots.appendMessage(from.threadId, {
             role: "bot",
             kind: "activity",
-            tool: { name: `updated @${updated.name}` },
+            tool: completedNote(`updated @${updated.name}`),
           });
           broadcast({ kind: "message", threadId: from.threadId, message: note });
         }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowDown, Check, Loader2, Monitor, Square, X } from "lucide-react";
+import { ArrowDown, Loader2, Monitor, Square } from "lucide-react";
 import { useStore, formatTime, type Bot, type Message } from "@/state/store";
 import { BotFace } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
@@ -7,7 +7,10 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { OptionCard } from "./OptionCard";
 import { Composer } from "./Composer";
 import { ModelPicker } from "./ModelPicker";
+import { ActivityChip } from "./ActivityChip";
+import { UserAttachments } from "./UserAttachments";
 import { cn } from "@/lib/cn";
+import { splitAttachedFiles } from "@/lib/chat-message";
 import { formatCompactTokens, formatUsageCost, stateLabel, type BotState } from "@/lib/product";
 
 const stateTone: Record<BotState, string> = { IDLE: "bg-raised text-ink-secondary", RUNNING: "bg-accent/15 text-accent", DONE: "bg-success/15 text-success", BLOCKED: "bg-danger/15 text-danger", NEEDS_INPUT: "bg-warning/15 text-warning" };
@@ -21,29 +24,19 @@ function Bubble({ message }: { message: Message }) {
   const user = message.role === "user";
   const [expanded, setExpanded] = useState(false);
   const text = message.text ?? "";
+  const { body, paths } = splitAttachedFiles(text);
   const collapsible =
-    user && !expanded && (text.length > USER_COLLAPSE_CHARS || text.split("\n").length > USER_COLLAPSE_LINES);
+    user && !expanded && (body.length > USER_COLLAPSE_CHARS || body.split("\n").length > USER_COLLAPSE_LINES);
   return (
-    <div className={cn("flex w-full", user ? "justify-end" : "justify-start")}>
+    <div className={cn("flex w-full min-w-0", user ? "justify-end" : "justify-start")}>
       <div
         className={cn(
-          "max-w-[70%] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
-          user ? "whitespace-pre-wrap bg-bubble-user text-ink" : "bg-card text-ink",
+          "min-w-0 max-w-[70%] overflow-hidden rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
+          user ? "bg-bubble-user text-ink" : "bg-card text-ink",
         )}
       >
         {user ? (
-          <>
-            <div
-              className={cn(collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
-            >
-              {text}
-            </div>
-            {collapsible && (
-              <button onClick={() => setExpanded(true)} className="mt-1 text-[12.5px] text-ink-secondary hover:text-ink">
-                Show full message
-              </button>
-            )}
-          </>
+          <UserBubbleBody body={body} paths={paths} collapsible={collapsible} onExpand={() => setExpanded(true)} />
         ) : (
           <ChatMarkdown text={text} />
         )}
@@ -52,35 +45,36 @@ function Bubble({ message }: { message: Message }) {
   );
 }
 
-/** A tool run: spinner while live, check/cross once settled. */
-function ActivityChip({ message }: { message: Message }) {
-  const { dispatch } = useStore();
-  const tool = message.tool;
-  if (!tool) return null;
-  const failed = tool.ok === false;
-  const groupId = message.comm?.groupId;
+function UserBubbleBody({
+  body,
+  paths,
+  collapsible,
+  onExpand,
+}: {
+  body: string;
+  paths: string[];
+  collapsible: boolean;
+  onExpand: () => void;
+}) {
   return (
-    <div className="flex justify-start">
-      <button
-        type="button"
-        disabled={!groupId}
-        onClick={() => groupId && dispatch({ type: "selectGroup", id: groupId })}
-        className={cn(
-          "flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px]",
-          failed ? "text-danger" : "text-ink-secondary",
-          groupId && "hover:bg-raised",
-        )}
-      >
-        {tool.ok === undefined ? (
-          <Loader2 size={13} className="animate-spin" />
-        ) : failed ? (
-          <X size={13} />
-        ) : (
-          <Check size={13} className="text-success" />
-        )}
-        <span className="max-w-[480px] truncate font-mono">{tool.name}</span>
-      </button>
-    </div>
+    <>
+      {body ? (
+        <div
+          className={cn(
+            "min-w-0 overflow-hidden whitespace-pre-wrap break-words [overflow-wrap:anywhere]",
+            collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]",
+          )}
+        >
+          {body}
+        </div>
+      ) : null}
+      <UserAttachments paths={paths} />
+      {collapsible && (
+        <button onClick={onExpand} className="mt-1 text-[12.5px] text-ink-secondary hover:text-ink">
+          Show full message
+        </button>
+      )}
+    </>
   );
 }
 
@@ -99,7 +93,7 @@ function ScreenFrame({ png, mime }: { png: string; mime?: string }) {
 function StreamingBubble({ text }: { text: string }) {
   return (
     <div className="flex w-full justify-start">
-      <div className="max-w-[70%] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+      <div className="min-w-0 max-w-[70%] overflow-hidden rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
         <ChatMarkdown text={text} streaming />
         <span className="ml-0.5 inline-block h-[14px] w-[2px] animate-pulse bg-ink-secondary align-middle" />
       </div>
@@ -232,7 +226,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       {/* Messages */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto px-5 [overflow-anchor:none]"
+        className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
         onWheel={(e) => {
           if (e.deltaY < 0) setFollow(false);
           else if (atEnd()) setFollow(true);
@@ -247,7 +241,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           if (!follow && atEnd()) setFollow(true);
         }}
       >
-        <div className="mx-auto flex max-w-[900px] flex-col gap-3 pb-4">
+        <div className="mx-auto flex min-w-0 max-w-[900px] flex-col gap-3 pb-4">
           {first && (
             <div className="py-3 text-center text-[13px] text-ink-secondary">
               Today {formatTime(first.at)}
@@ -258,7 +252,13 @@ export function ChatView({ bot }: { bot: Bot }) {
               case "options":
                 return <OptionCard key={m.id} botId={bot.id} message={m} />;
               case "activity":
-                return <ActivityChip key={m.id} message={m} />;
+                return (
+                  <ActivityChip
+                    key={m.id}
+                    message={m}
+                    onOpenGroup={(id) => dispatch({ type: "selectGroup", id })}
+                  />
+                );
               case "screen":
                 return m.png ? <ScreenFrame key={m.id} png={m.png} mime={m.mime} /> : null;
               default:
