@@ -221,6 +221,64 @@ function TrayRow() {
     </div>
   );
 }
+export interface UsageTotalsRow {
+  provider: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** P7 local activity records for routed inference. Not a provider invoice.
+ * Counts only — never secrets, billed amounts, or remote telemetry. */
+function UsageTotalsCard() {
+  const [rows, setRows] = useState<UsageTotalsRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api("/api/usage")
+      .then((body: { providers?: UsageTotalsRow[] }) => {
+        setRows(Array.isArray(body.providers) ? body.providers : []);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  return (
+    <div className="mt-4 rounded-xl bg-card p-4">
+      <div className="text-[15px] font-medium text-ink">Local usage</div>
+      <div className="mt-0.5 text-[13px] text-ink-secondary">
+        Request and token counts per provider for routed inference on this machine. These are local
+        activity records, not a provider invoice. Nothing is sent anywhere.
+      </div>
+      {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
+      {!error && rows && rows.length === 0 && (
+        <div className="mt-3 text-[13px] text-ink-secondary">No inference activity recorded yet.</div>
+      )}
+      {rows && rows.length > 0 && (
+        <table className="mt-3 w-full border-collapse text-left text-[13px] text-ink">
+          <thead>
+            <tr className="text-[12px] text-ink-secondary">
+              <th className="pb-1 font-medium">Provider</th>
+              <th className="pb-1 font-medium">Requests</th>
+              <th className="pb-1 font-medium">Tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.provider}>
+                <td className="py-1 pr-2">{row.provider}</td>
+                <td className="py-1 pr-2">{row.requests}</td>
+                <td className="py-1">
+                  {row.inputTokens} in / {row.outputTokens} out
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 /** P1.7 one-click diagnostics + verified profile backup. The export is the
  * redacted support bundle (versions, capabilities, redacted logs, integrity
  * result) — no transcripts, no API keys. Backup writes a verified archive
@@ -492,6 +550,8 @@ export function AppSettingsPanel() {
         <LaunchAtLoginRow />
 
         <TrayRow />
+
+        <UsageTotalsCard />
 
         <DiagnosticsRow />
 

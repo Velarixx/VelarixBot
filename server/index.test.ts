@@ -233,6 +233,26 @@ describe("harness HTTP API", () => {
     expect(JSON.stringify(body)).not.toContain(transcriptLine);
   });
 
+  it("exposes local lineage and usage diagnostics without secrets", async () => {
+    const deniedUsage = await fetch(`${BASE}/api/usage`);
+    expect(deniedUsage.status).toBe(401);
+    const deniedLineage = await fetch(`${BASE}/api/diagnostics/lineage/missing`);
+    expect(deniedLineage.status).toBe(401);
+
+    const usage = await api("GET", "/api/usage");
+    expect(usage.status).toBe(200);
+    expect(usage.body).toEqual({ providers: expect.any(Array) });
+    for (const row of usage.body.providers) {
+      expect(Object.keys(row).sort()).toEqual(["inputTokens", "outputTokens", "provider", "requests"]);
+    }
+    expect(JSON.stringify(usage.body)).not.toMatch(/secret|password|dsn|Sentry/i);
+
+    const missing = await api("GET", "/api/diagnostics/lineage/not-a-real-request");
+    expect(missing.status).toBe(404);
+    expect(missing.body).toEqual({ error: "unknown request" });
+    expect(JSON.stringify(missing.body)).not.toMatch(/token|secret|password|dsn/i);
+  });
+
   it("backs up the profile on demand and reports the verified manifest", async () => {
     const { status, body } = await api("POST", "/api/diagnostics/backup");
     expect(status).toBe(200);

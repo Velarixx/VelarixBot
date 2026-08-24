@@ -18,6 +18,7 @@ import {
 import type { ChannelRegistry } from "../channels/registry.ts";
 import { newEventId, type RuntimeEvent } from "../contracts.ts";
 import type { EventBus } from "../harness/bus.ts";
+import type { LineageService } from "./lineage.ts";
 
 export interface ChannelsService {
   register(connector: ChannelConnector): void;
@@ -32,6 +33,7 @@ export function channelEventToRuntime(
   connector: ChannelConnector,
   event: ChannelConnectorEvent,
   now: () => number,
+  requestId?: string,
 ): RuntimeEvent {
   const base = {
     eventId: newEventId(),
@@ -39,6 +41,7 @@ export function channelEventToRuntime(
     providerInstanceId: connector.id,
     threadId: channelStreamId(connector.id),
     createdAt: new Date(now()).toISOString(),
+    ...(requestId ? { requestId, lineageId: requestId } : {}),
   };
   switch (event.type) {
     case "inbound":
@@ -64,6 +67,7 @@ export function createChannelsService(deps: {
   registry: ChannelRegistry;
   bus: EventBus;
   now?: () => number;
+  lineage?: LineageService;
 }): ChannelsService {
   const now = deps.now ?? (() => Date.now());
   const attached = new Map<string, () => void>();
@@ -77,7 +81,14 @@ export function createChannelsService(deps: {
       // Pin: ingest never consults the approval broker.
       resolveApprovalsForChannelEvent(event.message);
     }
-    deps.bus.publish(channelEventToRuntime(connector, event, now));
+    let requestId: string | undefined;
+    if (event.type === "inbound") {
+      requestId = deps.lineage?.begin({ source: "channel", sourceRef: event.message.id }).requestId;
+    } else if (event.type === "outbound") {
+      requestId = event.message.requestId;
+      if (requestId) deps.lineage?.noteOutbound(requestId, event.outboundId);
+    }
+    deps.bus.publish(channelEventToRuntime(connector, event, now, requestId));
   }
 
   function attach(connector: ChannelConnector): void {

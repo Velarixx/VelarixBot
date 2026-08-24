@@ -33,7 +33,7 @@ describe("discord service", () => {
   let bots: BotsService;
   let groups: GroupsService;
   let cfg: AppConfig;
-  let turns: Array<{ botId: string; text: string; unattended?: boolean; groupThreadId?: string; idempotencyKey?: string }>;
+  let turns: Array<{ botId: string; text: string; unattended?: boolean; groupThreadId?: string; idempotencyKey?: string; requestId?: string }>;
   let gateway: ReturnType<typeof createFakeDiscordGateway>;
   let rest: ReturnType<typeof createFakeDiscordRest>;
   let discord: DiscordService;
@@ -76,6 +76,7 @@ describe("discord service", () => {
           unattended: opts?.unattended,
           groupThreadId: opts?.groupThreadId,
           idempotencyKey: opts?.idempotencyKey,
+          requestId: opts?.requestId,
         });
         return { threadId: bots.bot(botId)!.threadId, messageId: "m1" };
       },
@@ -139,6 +140,7 @@ describe("discord service", () => {
         unattended: true,
         groupThreadId: undefined,
         idempotencyKey: "channel:discord:in-1",
+        requestId: undefined,
       },
     ]);
     expect(repos.discordConversations.getByKey("10/20")).toMatchObject({
@@ -169,6 +171,7 @@ describe("discord service", () => {
         unattended: true,
         groupThreadId: undefined,
         idempotencyKey: "channel:discord:switch",
+        requestId: undefined,
       },
     ]);
     expect(repos.discordConversations.getByKey("10/20")?.botId).toBe(scout.id);

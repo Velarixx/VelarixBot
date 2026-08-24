@@ -93,6 +93,17 @@ describe("Settings Apps card stays on the same hub model", () => {
     expect(settings).not.toMatch(/bitwarden.*value/i);
   });
 
+  it("App Settings shows local usage totals as counts only — not billed amounts or secrets", () => {
+    expect(appSettings).toContain("Local usage");
+    expect(appSettings).toContain("/api/usage");
+    expect(appSettings).toMatch(/local[\s\S]*activity records[\s\S]*not a provider invoice/);
+    expect(appSettings).toContain("Provider");
+    expect(appSettings).toContain("Requests");
+    expect(appSettings).toContain("Tokens");
+    expect(appSettings).not.toMatch(/Sentry|DSN/);
+    expect(appSettings).not.toMatch(/apiKey|secret:\/\//);
+  });
+
   it("backup copy states every covered domain and withholds Verified unless complete", () => {
     expect(appSettings).toContain("approval rules");
     expect(appSettings).toContain("skills");

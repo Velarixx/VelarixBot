@@ -7,7 +7,8 @@
 //
 // This file is contracts only. Attachment policy lives in
 // server/attachments/. No live Gateway, no routine triggers, no MCP,
-// no scheduler, no request lineage.
+// no scheduler. Request lineage (P7) is stamped by the channels service
+// onto published events — connectors do not mint it.
 //
 // P0.1 pin: external channel events NEVER inherit standing approvals.
 // An inbound event does not auto-resolve Allow-once, Always-allow, an
@@ -78,6 +79,8 @@ export interface ChannelOutboundMessage {
   text: string;
   attachments?: ChannelAttachmentMeta[];
   replyToId?: string;
+  /** P7 lineage id, when the send is the outbound of a correlated request. */
+  requestId?: string;
 }
 
 // ── reactions ──────────────────────────────────────────────────────────
