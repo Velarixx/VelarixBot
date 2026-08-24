@@ -132,7 +132,7 @@ export async function bitwardenStatus(cfg: AppConfig): Promise<BitwardenPublicSt
     return {
       configured: false,
       status: "disconnected",
-      nextStep: "Paste a Bitwarden Secrets Manager machine-account access token in App Settings, then Save.",
+      nextStep: "Paste a Bitwarden Secrets Manager machine-account access token, then Save.",
       projects: [],
       secrets: [],
     };
