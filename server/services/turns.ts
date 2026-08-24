@@ -1475,7 +1475,13 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           }
         }
         const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
-        const bitwarden = await fetchApprovedSecretEnv(cfg, bot);
+        // Same-tick sendTurn for fake/API instances (delegations drain).
+        // Only await Bitwarden when a token is configured AND this bot has
+        // an explicit allowlist — default-none stays synchronous.
+        const bitwarden =
+          bitwardenConfigured(cfg) && ((bot.bitwardenSecretIds?.length ?? 0) > 0 || (bot.bitwardenProjectIds?.length ?? 0) > 0)
+            ? await fetchApprovedSecretEnv(cfg, bot)
+            : { env: {}, keys: [] };
         if (bot.enabledApps?.length && composioSessionKey(cfg)) {
           const session = await ensureBotSession(cfg, bot.id, bot.enabledApps);
           if (session) {
