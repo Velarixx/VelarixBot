@@ -170,6 +170,12 @@ a routine can attach.
 
 ## How it works
 
+Turns enter through four scheduler lanes — **user** (interactive chat), **channel** (Discord/Telegram inbound),
+**agent** (bot-to-bot), and **background** (routines). The lanes share the bot fairly (round-robin, one running
+turn per bot), expose queued/running/cancelled over `/api/lanes`, and dedupe retries with durable SQLite keys.
+Channel inbound still never inherits standing approvals. The existing `startTurn` dispatcher, routine claims, and
+interruption recovery stay in place.
+
 Two processes. The app holds no transports of its own — it sends typed commands over HTTP and folds one SSE
 event stream into state. The harness server owns every agent process and normalizes each provider's native
 protocol into one canonical runtime event stream (logged per-thread as NDJSON).

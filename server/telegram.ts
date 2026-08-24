@@ -209,7 +209,7 @@ export function createTelegramService(deps: {
   api: TelegramApi;
   conversations: TelegramConversationsRepository;
   bots: BotsService;
-  startTurn: (botId: string, text: string) => Promise<unknown>;
+  startTurn: (botId: string, text: string, opts?: { unattended?: boolean; idempotencyKey?: string }) => Promise<unknown>;
   now: () => number;
   onStatusChange?: () => void;
 }): TelegramService {
@@ -316,7 +316,10 @@ export function createTelegramService(deps: {
     });
     originByThread.set(agent.threadId, inbound.identity.chatId);
     try {
-      await deps.startTurn(agent.id, inbound.text);
+      await deps.startTurn(agent.id, inbound.text, {
+        unattended: true,
+        idempotencyKey: `channel:telegram:${inbound.updateId}`,
+      });
       lastWorkflow.set(inbound.identity.chatId, "working");
       await sendSafe(inbound.identity.chatId, telegramWorkflowNotice("working"));
     } catch (error) {

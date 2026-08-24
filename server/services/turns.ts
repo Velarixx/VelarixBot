@@ -86,6 +86,7 @@ import type { BotsService } from "./bots.ts";
 import { createGroupsService, type GroupsService } from "./groups.ts";
 import type { RoutinesService } from "./routines.ts";
 import type { TeachService } from "./teach.ts";
+import type { LaneScheduler } from "./lanes.ts";
 
 const SERVICES_DIR = dirname(fileURLToPath(import.meta.url));
 export const SECRET_CARD_ANSWER = "••••";
@@ -108,6 +109,8 @@ export interface StartTurnOpts {
   systemNote?: string;
   /** Full-autonomy follow-up: no user bubble; the lead reviews reports and continues. */
   autonomyContinue?: boolean;
+  /** Scheduler-only; startTurn ignores this. Lane wrappers peel it off. */
+  idempotencyKey?: string;
 }
 
 export interface TurnsServiceDeps {
@@ -129,6 +132,10 @@ export interface TurnsServiceDeps {
    * passes the same broker to the computer routes so the suspend guard sees
    * the turns this service is running. */
   leases?: LeaseBroker;
+  /** P6: notify the lane scheduler when a turn settles. */
+  onIdle?: (botId: string) => void;
+  /** P6: optional lane scheduler for agent (bot-to-bot) hops. */
+  lanes?: () => LaneScheduler | null;
 }
 
 export interface TurnsService {
@@ -613,6 +620,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
 
   const idleListeners = new Set<(botId: string) => void>();
   function notifyIdle(botId: string) {
+    deps.onIdle?.(botId);
     for (const listener of [...idleListeners]) listener(botId);
   }
   const peerQueue = createPeerQueue({
@@ -1739,7 +1747,25 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       // snapshot BEFORE the queue waits: a TTL expiry while the peer is
       // busy must not drop the gate on a 3am listener hop.
       const unattended = hopUnattended(opts);
-      return peerQueue.enqueue(toBotId, () => askBotAndWait(toBotId, message, depth, { ...opts, unattended }));
+      const hop = () => peerQueue.enqueue(toBotId, () => askBotAndWait(toBotId, message, depth, { ...opts, unattended }));
+      const scheduler = deps.lanes?.();
+      if (!scheduler) return hop();
+      return scheduler
+        .enqueue({
+          lane: "agent",
+          botId: toBotId,
+          text: message,
+          opts: { ...opts, unattended },
+          run: hop,
+        })
+        .then(async (accepted) => {
+          if (accepted.status === "duplicate") return "(duplicate agent turn)";
+          try {
+            return String(await accepted.settled);
+          } catch (error) {
+            return `(couldn't start that bot: ${error instanceof Error ? error.message : String(error)})`;
+          }
+        });
     },
     handleWorkspaceTool,
     askUserAndWait,

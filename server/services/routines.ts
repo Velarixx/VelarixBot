@@ -181,7 +181,7 @@ export function createRoutinesService(deps: {
   startTurn(
     botId: string,
     text: string,
-    opts?: { extraSkillIds?: string[]; unattended?: boolean; systemNote?: string },
+    opts?: { extraSkillIds?: string[]; unattended?: boolean; systemNote?: string; idempotencyKey?: string },
   ): Promise<{ threadId: string; messageId: string } | void>;
   getSkill(id: string): SkillRecord | null;
   skillPrompt(skill: SkillRecord | null, prompt: string): string;
@@ -248,6 +248,12 @@ export function createRoutinesService(deps: {
       }
       return { started: false, reason: "bot busy" };
     }
+    const claimKey =
+      opts.idempotencyKey !== undefined
+        ? opts.idempotencyKey
+        : opts.kind === "scheduled" && opts.scheduledFor !== undefined
+          ? occurrenceKey(routine.id, opts.scheduledFor)
+          : null;
     const claim = repos.routines.claimRun({
       routineId: routine.id,
       botId: routine.botId,
@@ -255,12 +261,7 @@ export function createRoutinesService(deps: {
       leaseUntil: at + ROUTINE_LEASE_MS,
       kind: opts.kind,
       scheduledFor: opts.scheduledFor ?? null,
-      idempotencyKey:
-        opts.idempotencyKey !== undefined
-          ? opts.idempotencyKey
-          : opts.kind === "scheduled" && opts.scheduledFor !== undefined
-            ? occurrenceKey(routine.id, opts.scheduledFor)
-            : null,
+      idempotencyKey: claimKey,
     });
     if (!claim) {
       // the occurrence already has a run row (it ran, or a live lease holds
@@ -285,6 +286,7 @@ export function createRoutinesService(deps: {
         extraSkillIds,
         ...(unattended ? { unattended: true } : {}),
         ...(external ? { systemNote: opts.systemNote ?? untrustedWebhookSystemNote() } : {}),
+        ...(claimKey ? { idempotencyKey: `background:${claimKey}` } : {}),
       });
     } catch (e) {
       const reason = `blocked: ${e instanceof Error ? e.message : String(e)}`;

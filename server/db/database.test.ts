@@ -35,6 +35,7 @@ const MANDATED_TABLES = [
   "agent_tasks",
   "telegram_conversations",
   "discord_conversations",
+  "lane_idempotency",
 ];
 
 describe("database + migrations", () => {

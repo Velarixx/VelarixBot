@@ -33,7 +33,7 @@ describe("discord service", () => {
   let bots: BotsService;
   let groups: GroupsService;
   let cfg: AppConfig;
-  let turns: Array<{ botId: string; text: string; unattended?: boolean; groupThreadId?: string }>;
+  let turns: Array<{ botId: string; text: string; unattended?: boolean; groupThreadId?: string; idempotencyKey?: string }>;
   let gateway: ReturnType<typeof createFakeDiscordGateway>;
   let rest: ReturnType<typeof createFakeDiscordRest>;
   let discord: DiscordService;
@@ -70,7 +70,13 @@ describe("discord service", () => {
       bots,
       groups,
       startTurn: async (botId, text, opts) => {
-        turns.push({ botId, text, unattended: opts?.unattended, groupThreadId: opts?.groupThreadId });
+        turns.push({
+          botId,
+          text,
+          unattended: opts?.unattended,
+          groupThreadId: opts?.groupThreadId,
+          idempotencyKey: opts?.idempotencyKey,
+        });
         return { threadId: bots.bot(botId)!.threadId, messageId: "m1" };
       },
       now: () => 1_700_000_000_000,
@@ -126,7 +132,15 @@ describe("discord service", () => {
   it("binds inbound conversations to the configured agent and starts an unattended turn", async () => {
     const scout = bots.bots()[0]!;
     await inbound({ text: "from discord", id: "in-1" });
-    expect(turns).toEqual([{ botId: scout.id, text: "from discord", unattended: true, groupThreadId: undefined }]);
+    expect(turns).toEqual([
+      {
+        botId: scout.id,
+        text: "from discord",
+        unattended: true,
+        groupThreadId: undefined,
+        idempotencyKey: "channel:discord:in-1",
+      },
+    ]);
     expect(repos.discordConversations.getByKey("10/20")).toMatchObject({
       botId: scout.id,
       velarixThreadId: scout.threadId,
@@ -148,7 +162,15 @@ describe("discord service", () => {
     const helper = bots.createBot();
     bots.patchBot(helper.id, { name: "Helper" });
     await inbound({ text: "talk to Helper instead", id: "switch" });
-    expect(turns).toEqual([{ botId: scout.id, text: "talk to Helper instead", unattended: true, groupThreadId: undefined }]);
+    expect(turns).toEqual([
+      {
+        botId: scout.id,
+        text: "talk to Helper instead",
+        unattended: true,
+        groupThreadId: undefined,
+        idempotencyKey: "channel:discord:switch",
+      },
+    ]);
     expect(repos.discordConversations.getByKey("10/20")?.botId).toBe(scout.id);
     expect(repos.discordConversations.getByKey("10/20")?.botId).not.toBe(helper.id);
   });
