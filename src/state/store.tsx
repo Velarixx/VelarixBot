@@ -26,6 +26,7 @@ import {
 import { advanceCursor, eventsUrl, INITIAL_CURSOR, shouldApplyFrame, type SseCursor } from "@/lib/sse-resume";
 import type { AgentTask } from "@/lib/agent-task";
 import type { TelegramConfigStatus } from "@/lib/telegram";
+import type { DiscordConfigStatus } from "@/lib/discord";
 import type { WorkflowStatus, WorkflowWaitingFor } from "@/lib/workflow";
 
 export type { AgentTask } from "@/lib/agent-task";
@@ -159,6 +160,7 @@ export interface ConfigStatus {
   omnirouter?: { configured: boolean };
   telegram?: TelegramConfigStatus;
   bitwarden?: { configured: boolean };
+  discord?: DiscordConfigStatus;
 }
 
 export type GithubListenerEvent =
@@ -1228,6 +1230,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               omnirouter: frame.omnirouter,
               telegram: frame.telegram,
               bitwarden: frame.bitwarden,
+              discord: frame.discord,
             },
           });
           api("/api/instances")

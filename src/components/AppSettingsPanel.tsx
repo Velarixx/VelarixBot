@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { api, useStore, type ConfigStatus, type InstanceInfo } from "@/state/store";
 import { ApiKeyRow } from "./ApiKeys";
 import { TelegramSettings } from "./TelegramSettings";
+import { DiscordSettings } from "./DiscordSettings";
 import { BITWARDEN_PATHS, type BitwardenHubStatus } from "@/lib/bitwarden";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
@@ -483,6 +484,8 @@ export function AppSettingsPanel() {
         </div>
 
         <TelegramSettings />
+
+        <DiscordSettings />
 
         <EngineCliRows />
 

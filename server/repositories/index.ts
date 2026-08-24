@@ -22,6 +22,10 @@ import {
   createTelegramConversationsRepository,
   type TelegramConversationsRepository,
 } from "./telegram-conversations.ts";
+import {
+  createDiscordConversationsRepository,
+  type DiscordConversationsRepository,
+} from "./discord-conversations.ts";
 import type { MemoryRowsStore } from "../memory.ts";
 
 export interface Repositories {
@@ -38,6 +42,7 @@ export interface Repositories {
   memoryRows: MemoryRowsStore;
   agentTasks: AgentTasksStore;
   telegramConversations: TelegramConversationsRepository;
+  discordConversations: DiscordConversationsRepository;
   /** Delete a bot and everything hanging off it in ONE transaction:
    * routines (+ run history), the thread (messages + event log), the
    * computer binding, structured memory rows, and the bot row itself. */
@@ -59,6 +64,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
   const memoryRows = createMemoryRowsRepository(db);
   const agentTasks = createAgentTasksRepository(db);
   const telegramConversations = createTelegramConversationsRepository(db);
+  const discordConversations = createDiscordConversationsRepository(db);
   const deleteBotRow = db.prepare("DELETE FROM bots WHERE id = ?");
 
   const deleteCascade = db.transaction((botId: string): { deleted: boolean; hashes: string[] } => {
@@ -69,6 +75,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     memoryRows.deleteByBot(botId);
     agentTasks.deleteForBot(botId);
     telegramConversations.deleteForBot(botId);
+    discordConversations.deleteForBot(botId);
     deleteBotRow.run(botId);
     const hashes = messages.deleteThreadRows(bot.threadId);
     return { deleted: true, hashes };
@@ -88,6 +95,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     memoryRows,
     agentTasks,
     telegramConversations,
+    discordConversations,
     deleteBotCascade(botId) {
       const dying = collectAvatarHashes(bots.get(botId) ? [bots.get(botId)!] : []);
       const { deleted, hashes } = deleteCascade(botId);

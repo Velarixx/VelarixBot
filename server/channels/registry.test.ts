@@ -15,7 +15,7 @@ describe("channel registry", () => {
     expect(registry.statuses()[0]).toMatchObject({ id: "fake-1", kind: "fake", configured: true, status: "connected" });
   });
 
-  it("loads a fake entry from the in-memory map and a discord stub", async () => {
+  it("loads a fake entry from the in-memory map and a disconnected discord connector", async () => {
     const registry = await createChannelRegistry({
       entries: {
         inbox: { kind: "fake" },
@@ -26,7 +26,13 @@ describe("channel registry", () => {
     expect(registry.get("discord")?.status()).toMatchObject({
       kind: "discord",
       configured: false,
-      status: "unavailable",
+      status: "disconnected",
+    });
+    expect(registry.get("discord")?.capabilities).toEqual({
+      send: true,
+      receive: true,
+      reactions: true,
+      receipts: true,
     });
   });
 
@@ -73,8 +79,8 @@ describe("channel factory decode/create contract", () => {
     expect(() => FakeChannelFactory.decodeConfig({ identities: "x" })).toThrow(/identities/);
   });
 
-  it("discord decodeConfig throws on a live token and create rejects only as a promise", async () => {
-    expect(() => DiscordChannelFactory.decodeConfig({ token: "live-token" })).toThrow(/live Gateway/);
+  it("discord decodeConfig throws on a token and create rejects only as a promise", async () => {
+    expect(() => DiscordChannelFactory.decodeConfig({ token: "live-token" })).toThrow(/SecretStore/);
     await expect(DiscordChannelFactory.create({ id: "discord", config: {} })).resolves.toMatchObject({
       kind: "discord",
     });

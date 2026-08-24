@@ -20,7 +20,7 @@ export interface ChannelConformanceContext {
   cleanup?(): void;
 }
 
-export function recordChannelEvents(connector: FakeChannelConnector): {
+export function recordChannelEvents(connector: { onEvent(listener: (event: ChannelConnectorEvent) => void): () => void }): {
   events: ChannelConnectorEvent[];
   until(pred: (event: ChannelConnectorEvent) => boolean, timeoutMs?: number): Promise<ChannelConnectorEvent>;
   stop(): void;

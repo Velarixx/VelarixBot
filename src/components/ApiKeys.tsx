@@ -16,7 +16,8 @@ export type ConfigSection =
   | "openrouter"
   | "omnirouter"
   | "telegram"
-  | "bitwarden";
+  | "bitwarden"
+  | "discord";
 
 const SECTIONS: Record<
   ConfigSection,
@@ -35,6 +36,7 @@ const SECTIONS: Record<
   omnirouter: { body: (v) => ({ omnirouter: { key: v } }), flag: (c) => c.omnirouter?.configured ?? false },
   telegram: { body: (v) => ({ telegram: { token: v } }), flag: (c) => c.telegram?.configured ?? false },
   bitwarden: { body: (v) => ({ bitwarden: { accessToken: v } }), flag: (c) => c.bitwarden?.configured ?? false },
+  discord: { body: (v) => ({ discord: { token: v } }), flag: (c) => c.discord?.configured ?? false },
 };
 
 export function ApiKeyRow({

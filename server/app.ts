@@ -51,6 +51,8 @@ import { createSseHub, type Broadcast, type SseHub } from "./services/events.ts"
 import { createListenerPoller } from "./listeners/index.ts";
 import { createTelegramApi, type TelegramApi } from "./telegram-api.ts";
 import { createTelegramService, type TelegramService } from "./telegram.ts";
+import { createDiscordService, type DiscordService } from "./discord.ts";
+import { createDiscordChannelConnector, type DiscordConnectInput } from "./channels/discord.ts";
 import { createRoutinesService, type RoutinesService } from "./services/routines.ts";
 import { createSecurityAuditService } from "./services/security-audit.ts";
 import { createTeachService, type TeachService } from "./services/teach.ts";
@@ -98,6 +100,8 @@ export interface CreateApplicationInput {
   generateAvatarImages?: GenerateAvatarImages;
   /** Injected Telegram Bot API (tests). Default long-polls api.telegram.org. */
   telegramApi?: TelegramApi;
+  /** Injected Discord Gateway/REST (tests). Default uses node WebSocket + fetch. */
+  discordConnect?: () => Partial<DiscordConnectInput>;
 }
 
 export interface Application {
@@ -113,6 +117,7 @@ export interface Application {
     teach: TeachService;
     proactive: Proactive;
     telegram: TelegramService;
+    discord: DiscordService;
     channels: ChannelsService;
   };
 }
@@ -187,9 +192,11 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // (live SSE + durable ui-stream replay).
   let botsRef: BotsService | null = null;
   let telegramRef: TelegramService | null = null;
+  let discordRef: DiscordService | null = null;
   const broadcast: Broadcast = (payload) => {
     hub.broadcast(projectPublicBotFrame(payload, (id) => botsRef?.publicBot(id) ?? null));
     telegramRef?.onBroadcast(payload);
+    discordRef?.onBroadcast(payload);
   };
 
   // canonical events are mirrored into SQLite (event_log); the per-thread
@@ -303,6 +310,15 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // same repositories/registries as everything else, never message content
   const diagnostics = createDiagnosticsService({ repos, providers: registry, computers, stamp });
 
+  const discordConnector = createDiscordChannelConnector({ id: "discord" });
+  const channelRegistry = await createChannelRegistry();
+  const channels = createChannelsService({
+    registry: channelRegistry,
+    bus,
+    now: () => clock.now(),
+  });
+  channels.register(discordConnector);
+
   let integrationsRef: ReturnType<typeof createIntegrationsRoutes> | null = null;
   const telegram = createTelegramService({
     cfg: () => cfg,
@@ -318,6 +334,22 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   });
   telegramRef = telegram;
 
+  const discord = createDiscordService({
+    cfg: () => cfg,
+    connector: discordConnector,
+    conversations: repos.discordConversations,
+    bots,
+    groups,
+    startTurn: (botId, text, opts) => turns.startTurn(botId, text, { ...opts, unattended: true }),
+    now: () => clock.now(),
+    connectOpts: input.discordConnect,
+    onStatusChange: () => {
+      const snapshot = integrationsRef?.configStatus();
+      if (snapshot) broadcast({ kind: "config", ...snapshot });
+    },
+  });
+  discordRef = discord;
+
   const integrations = createIntegrationsRoutes({
     bots,
     groups,
@@ -328,19 +360,11 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     broadcast,
     reloadProviders: input.reloadProviders,
     telegram,
+    discord,
   });
   integrationsRef = integrations;
   telegram.applyConfig();
-
-  // Channel connectors are in-memory this PR (no SQL, no live Gateway).
-  // Empty at boot — tests register the fake connector; Discord is a stub
-  // factory available to the registry, not auto-connected.
-  const channelRegistry = await createChannelRegistry();
-  const channels = createChannelsService({
-    registry: channelRegistry,
-    bus,
-    now: () => clock.now(),
-  });
+  discord.applyConfig();
 
   // route order preserves the pre-refactor dispatch: internal comms first
   // (their own token), then the launch-token gate, then the public surface
@@ -472,6 +496,6 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       proactive.tick(now);
     },
     hub,
-    services: { bots, groups, turns, routines, teach, proactive, telegram, channels },
+    services: { bots, groups, turns, routines, teach, proactive, telegram, discord, channels },
   };
 }

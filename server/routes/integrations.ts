@@ -36,6 +36,12 @@ import type { BotsService } from "../services/bots.ts";
 import type { GroupsService } from "../services/groups.ts";
 import type { TurnsService } from "../services/turns.ts";
 import { parseAllowlist, type TelegramConfigStatus, type TelegramService } from "../telegram.ts";
+import {
+  decodeDiscordSettings,
+  type DiscordConfigStatus,
+  type DiscordService,
+} from "../discord.ts";
+import { parseAllowlists, parseDiscordBindings } from "../channels/discord-protocol.ts";
 import { json, readBody, type RouteHandler } from "./context.ts";
 
 export interface IntegrationsRoutes {
@@ -57,8 +63,9 @@ export function createIntegrationsRoutes(deps: {
   broadcast: Broadcast;
   reloadProviders(): Promise<void>;
   telegram?: TelegramService;
+  discord?: DiscordService;
 }): IntegrationsRoutes {
-  const { bots, groups, turns, registry, cfg, commsToken, broadcast, reloadProviders, telegram } = deps;
+  const { bots, groups, turns, registry, cfg, commsToken, broadcast, reloadProviders, telegram, discord } = deps;
   const commsBus = { store: bindCommsStore(bots, groups), broadcast };
 
   function configStatus() {
@@ -82,6 +89,7 @@ export function createIntegrationsRoutes(deps: {
       omnirouter: { configured: Boolean(cfg.omnirouter?.key) },
       telegram: telegramStatus(),
       bitwarden: publicBitwardenConfig(cfg),
+      discord: discordStatus(),
     };
   }
 
@@ -97,6 +105,25 @@ export function createIntegrationsRoutes(deps: {
       status: "disconnected",
       statusMessage:
         "Telegram is disconnected. Paste a bot token from @BotFather, pick an agent, and add an allowlist to connect.",
+    };
+  }
+
+  function discordStatus(): DiscordConfigStatus {
+    if (discord) return discord.publicStatus();
+    const s = decodeDiscordSettings(cfg.discord);
+    return {
+      configured: Boolean(s.token),
+      enabled: s.enabled,
+      ...(s.defaultBotId ? { defaultBotId: s.defaultBotId } : {}),
+      ...(s.defaultGroupId ? { defaultGroupId: s.defaultGroupId } : {}),
+      guildAllowlist: s.guildAllowlist,
+      channelAllowlist: s.channelAllowlist,
+      userAllowlist: s.userAllowlist,
+      bindings: s.bindings,
+      status: "disconnected",
+      statusMessage:
+        "Discord is disconnected. Paste a bot token from the Discord Developer Portal, pick an agent or group, and add an allowlist to connect.",
+      nextStep: "Paste a Discord bot token, choose a binding, add an allowlist, then connect.",
     };
   }
 
@@ -415,7 +442,7 @@ export function createIntegrationsRoutes(deps: {
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch: Record<string, object> = {};
-      for (const key of ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter", "telegram", "bitwarden"] as const) {
+      for (const key of ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter", "telegram", "bitwarden", "discord"] as const) {
         if (body[key] && typeof body[key] === "object") patch[key] = body[key];
       }
       if (!Object.keys(patch).length) {
@@ -469,9 +496,40 @@ export function createIntegrationsRoutes(deps: {
         }
         dropBitwardenSession();
       }
+      if (patch.discord) {
+        const d = patch.discord as Record<string, unknown>;
+        const bad =
+          (d.enabled !== undefined && typeof d.enabled !== "boolean" && "discord.enabled must be a boolean") ||
+          (d.defaultBotId !== undefined && typeof d.defaultBotId !== "string" && "discord.defaultBotId must be a string") ||
+          (d.defaultGroupId !== undefined && typeof d.defaultGroupId !== "string" && "discord.defaultGroupId must be a string") ||
+          (d.token !== undefined && typeof d.token !== "string" && "discord.token must be a string") ||
+          (d.guildAllowlist !== undefined && !Array.isArray(d.guildAllowlist) && "discord.guildAllowlist must be an array") ||
+          (d.channelAllowlist !== undefined && !Array.isArray(d.channelAllowlist) && "discord.channelAllowlist must be an array") ||
+          (d.userAllowlist !== undefined && !Array.isArray(d.userAllowlist) && "discord.userAllowlist must be an array") ||
+          (d.bindings !== undefined && !Array.isArray(d.bindings) && "discord.bindings must be an array");
+        if (bad) {
+          json(res, 400, { error: bad });
+          return true;
+        }
+        for (const key of ["guildAllowlist", "channelAllowlist", "userAllowlist"] as const) {
+          if (Array.isArray(d[key]) && d[key].some((item) => typeof item !== "string")) {
+            json(res, 400, { error: `discord.${key} must be an array of ids` });
+            return true;
+          }
+        }
+        if (typeof d.defaultBotId === "string") d.defaultBotId = d.defaultBotId.trim();
+        if (typeof d.defaultGroupId === "string") d.defaultGroupId = d.defaultGroupId.trim();
+        const lists = parseAllowlists(d);
+        if (Array.isArray(d.guildAllowlist)) d.guildAllowlist = lists.guilds;
+        if (Array.isArray(d.channelAllowlist)) d.channelAllowlist = lists.channels;
+        if (Array.isArray(d.userAllowlist)) d.userAllowlist = lists.users;
+        if (Array.isArray(d.bindings)) d.bindings = parseDiscordBindings(d.bindings);
+        if (d.token === "" && d.enabled === false) discord?.disconnectNow();
+      }
       await saveConfig(patch);
       Object.assign(cfg, loadConfig());
       telegram?.applyConfig();
+      discord?.applyConfig();
       await reloadProviders();
       const status = configStatus();
       broadcast({ kind: "config", ...status });

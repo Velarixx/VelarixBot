@@ -773,6 +773,35 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 20,
+    name: "discord-conversations",
+    up(db) {
+      db.exec(`
+        CREATE TABLE discord_conversations(
+          conversation_key TEXT PRIMARY KEY NOT NULL
+            CHECK(typeof(conversation_key) = 'text' AND length(conversation_key) > 0),
+          guild_id TEXT,
+          channel_id TEXT NOT NULL
+            CHECK(typeof(channel_id) = 'text' AND length(channel_id) > 0),
+          thread_id TEXT,
+          user_id TEXT,
+          bot_id TEXT,
+          group_id TEXT,
+          velarix_thread_id TEXT NOT NULL
+            CHECK(typeof(velarix_thread_id) = 'text' AND length(velarix_thread_id) > 0),
+          created_at INTEGER NOT NULL
+            CHECK(typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 9007199254740991),
+          updated_at INTEGER NOT NULL
+            CHECK(typeof(updated_at) = 'integer' AND updated_at BETWEEN created_at AND 9007199254740991),
+          CHECK(bot_id IS NOT NULL OR group_id IS NOT NULL)
+        );
+        CREATE INDEX discord_conversations_bot ON discord_conversations(bot_id, updated_at);
+        CREATE INDEX discord_conversations_group ON discord_conversations(group_id, updated_at);
+        CREATE INDEX discord_conversations_thread ON discord_conversations(velarix_thread_id, updated_at);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {
