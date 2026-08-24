@@ -6,7 +6,16 @@ import { Check, Loader2 } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 
-export type ConfigSection = "xai" | "openai" | "composio" | "composioApi" | "box" | "github" | "openrouter" | "omnirouter";
+export type ConfigSection =
+  | "xai"
+  | "openai"
+  | "composio"
+  | "composioApi"
+  | "box"
+  | "github"
+  | "openrouter"
+  | "omnirouter"
+  | "telegram";
 
 const SECTIONS: Record<
   ConfigSection,
@@ -23,6 +32,7 @@ const SECTIONS: Record<
   github: { body: (v) => ({ github: { token: v } }), flag: (c) => c.github?.configured ?? false },
   openrouter: { body: (v) => ({ openrouter: { key: v } }), flag: (c) => c.openrouter?.configured ?? false },
   omnirouter: { body: (v) => ({ omnirouter: { key: v } }), flag: (c) => c.omnirouter?.configured ?? false },
+  telegram: { body: (v) => ({ telegram: { token: v } }), flag: (c) => c.telegram?.configured ?? false },
 };
 
 export function ApiKeyRow({

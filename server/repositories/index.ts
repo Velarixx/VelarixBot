@@ -18,6 +18,10 @@ import {
   createUserWorkspaceBindingsRepository,
   type UserWorkspaceBindingsRepository,
 } from "./user-workspace-bindings.ts";
+import {
+  createTelegramConversationsRepository,
+  type TelegramConversationsRepository,
+} from "./telegram-conversations.ts";
 import type { MemoryRowsStore } from "../memory.ts";
 
 export interface Repositories {
@@ -33,6 +37,7 @@ export interface Repositories {
   snapshots: SnapshotsRepository;
   memoryRows: MemoryRowsStore;
   agentTasks: AgentTasksStore;
+  telegramConversations: TelegramConversationsRepository;
   /** Delete a bot and everything hanging off it in ONE transaction:
    * routines (+ run history), the thread (messages + event log), the
    * computer binding, structured memory rows, and the bot row itself. */
@@ -53,6 +58,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
   const snapshots = createSnapshotsRepository(db);
   const memoryRows = createMemoryRowsRepository(db);
   const agentTasks = createAgentTasksRepository(db);
+  const telegramConversations = createTelegramConversationsRepository(db);
   const deleteBotRow = db.prepare("DELETE FROM bots WHERE id = ?");
 
   const deleteCascade = db.transaction((botId: string): { deleted: boolean; hashes: string[] } => {
@@ -62,6 +68,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     computerBindings.delete(botId);
     memoryRows.deleteByBot(botId);
     agentTasks.deleteForBot(botId);
+    telegramConversations.deleteForBot(botId);
     deleteBotRow.run(botId);
     const hashes = messages.deleteThreadRows(bot.threadId);
     return { deleted: true, hashes };
@@ -80,6 +87,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     snapshots,
     memoryRows,
     agentTasks,
+    telegramConversations,
     deleteBotCascade(botId) {
       const dying = collectAvatarHashes(bots.get(botId) ? [bots.get(botId)!] : []);
       const { deleted, hashes } = deleteCascade(botId);

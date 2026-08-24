@@ -25,6 +25,7 @@ import {
 } from "@/lib/prompt-queue";
 import { advanceCursor, eventsUrl, INITIAL_CURSOR, shouldApplyFrame, type SseCursor } from "@/lib/sse-resume";
 import type { AgentTask } from "@/lib/agent-task";
+import type { TelegramConfigStatus } from "@/lib/telegram";
 import type { WorkflowStatus, WorkflowWaitingFor } from "@/lib/workflow";
 
 export type { AgentTask } from "@/lib/agent-task";
@@ -152,6 +153,7 @@ export interface ConfigStatus {
   openai?: { configured: boolean };
   openrouter?: { configured: boolean };
   omnirouter?: { configured: boolean };
+  telegram?: TelegramConfigStatus;
 }
 
 export type GithubListenerEvent =
@@ -1217,6 +1219,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               openai: frame.openai,
               openrouter: frame.openrouter,
               omnirouter: frame.omnirouter,
+              telegram: frame.telegram,
             },
           });
           api("/api/instances")

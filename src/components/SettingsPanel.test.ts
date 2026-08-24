@@ -42,6 +42,20 @@ describe("Settings Apps card stays on the same hub model", () => {
     expect(appSettings).not.toContain("bot.cli");
   });
 
+  it("App Settings connects Telegram with a write-only token, agent picker, allowlist, and disconnect", () => {
+    expect(appSettings).toContain("TelegramSettings");
+    const telegram = readFileSync(join(HERE, "TelegramSettings.tsx"), "utf8");
+    expect(telegram).toContain('section="telegram"');
+    expect(keys).toContain("telegram: { token: v }");
+    expect(keys).toContain('type="password"');
+    expect(telegram).toContain("Enable Telegram");
+    expect(telegram).toContain("Disconnect Telegram");
+    expect(telegram).toContain("Telegram agent");
+    expect(telegram).toContain("allowlist");
+    expect(telegram).toContain("telegramDisplayedStatus");
+    expect(telegram).not.toMatch(/state\.config\?\.telegram\.token/);
+  });
+
   it("App Settings only links to the hub and keeps keys write-only", () => {
     expect(appSettings).toContain("togglePlugins");
     expect(appSettings).toContain("Manage apps");
