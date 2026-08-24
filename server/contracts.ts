@@ -5,6 +5,14 @@
 // Stream. The shapes and names are kept so the two codebases stay mutually
 // readable.
 
+import type {
+  ChannelDeliveryReceipt,
+  ChannelInboundMessage,
+  ChannelOutboundMessage,
+  ChannelRateLimitState,
+  ChannelReaction,
+} from "./channels/contracts.ts";
+
 export type DriverKind = string;
 export type InstanceId = string;
 export type ThreadId = string;
@@ -92,6 +100,13 @@ export type RuntimeEvent = RuntimeEventBase &
     | { type: "request.resolved"; behavior: string; source: string }
     | { type: "thread.token-usage.updated"; input: number; output: number }
     | { type: "runtime.error"; message: string }
+    // Channel-connector events (Priority 1). Stream on `channel:<connectorId>`,
+    // never a bot thread — standing approvals do not apply.
+    | { type: "channel.inbound"; connectorId: string; message: ChannelInboundMessage }
+    | { type: "channel.outbound"; connectorId: string; outboundId: string; message: ChannelOutboundMessage }
+    | { type: "channel.reaction"; connectorId: string; reaction: ChannelReaction }
+    | { type: "channel.receipt"; connectorId: string; receipt: ChannelDeliveryReceipt }
+    | { type: "channel.rate-limit"; connectorId: string; rateLimit: ChannelRateLimitState }
   );
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;

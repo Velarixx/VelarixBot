@@ -167,6 +167,14 @@ describe("harness HTTP API", () => {
     expect(body.stamp).toBe("ensureBotWorkspace+mcpOverlay");
   });
 
+  it("exposes a read-only empty channel-connector registry", async () => {
+    const { status, body } = await api("GET", "/api/channels");
+    expect(status).toBe(200);
+    expect(body).toEqual({ connectors: [] });
+    expect((await api("GET", "/api/channels/nope")).status).toBe(404);
+    expect((await api("POST", "/api/channels", {})).status).toBe(404);
+  });
+
   it("seeds one starter bot with its greeting", async () => {
     const { status, body } = await api("GET", "/api/bots");
     expect(status).toBe(200);
