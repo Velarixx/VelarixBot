@@ -28,6 +28,13 @@ import {
 import { newId } from "../contracts.ts";
 import { localTimeZone } from "../timezone.ts";
 import type { Broadcast } from "./events.ts";
+import {
+  isPollableSchedule,
+  resolveApprovalsForTriggerEvent,
+  triggerFromSchedule,
+  triggerMatches,
+  type TriggerEvent,
+} from "../triggers/index.ts";
 
 /** How long a running row stays valid without renewal. Renewed every tick
  * (15s in production), so only a dead process lets a lease lapse. */
@@ -76,6 +83,12 @@ export interface RoutinesService {
   settleTurn(threadId: string, ok: boolean, stopReason?: string | null): ThenStartTurn | null;
   routineIdForThread(threadId: string): string | null;
   releaseThread(threadId: string): void;
+  /**
+   * Event-driven fire (Discord inbound / reaction, or a synthetic match).
+   * Never consults the approval broker. Matching listener / group routines
+   * start through the unattended path.
+   */
+  handleExternalEvent(event: TriggerEvent): Promise<void>;
   tick(now?: number): void;
 }
 
@@ -105,8 +118,27 @@ export function untrustedWebhookSystemNote(payload = ""): string {
 
 function intervalStepMs(schedule: RoutineSchedule): number | null {
   if (schedule.kind === "interval") return schedule.everyMinutes * 60_000;
-  if (schedule.kind === "listener") return (schedule.everyMinutes ?? 15) * 60_000;
+  if (schedule.kind === "listener" || schedule.kind === "group") return (schedule.everyMinutes ?? 15) * 60_000;
   return null;
+}
+
+function isExternalEventSchedule(schedule: RoutineSchedule): boolean {
+  return schedule.kind === "listener" || schedule.kind === "group";
+}
+
+function parseGroupCursors(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, val] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof val === "string" && val.trim()) out[key] = val.trim();
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 /** How many occurrences of `schedule` fell in [firstDue, now], and the
@@ -172,7 +204,14 @@ export function createRoutinesService(deps: {
   async function startRun(
     routine: RoutineRecord,
     at: number,
-    opts: { kind: "scheduled" | "manual"; scheduledFor?: number; nextRunAt?: number; prompt?: string },
+    opts: {
+      kind: "scheduled" | "manual";
+      scheduledFor?: number;
+      nextRunAt?: number;
+      prompt?: string;
+      idempotencyKey?: string | null;
+      systemNote?: string;
+    },
   ): Promise<RunOutcome> {
     const nextPatch = opts.nextRunAt !== undefined ? { nextRunAt: opts.nextRunAt } : {};
     const bot = deps.bot(routine.botId);
@@ -216,7 +255,12 @@ export function createRoutinesService(deps: {
       leaseUntil: at + ROUTINE_LEASE_MS,
       kind: opts.kind,
       scheduledFor: opts.scheduledFor ?? null,
-      idempotencyKey: opts.kind === "scheduled" && opts.scheduledFor !== undefined ? occurrenceKey(routine.id, opts.scheduledFor) : null,
+      idempotencyKey:
+        opts.idempotencyKey !== undefined
+          ? opts.idempotencyKey
+          : opts.kind === "scheduled" && opts.scheduledFor !== undefined
+            ? occurrenceKey(routine.id, opts.scheduledFor)
+            : null,
     });
     if (!claim) {
       // the occurrence already has a run row (it ran, or a live lease holds
@@ -232,15 +276,15 @@ export function createRoutinesService(deps: {
     try {
       const prompt = typeof opts.prompt === "string" && opts.prompt.trim() ? opts.prompt.trim() : routine.prompt;
       const extraSkillIds = routine.skillId ? [routine.skillId] : [];
-      const listener = routine.schedule.kind === "listener";
-      // scheduled listener = nobody at the keyboard. Manual "Test run" is
-      // the user, so it stays attended. Interval/daily prompts are
-      // user-written and keep existing Always-allow semantics.
-      const unattended = listener && opts.kind === "scheduled";
+      const external = isExternalEventSchedule(routine.schedule);
+      // scheduled listener / group / Discord event = nobody at the keyboard.
+      // Manual "Test run" is the user, so it stays attended. Interval/daily
+      // prompts are user-written and keep existing Always-allow semantics.
+      const unattended = external && opts.kind === "scheduled";
       await deps.startTurn(routine.botId, prompt, {
         extraSkillIds,
         ...(unattended ? { unattended: true } : {}),
-        ...(listener ? { systemNote: untrustedWebhookSystemNote() } : {}),
+        ...(external ? { systemNote: opts.systemNote ?? untrustedWebhookSystemNote() } : {}),
       });
     } catch (e) {
       const reason = `blocked: ${e instanceof Error ? e.message : String(e)}`;
@@ -313,6 +357,82 @@ export function createRoutinesService(deps: {
     });
   }
 
+  async function pollGroupAndMaybeRun(routine: RoutineRecord, at: number, firstDue: number, next: number): Promise<void> {
+    if (!listenerFilterComplete(routine.schedule) || routine.schedule.kind !== "group") {
+      const reason = "skipped: grouped trigger needs at least one github, slack, or discord listener";
+      repos.routines.recordSkip({
+        routineId: routine.id,
+        botId: routine.botId,
+        at,
+        scheduledFor: firstDue,
+        idempotencyKey: occurrenceKey(routine.id, firstDue),
+        reason,
+      });
+      service.markRoutine(routine.id, { lastRunAt: at, lastResult: reason, nextRunAt: next });
+      return;
+    }
+    const pollable = routine.schedule.anyOf.filter((child) => child.source === "github" || child.source === "slack");
+    if (!pollable.length) {
+      service.markRoutine(routine.id, { nextRunAt: next, lastResult: routine.lastResult ?? "watching: Discord events" });
+      return;
+    }
+    if (!deps.pollListener) {
+      const reason = "skipped: listener poll unavailable";
+      repos.routines.recordSkip({
+        routineId: routine.id,
+        botId: routine.botId,
+        at,
+        scheduledFor: firstDue,
+        idempotencyKey: occurrenceKey(routine.id, firstDue),
+        reason,
+      });
+      service.markRoutine(routine.id, { lastRunAt: at, lastResult: reason, nextRunAt: next });
+      return;
+    }
+    const cursors = parseGroupCursors(routine.listenerCursor);
+    let anyMatch = false;
+    let skipReason: string | undefined;
+    let primed = false;
+    for (let i = 0; i < pollable.length; i++) {
+      const child = pollable[i];
+      if (!listenerFilterComplete(child)) continue;
+      const result = await deps.pollListener!(child, cursors[String(i)] ?? null);
+      if (result.cursor) {
+        cursors[String(i)] = result.cursor;
+        if (!routine.listenerCursor) primed = true;
+      }
+      if (result.status === "match") anyMatch = true;
+      if (result.status === "skip") skipReason = result.reason;
+    }
+    const cursorJson = JSON.stringify(cursors);
+    const cursorPatch = Object.keys(cursors).length ? { listenerCursor: cursorJson } : {};
+    if (anyMatch) {
+      if (cursorPatch.listenerCursor) {
+        const live = repos.routines.get(routine.id);
+        if (live) {
+          live.listenerCursor = cursorPatch.listenerCursor;
+          repos.routines.update(live);
+        }
+      }
+      await startRun(routine, at, { kind: "scheduled", scheduledFor: firstDue, nextRunAt: next });
+      return;
+    }
+    if (skipReason && !anyMatch && Object.keys(cursors).length === 0) {
+      repos.routines.recordSkip({
+        routineId: routine.id,
+        botId: routine.botId,
+        at,
+        scheduledFor: firstDue,
+        idempotencyKey: occurrenceKey(routine.id, firstDue),
+        reason: skipReason,
+      });
+      service.markRoutine(routine.id, { lastRunAt: at, lastResult: skipReason, nextRunAt: next, ...cursorPatch });
+      return;
+    }
+    const lastResult = primed ? "polled: watching from now" : "polled: no matching event";
+    service.markRoutine(routine.id, { lastRunAt: at, lastResult, nextRunAt: next, ...cursorPatch });
+  }
+
   /** Listener due: poll, then startRun only on a new matching event.
    * No match is not a turn. Missed-policy catch-up does not replay polls. */
   async function pollAndMaybeRun(routine: RoutineRecord, at: number): Promise<void> {
@@ -335,11 +455,17 @@ export function createRoutinesService(deps: {
       service.markRoutine(routine.id, { lastRunAt: at, lastResult: "skipped: bot hidden", nextRunAt: next });
       return;
     }
-    if (!listenerFilterComplete(routine.schedule) || routine.schedule.kind !== "listener") {
+    if (routine.schedule.kind === "group") {
+      await pollGroupAndMaybeRun(routine, at, firstDue, next);
+      return;
+    }
+    if (routine.schedule.kind !== "listener" || !listenerFilterComplete(routine.schedule)) {
       const reason =
-        routine.schedule.kind === "listener" && routine.schedule.source === "slack"
-          ? "skipped: slack listener needs a channel or DM and a match (mention, keyword, or message)"
-          : "skipped: github listener needs one owner/name repo and an event list";
+        routine.schedule.kind === "listener" && routine.schedule.source === "discord"
+          ? "skipped: discord trigger needs match: mention, dm, channel, keyword, reaction, or thread"
+          : routine.schedule.kind === "listener" && routine.schedule.source === "slack"
+            ? "skipped: slack listener needs a channel or DM and a match (mention, keyword, or message)"
+            : "skipped: github listener needs one owner/name repo and an event list";
       repos.routines.recordSkip({
         routineId: routine.id,
         botId: routine.botId,
@@ -349,6 +475,10 @@ export function createRoutinesService(deps: {
         reason,
       });
       service.markRoutine(routine.id, { lastRunAt: at, lastResult: reason, nextRunAt: next });
+      return;
+    }
+    if (routine.schedule.source === "discord") {
+      service.markRoutine(routine.id, { nextRunAt: next, lastResult: routine.lastResult ?? "watching: Discord events" });
       return;
     }
     if (!deps.pollListener) {
@@ -502,6 +632,29 @@ export function createRoutinesService(deps: {
     releaseThread(threadId) {
       routineByThread.delete(threadId);
     },
+    async handleExternalEvent(event) {
+      resolveApprovalsForTriggerEvent(event);
+      const at = now();
+      for (const routine of repos.routines.list()) {
+        if (!routine.enabled || routine.running) continue;
+        if (!isExternalEventSchedule(routine.schedule)) continue;
+        let trigger;
+        try {
+          trigger = triggerFromSchedule(routine.schedule);
+        } catch {
+          continue;
+        }
+        if (!triggerMatches(trigger, event)) continue;
+        const bot = deps.bot(routine.botId);
+        if (!bot || bot.hidden || bot.busy) continue;
+        await startRun(routine, at, {
+          kind: "scheduled",
+          scheduledFor: at,
+          idempotencyKey: `${routine.id}@${event.source}:${event.id}`,
+          systemNote: untrustedWebhookSystemNote(`${event.source} ${event.id}`),
+        });
+      }
+    },
     tick(at = now()) {
       // 1. keep our own runs alive
       if (activeRuns.size) {
@@ -516,9 +669,16 @@ export function createRoutinesService(deps: {
         if (r?.running) service.markRoutine(run.routine_id, { running: false, lastResult: reason });
       }
       // 3. start whatever is due. Listeners poll first — no event, no turn.
+      // Discord-only (and discord-only groups) are event-driven: inbound
+      // matching goes through handleExternalEvent, not this tick.
       for (const routine of repos.routines.list()) {
-        if (!routine.enabled || routine.running || routine.nextRunAt > at) continue;
-        if (routine.schedule.kind === "listener") void pollAndMaybeRun(routine, at);
+        if (!routine.enabled || routine.running) continue;
+        const eventDrivenOnly =
+          (routine.schedule.kind === "listener" && routine.schedule.source === "discord") ||
+          (routine.schedule.kind === "group" && !isPollableSchedule(routine.schedule));
+        if (eventDrivenOnly) continue;
+        if (routine.nextRunAt > at) continue;
+        if (routine.schedule.kind === "listener" || routine.schedule.kind === "group") void pollAndMaybeRun(routine, at);
         else schedule(routine, at);
       }
     },

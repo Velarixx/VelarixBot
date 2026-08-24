@@ -49,6 +49,8 @@ import { createDesktopAccessGrantService } from "./services/desktop-access-grant
 import { createDesktopViewerBroker } from "./services/desktop-viewer-broker.ts";
 import { createSseHub, type Broadcast, type SseHub } from "./services/events.ts";
 import { createListenerPoller } from "./listeners/index.ts";
+import { resolveApprovalsForChannelEvent } from "./channels/contracts.ts";
+import { inboundToTriggerEvent, reactionToDiscordEvent } from "./triggers/index.ts";
 import { createTelegramApi, type TelegramApi } from "./telegram-api.ts";
 import { createTelegramService, type TelegramService } from "./telegram.ts";
 import { createDiscordService, type DiscordService } from "./discord.ts";
@@ -349,6 +351,21 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     },
   });
   discordRef = discord;
+
+  // P4: Discord inbound / reaction → routine trigger algebra. Interactive
+  // Discord messaging stays on the Discord service; this subscriber only
+  // matches routine triggers and never consults the approval broker.
+  discordConnector.onEvent((event) => {
+    if (event.type === "inbound") {
+      resolveApprovalsForChannelEvent(event.message);
+      void routines.handleExternalEvent(
+        inboundToTriggerEvent(event.message, { selfUserId: discordConnector.selfUserId() }),
+      );
+    }
+    if (event.type === "reaction") {
+      void routines.handleExternalEvent(reactionToDiscordEvent(event.reaction));
+    }
+  });
 
   const integrations = createIntegrationsRoutes({
     bots,

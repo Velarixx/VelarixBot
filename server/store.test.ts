@@ -165,7 +165,14 @@ describe("routine schedules", () => {
   it("rejects invalid schedules", () => {
     expect(() => parseRoutineSchedule({ kind: "interval", everyMinutes: 0 })).toThrow();
     expect(() => parseRoutineSchedule({ kind: "daily", time: "25:00" })).toThrow();
-    expect(() => parseRoutineSchedule({ kind: "listener", source: "discord" })).toThrow(/github or slack/);
+    expect(() => parseRoutineSchedule({ kind: "listener", source: "teams" })).toThrow(/github, slack, or discord/);
+    expect(() => parseRoutineSchedule({ kind: "listener", source: "discord" }, { strictListener: true })).toThrow(/mention, dm, channel/);
+    expect(parseRoutineSchedule({ kind: "listener", source: "discord", match: "mention" })).toEqual({
+      kind: "listener",
+      source: "discord",
+      everyMinutes: 15,
+      match: "mention",
+    });
     expect(() => parseRoutineSchedule({ kind: "listener", source: "github" }, { strictListener: true })).toThrow(/owner\/name/);
     expect(() =>
       parseRoutineSchedule({ kind: "listener", source: "github", repo: "*/*", events: ["push"] }, { strictListener: true }),

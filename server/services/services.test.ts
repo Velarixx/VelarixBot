@@ -755,6 +755,42 @@ describe("routines service (fake clock)", () => {
     expect(routines.routine(noSlack.id)?.lastResult).toMatch(/connect_app/);
   });
 
+  it("group: any pollable child match fires the same routine unattended", async () => {
+    let hit = false;
+    pollListener = async (schedule, cursor) => {
+      if (schedule.source === "github" && cursor) {
+        hit = true;
+        return { status: "match", cursor: "20" };
+      }
+      return { status: "no-match", cursor: cursor ?? "10" };
+    };
+    routines = makeService();
+    const { bot, routine } = makeRoutine({
+      schedule: {
+        kind: "group",
+        anyOf: [
+          { kind: "listener", source: "github", repo: { owner: "Velarixx", name: "VelarixBot" }, events: ["push"] },
+          { kind: "listener", source: "discord", match: "mention" },
+        ],
+      },
+    });
+    const flush = async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+    now = routine.nextRunAt + 1;
+    routines.tick(now);
+    await flush();
+    expect(started).toEqual([]);
+    now = routines.routine(routine.id)!.nextRunAt + 1;
+    routines.tick(now);
+    await flush();
+    expect(hit).toBe(true);
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ botId: bot.id, text: "Brief me", unattended: true });
+  });
+
   it("hidden bot interval routine also skips startRun", async () => {
     const { bot, routine } = makeRoutine();
     bots.patchBot(bot.id, { hidden: true });

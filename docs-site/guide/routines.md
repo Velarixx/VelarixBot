@@ -7,3 +7,5 @@ Each routine has a missed-run policy — skip, run once on resume, or catch up �
 Routines run under the harness. With the background service installed (see [Background harness](/guide/background-harness)), they fire with the app window closed; without it, they run while VelarixBot is open. Routine runs appear in the bot's thread like any other turn, subject to the same permission broker in unattended mode.
 
 A taught skill can be attached to a routine, so "do the Monday report the way I showed you" is one row: schedule + skill + bot.
+
+Triggers are a small union: cron (interval / daily / weekdays), GitHub, Slack, Discord, or a grouped **any-of** of those listeners. Discord matches mention, DM, channel message, keyword, reaction, or thread message, and fires on inbound Gateway events rather than a poll. External channel events never inherit standing approvals — the unattended gate stays on.

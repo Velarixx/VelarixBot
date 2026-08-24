@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { CalendarClock, FlaskConical, History, Loader2, Pause, Play, Plus, Trash2, X } from "lucide-react";
-import { GITHUB_LISTENER_EVENTS, listenerScheduleFromForm, scheduleLabel, SLACK_LISTENER_MATCHES, type RoutineFormKind } from "@/lib/routines";
-import { api, useStore, type GithubListenerEvent, type MissedPolicy, type Routine, type RoutineRun, type Skill, type SlackListenerMatch } from "@/state/store";
+import { DISCORD_LISTENER_MATCHES, GITHUB_LISTENER_EVENTS, isEventDrivenSchedule, listenerScheduleFromForm, scheduleLabel, SLACK_LISTENER_MATCHES, type RoutineFormKind } from "@/lib/routines";
+import { api, useStore, type DiscordListenerMatch, type GithubListenerEvent, type ListenerSchedule, type MissedPolicy, type Routine, type RoutineRun, type Skill, type SlackListenerMatch } from "@/state/store";
 
 const MISSED_POLICY_LABELS: Array<[MissedPolicy, string]> = [
   ["run-once", "Run once (coalesce missed)"],
@@ -22,6 +22,8 @@ const KIND_TABS: Array<[RoutineFormKind, string]> = [
   ["daily", "Daily"],
   ["github", "GitHub"],
   ["slack", "Slack"],
+  ["discord", "Discord"],
+  ["group", "Any of"],
 ];
 
 function RunHistory({ routine }: { routine: Routine }) {
@@ -73,6 +75,8 @@ function ListenerFields({
   setMatch,
   keyword,
   setKeyword,
+  emoji,
+  setEmoji,
 }: {
   kind: RoutineFormKind;
   everyMinutes: number;
@@ -85,10 +89,12 @@ function ListenerFields({
   setEvents: (v: GithubListenerEvent[]) => void;
   channel: string;
   setChannel: (v: string) => void;
-  match: SlackListenerMatch | "";
-  setMatch: (v: SlackListenerMatch | "") => void;
+  match: SlackListenerMatch | DiscordListenerMatch | "";
+  setMatch: (v: SlackListenerMatch | DiscordListenerMatch | "") => void;
   keyword: string;
   setKeyword: (v: string) => void;
+  emoji: string;
+  setEmoji: (v: string) => void;
 }) {
   return <>
     {kind === "github" ? <>
@@ -97,13 +103,53 @@ function ListenerFields({
         <label className="block text-[12px] text-ink-secondary">Repository<input required value={repoName} onChange={(e) => setRepoName(e.target.value)} placeholder="VelarixBot" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
       </div>
       <div className="block text-[12px] text-ink-secondary">Events (pick at least one — no wildcard)<EventChecks events={events} onChange={setEvents} /></div>
+    </> : kind === "discord" ? <>
+      <label className="block text-[12px] text-ink-secondary">Match<select required value={match} onChange={(e) => setMatch(e.target.value as DiscordListenerMatch | "")} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink"><option value="">Choose…</option>{DISCORD_LISTENER_MATCHES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      {match === "channel" || match === "thread" ? <label className="block text-[12px] text-ink-secondary">Channel (optional)<input value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="channel id" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label> : null}
+      {match === "keyword" ? <label className="block text-[12px] text-ink-secondary">Keyword<input required value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="deploy" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label> : null}
+      {match === "reaction" ? <label className="block text-[12px] text-ink-secondary">Emoji (optional)<input value={emoji} onChange={(e) => setEmoji(e.target.value)} placeholder="👍" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label> : null}
+      <p className="text-[11px] text-ink-secondary">Fires on a matching Discord inbound event. External events never inherit standing approvals.</p>
     </> : <>
       <label className="block text-[12px] text-ink-secondary">Channel or DM<input required value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="#eng or D0123 or @jane" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
       <label className="block text-[12px] text-ink-secondary">Match<select required value={match} onChange={(e) => setMatch(e.target.value as SlackListenerMatch | "")} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink"><option value="">Choose…</option>{SLACK_LISTENER_MATCHES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       {match === "keyword" ? <label className="block text-[12px] text-ink-secondary">Keyword<input required value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="deploy" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label> : null}
     </>}
-    <label className="block text-[12px] text-ink-secondary">Poll every (minutes)<input type="number" min={1} value={everyMinutes} onChange={(e) => setEveryMinutes(Math.max(1, Number(e.target.value)))} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /><span className="mt-1 block text-[11px] text-ink-secondary">Polls while the local harness service is running. No matching event means no turn.</span></label>
+    {kind !== "discord" ? <label className="block text-[12px] text-ink-secondary">Poll every (minutes)<input type="number" min={1} value={everyMinutes} onChange={(e) => setEveryMinutes(Math.max(1, Number(e.target.value)))} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /><span className="mt-1 block text-[11px] text-ink-secondary">Polls while the local harness service is running. No matching event means no turn.</span></label> : null}
   </>;
+}
+
+function GroupFields({ items, onChange }: { items: ListenerSchedule[]; onChange: (items: ListenerSchedule[]) => void }) {
+  const setAt = (index: number, next: ListenerSchedule) => onChange(items.map((item, i) => (i === index ? next : item)));
+  return <div className="space-y-2">
+    <p className="text-[11px] text-ink-secondary">Any one of these listeners fires the same routine.</p>
+    {items.map((child, index) => (
+      <div key={index} className="space-y-2 rounded-lg bg-inset p-2.5">
+        <div className="flex items-center gap-2">
+          <select value={child.source} onChange={(e) => {
+            const source = e.target.value as ListenerSchedule["source"];
+            if (source === "github") setAt(index, { kind: "listener", source: "github", events: [] });
+            else if (source === "slack") setAt(index, { kind: "listener", source: "slack", channel: "", match: "mention" });
+            else setAt(index, { kind: "listener", source: "discord", match: "mention" });
+          }} className="flex-1 rounded-lg border border-hairline/40 bg-card px-2 py-1.5 text-[12px] text-ink">
+            <option value="github">GitHub</option>
+            <option value="slack">Slack</option>
+            <option value="discord">Discord</option>
+          </select>
+          {items.length > 1 ? <button type="button" onClick={() => onChange(items.filter((_, i) => i !== index))} className="text-[11px] text-ink-secondary hover:text-danger">Remove</button> : null}
+        </div>
+        {child.source === "github" ? <input value={child.repo ? `${child.repo.owner}/${child.repo.name}` : ""} onChange={(e) => {
+          const [owner, name] = e.target.value.split("/");
+          setAt(index, { ...child, repo: { owner: owner ?? "", name: name ?? "" }, events: child.events?.length ? child.events : ["push"] });
+        }} placeholder="owner/name" className="w-full rounded-lg border border-hairline/40 bg-card px-2 py-1.5 text-[12px] text-ink" /> : null}
+        {child.source === "slack" ? <>
+          <input value={child.channel ?? ""} onChange={(e) => setAt(index, { ...child, channel: e.target.value })} placeholder="#channel" className="w-full rounded-lg border border-hairline/40 bg-card px-2 py-1.5 text-[12px] text-ink" />
+          <select value={child.match ?? ""} onChange={(e) => setAt(index, { ...child, match: e.target.value as SlackListenerMatch })} className="w-full rounded-lg border border-hairline/40 bg-card px-2 py-1.5 text-[12px] text-ink">{SLACK_LISTENER_MATCHES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+        </> : null}
+        {child.source === "discord" ? <select value={child.match ?? ""} onChange={(e) => setAt(index, { ...child, match: e.target.value as DiscordListenerMatch })} className="w-full rounded-lg border border-hairline/40 bg-card px-2 py-1.5 text-[12px] text-ink">{DISCORD_LISTENER_MATCHES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select> : null}
+      </div>
+    ))}
+    {items.length < 8 ? <button type="button" onClick={() => onChange([...items, { kind: "listener", source: "discord", match: "mention" }])} className="text-[12px] text-accent hover:underline">Add listener</button> : null}
+  </div>;
 }
 
 function RoutineCard({ routine, botName, skills, onPatch, onDelete, onError }: {
@@ -122,11 +168,13 @@ function RoutineCard({ routine, botName, skills, onPatch, onDelete, onError }: {
   const [repoOwner, setRepoOwner] = useState(schedule.kind === "listener" && schedule.source === "github" ? (schedule.repo?.owner ?? "") : "");
   const [repoName, setRepoName] = useState(schedule.kind === "listener" && schedule.source === "github" ? (schedule.repo?.name ?? "") : "");
   const [events, setEvents] = useState<GithubListenerEvent[]>(schedule.kind === "listener" && schedule.source === "github" ? (schedule.events ?? []) : []);
-  const [channel, setChannel] = useState(schedule.kind === "listener" && schedule.source === "slack" ? (schedule.channel ?? "") : "");
-  const [match, setMatch] = useState<SlackListenerMatch | "">(schedule.kind === "listener" && schedule.source === "slack" ? (schedule.match ?? "") : "");
-  const [keyword, setKeyword] = useState(schedule.kind === "listener" && schedule.source === "slack" ? (schedule.keyword ?? "") : "");
+  const [channel, setChannel] = useState(schedule.kind === "listener" && (schedule.source === "slack" || schedule.source === "discord") ? (schedule.channel ?? "") : "");
+  const [match, setMatch] = useState<SlackListenerMatch | DiscordListenerMatch | "">(schedule.kind === "listener" && (schedule.source === "slack" || schedule.source === "discord") ? (schedule.match ?? "") : "");
+  const [keyword, setKeyword] = useState(schedule.kind === "listener" && (schedule.source === "slack" || schedule.source === "discord") ? (schedule.keyword ?? "") : "");
+  const [emoji, setEmoji] = useState(schedule.kind === "listener" && schedule.source === "discord" ? (schedule.emoji ?? "") : "");
   const skill = skills.find((item) => item.id === routine.skillId);
   const listenerKind = schedule.kind === "listener" ? schedule.source : null;
+  const eventDriven = isEventDrivenSchedule(schedule);
 
   const testRun = async () => {
     setTesting(true); onError(null);
@@ -151,6 +199,7 @@ function RoutineCard({ routine, botName, skills, onPatch, onDelete, onError }: {
         channel,
         match,
         keyword,
+        emoji,
       }),
     });
     setEditing(false);
@@ -170,11 +219,11 @@ function RoutineCard({ routine, botName, skills, onPatch, onDelete, onError }: {
       <label className="block text-[11px] text-ink-secondary">Skill<select value={routine.skillId ?? ""} onChange={(e) => void onPatch(routine, { skillId: e.target.value || "" })} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[12px] text-ink"><option value="">None</option>{skills.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
     </div>
     {listenerKind && editing ? <form onSubmit={(e) => void saveListener(e)} className="mt-3 space-y-2 rounded-lg bg-inset p-2.5">
-      <ListenerFields kind={listenerKind} everyMinutes={everyMinutes} setEveryMinutes={setEveryMinutes} repoOwner={repoOwner} setRepoOwner={setRepoOwner} repoName={repoName} setRepoName={setRepoName} events={events} setEvents={setEvents} channel={channel} setChannel={setChannel} match={match} setMatch={setMatch} keyword={keyword} setKeyword={setKeyword} />
+      <ListenerFields kind={listenerKind} everyMinutes={everyMinutes} setEveryMinutes={setEveryMinutes} repoOwner={repoOwner} setRepoOwner={setRepoOwner} repoName={repoName} setRepoName={setRepoName} events={events} setEvents={setEvents} channel={channel} setChannel={setChannel} match={match} setMatch={setMatch} keyword={keyword} setKeyword={setKeyword} emoji={emoji} setEmoji={setEmoji} />
       <div className="flex justify-end gap-2"><button type="button" onClick={() => setEditing(false)} className="rounded-lg px-2 py-1 text-[12px] text-ink-secondary">Cancel</button><button className="rounded-lg bg-accent px-2 py-1 text-[12px] font-medium text-white">Save filter</button></div>
     </form> : listenerKind ? <button type="button" onClick={() => setEditing(true)} className="mt-2 text-[12px] text-accent hover:underline">Edit {listenerKind} filter</button> : null}
     <div className="mt-3 flex items-center justify-between">
-      <span className="text-[11px] text-ink-secondary">Next {new Date(routine.nextRunAt).toLocaleString()}</span>
+      <span className="text-[11px] text-ink-secondary">{eventDriven ? "On matching event" : `Next ${new Date(routine.nextRunAt).toLocaleString()}`}</span>
       <div className="flex gap-1">
         <button aria-label="Test run" title="Test run — runs now without touching the schedule" disabled={testing || routine.running} onClick={() => void testRun()} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">{testing ? <Loader2 size={15} className="animate-spin" /> : <FlaskConical size={15} />}</button>
         <button aria-label={historyOpen ? "Hide run history" : "Show run history"} title="Run history" onClick={() => setHistoryOpen((open) => !open)} className={`rounded-md p-1.5 hover:bg-raised hover:text-ink ${historyOpen ? "bg-raised text-ink" : "text-ink-secondary"}`}><History size={15} /></button>
@@ -202,8 +251,13 @@ export function RoutinesPanel() {
   const [repoName, setRepoName] = useState("");
   const [events, setEvents] = useState<GithubListenerEvent[]>([]);
   const [channel, setChannel] = useState("");
-  const [match, setMatch] = useState<SlackListenerMatch | "">("");
+  const [match, setMatch] = useState<SlackListenerMatch | DiscordListenerMatch | "">("");
   const [keyword, setKeyword] = useState("");
+  const [emoji, setEmoji] = useState("");
+  const [groupChildren, setGroupChildren] = useState<ListenerSchedule[]>([
+    { kind: "listener", source: "github", events: [] },
+    { kind: "listener", source: "discord", match: "mention" },
+  ]);
   const [missedPolicy, setMissedPolicy] = useState<MissedPolicy>("run-once");
   const [thenBotId, setThenBotId] = useState("");
   const [thenPrompt, setThenPrompt] = useState("");
@@ -234,6 +288,8 @@ export function RoutinesPanel() {
     event.preventDefault();
     if (!botId || !name.trim() || !prompt.trim()) return;
     if (kind === "github" && !events.length) { setError("Pick at least one GitHub event."); return; }
+    if (kind === "discord" && !match) { setError("Pick a Discord match."); return; }
+    if (kind === "group" && groupChildren.length < 1) { setError("A grouped trigger needs at least one listener."); return; }
     const schedule = listenerScheduleFromForm({
       kind,
       everyMinutes: kind === "daily" ? 60 : everyMinutes,
@@ -245,6 +301,8 @@ export function RoutinesPanel() {
       channel,
       match,
       keyword,
+      emoji,
+      anyOf: groupChildren,
     });
     setSaving(true); setError(null);
     try {
@@ -262,7 +320,8 @@ export function RoutinesPanel() {
       });
       dispatch({ type: "routineSaved", routine });
       setName(""); setPrompt(""); setThenBotId(""); setThenPrompt(""); setSkillId(""); setMissedPolicy("run-once");
-      setRepoOwner(""); setRepoName(""); setEvents([]); setChannel(""); setMatch(""); setKeyword("");
+      setRepoOwner(""); setRepoName(""); setEvents([]); setChannel(""); setMatch(""); setKeyword(""); setEmoji("");
+      setGroupChildren([{ kind: "listener", source: "github", events: [] }, { kind: "listener", source: "discord", match: "mention" }]);
       setKind("interval"); setCreating(false);
       dispatch({ type: "toggleRoutines", open: true });
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -278,23 +337,25 @@ export function RoutinesPanel() {
   return <aside className="animate-panel-in flex h-full w-[420px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
     <div className="flex items-center justify-between px-4 py-3"><CalendarClock size={18} className="text-ink-secondary" /><span className="text-[15px] font-semibold text-ink">Routines</span><button aria-label="Close routines" onClick={() => dispatch({ type: "toggleRoutines", open: false })} className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"><X size={18} /></button></div>
     <div className="flex-1 overflow-y-auto px-4 pb-4">
-      <p className="text-[13px] leading-relaxed text-ink-secondary">Schedule a prompt for a bot. Routines persist locally and run while the local harness service is running — Quit leaves that service up. There is no cloud scheduler. Sleep, lid-close, and power-off still miss their ticks; each routine's missed-run policy decides what happens to runs that came due while it was. GitHub and Slack listeners poll while the service is running; they fire only on a new matching event.</p>
+      <p className="text-[13px] leading-relaxed text-ink-secondary">Schedule a prompt for a bot. Routines persist locally and run while the local harness service is running — Quit leaves that service up. There is no cloud scheduler. GitHub and Slack listeners poll; Discord and grouped “any of” triggers fire when a matching inbound event arrives. External events never inherit standing approvals.</p>
       {error && <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 p-2 text-[12px] text-danger">{error}</div>}
       {creating ? <form onSubmit={create} className="mt-4 space-y-3 rounded-xl bg-card p-4">
         <label className="block text-[12px] text-ink-secondary">Bot<select value={botId} onChange={(e) => setBotId(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink">{state.bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label>
         <label className="block text-[12px] text-ink-secondary">Name<input autoFocus required value={name} onChange={(e) => setName(e.target.value)} placeholder="Morning briefing" className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
         <label className="block text-[12px] text-ink-secondary">Prompt<textarea required rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Summarize today's priorities…" className="mt-1 w-full resize-none rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
-        <div className="flex overflow-hidden rounded-lg border border-hairline/40">
-          {KIND_TABS.map(([value, label], i) => (
-            <button key={value} type="button" onClick={() => setKind(value)} className={`flex-1 py-1.5 text-[12px] ${i > 0 ? "border-l border-hairline/40" : ""} ${kind === value ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/60 hover:text-ink"}`}>{label}</button>
+        <div className="flex flex-wrap overflow-hidden rounded-lg border border-hairline/40">
+          {KIND_TABS.map(([value, label]) => (
+            <button key={value} type="button" onClick={() => setKind(value)} className={`min-w-[33%] flex-1 border-hairline/40 py-1.5 text-[11px] ${kind === value ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/60 hover:text-ink"}`}>{label}</button>
           ))}
         </div>
         {kind === "daily" ? (
           <label className="block text-[12px] text-ink-secondary">Time<input type="time" required value={time} onChange={(e) => setTime(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /><span className="mt-1 block text-[11px] text-ink-secondary">In your time zone ({browserZone}) — daylight saving handled automatically.</span></label>
         ) : kind === "interval" ? (
           <label className="block text-[12px] text-ink-secondary">Run every (minutes)<input type="number" min={1} value={everyMinutes} onChange={(e) => setEveryMinutes(Math.max(1, Number(e.target.value)))} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink" /></label>
+        ) : kind === "group" ? (
+          <GroupFields items={groupChildren} onChange={setGroupChildren} />
         ) : (
-          <ListenerFields kind={kind} everyMinutes={everyMinutes} setEveryMinutes={setEveryMinutes} repoOwner={repoOwner} setRepoOwner={setRepoOwner} repoName={repoName} setRepoName={setRepoName} events={events} setEvents={setEvents} channel={channel} setChannel={setChannel} match={match} setMatch={setMatch} keyword={keyword} setKeyword={setKeyword} />
+          <ListenerFields kind={kind} everyMinutes={everyMinutes} setEveryMinutes={setEveryMinutes} repoOwner={repoOwner} setRepoOwner={setRepoOwner} repoName={repoName} setRepoName={setRepoName} events={events} setEvents={setEvents} channel={channel} setChannel={setChannel} match={match} setMatch={setMatch} keyword={keyword} setKeyword={setKeyword} emoji={emoji} setEmoji={setEmoji} />
         )}
         <label className="block text-[12px] text-ink-secondary">If runs are missed while VelarixBot is closed<select value={missedPolicy} onChange={(e) => setMissedPolicy(e.target.value as MissedPolicy)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink">{MISSED_POLICY_LABELS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="block text-[12px] text-ink-secondary">Then also start a turn on (optional)<select value={thenBotId} onChange={(e) => setThenBotId(e.target.value)} className="mt-1 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink"><option value="">None</option>{state.bots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label>

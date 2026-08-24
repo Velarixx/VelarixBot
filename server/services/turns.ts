@@ -722,7 +722,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         const everyMinutes = Number(args.every_minutes);
         const time = String(args.time ?? "").trim().slice(0, 5);
         let schedule: Parameters<RoutinesService["createRoutine"]>[0]["schedule"];
-        if (listener === "github" || listener === "slack") {
+        if (listener === "github" || listener === "slack" || listener === "discord") {
           const every = Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15;
           if (listener === "slack") {
             const status = composioConfigured(cfg)
@@ -742,7 +742,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         } else if (time) {
           schedule = args.every_day === true ? { kind: "daily", time } : { kind: "weekdays", time };
         } else {
-          return { error: "create_routine needs time (HH:MM), every_minutes, or listener=github|slack." };
+          return { error: "create_routine needs time (HH:MM), every_minutes, or listener=github|slack|discord." };
         }
         const skillId = String(args.skill_id ?? "").trim();
         const routine = deps.routines().createRoutine({
@@ -1594,7 +1594,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
               ? " You have remember and recall tools. remember saves a lasting note for this bot (or the shared workspace). recall reads those notes. Prefer remember for durable facts instead of relying on chat history."
               : "") +
             (integrations.workspace
-              ? " Workspace tools: web_search and fetch_page look things up (you have no in-app browser). ask_choice asks the user a multiple-choice question. ask_secret asks for a password/code — the value never appears in chat; never ask them to paste a token in the transcript. create_routine schedules work (weekdays by default). A github listener needs one owner/name repo and an event list (token lives in App Settings). A slack listener needs a channel or DM plus mention|keyword|message, and connect_app first. save_skill / run_skill store and follow step recipes. attach_to_chat puts a computer screenshot or file into this thread. connect_app starts installing a catalog app (github, slack, …) via a user connect card. list_approved_secrets / get_approved_secret read Bitwarden secrets the user explicitly allowed for this bot — never print those values."
+              ? " Workspace tools: web_search and fetch_page look things up (you have no in-app browser). ask_choice asks the user a multiple-choice question. ask_secret asks for a password/code — the value never appears in chat; never ask them to paste a token in the transcript. create_routine schedules work (weekdays by default). A github listener needs one owner/name repo and an event list (token lives in App Settings). A slack listener needs a channel or DM plus mention|keyword|message, and connect_app first. A discord listener needs match: mention|dm|channel|keyword|reaction|thread and fires on inbound Discord events (unattended). save_skill / run_skill store and follow step recipes. attach_to_chat puts a computer screenshot or file into this thread. connect_app starts installing a catalog app (github, slack, …) via a user connect card. list_approved_secrets / get_approved_secret read Bitwarden secrets the user explicitly allowed for this bot — never print those values."
               : "") +
             (bitwarden.keys.length
               ? ` Approved Bitwarden secrets for this bot are in the process environment as ${bitwarden.keys.join(", ")}. Never print those values.`
