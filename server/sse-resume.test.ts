@@ -145,7 +145,7 @@ describe("P1.3 resumable SSE against the real server", () => {
     live.close();
 
     const afterTurn = (await h.api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === bot.id);
-    const activities = (afterTurn.messages as Array<{ kind: string; tool?: { name?: string; ok?: boolean; status?: string } }>).filter(
+    const activities = (afterTurn.messages as Array<{ id: string; kind: string; tool?: { name?: string; ok?: boolean; status?: string } }>).filter(
       (m) => m.kind === "activity",
     );
     expect(activities.length).toBeGreaterThan(0);
@@ -158,7 +158,7 @@ describe("P1.3 resumable SSE against the real server", () => {
       (m) => m.kind === "activity",
     );
     expect(snapActivities.map((m) => ({ id: m.id, ok: m.tool?.ok, status: m.tool?.status }))).toEqual(
-      activities.map((m) => ({ id: (m as { id: string }).id, ok: m.tool?.ok, status: m.tool?.status })),
+      activities.map((m) => ({ id: m.id, ok: m.tool?.ok, status: m.tool?.status })),
     );
 
     const reloaded = await connectSse(h.base, h.token, { query: snap.body.sequence });

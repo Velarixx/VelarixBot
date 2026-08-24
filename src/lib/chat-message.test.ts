@@ -52,7 +52,7 @@ describe("command activity display", () => {
 
   it("maps running and each terminal status", () => {
     expect(activityStatusOf({ name: "run" })).toBe("running");
-    expect(isActivityRunning({ name: "run" })).toBe(true);
+    expect(isActivityRunning({ name: "run", ok: undefined })).toBe(true);
     expect(activityStatusOf({ name: "run", ok: true })).toBe("completed");
     expect(activityStatusOf({ name: "run", ok: false })).toBe("failed");
     expect(activityStatusOf({ name: "run", status: "cancelled" })).toBe("cancelled");

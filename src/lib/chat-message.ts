@@ -1,7 +1,6 @@
 import { redactSecrets } from "../../server/redact-text";
-import type { ActivityStatus } from "../../server/activity-status";
 
-export type { ActivityStatus };
+export type ActivityStatus = "completed" | "failed" | "cancelled" | "timed_out";
 
 export const COMMAND_COLLAPSE_CHARS = 80;
 
@@ -47,7 +46,7 @@ export function commandNeedsExpand(tool: ActivityToolView): boolean {
   return command.includes("\n") || command.length > COMMAND_COLLAPSE_CHARS;
 }
 
-export function isActivityRunning(tool?: { ok?: boolean; status?: ActivityStatus } | null): boolean {
+export function isActivityRunning(tool?: { name?: string; ok?: boolean; status?: ActivityStatus } | null): boolean {
   if (!tool) return false;
   if (tool.status) return false;
   return tool.ok === undefined;
