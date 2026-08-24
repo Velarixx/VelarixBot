@@ -494,6 +494,31 @@ describe("harness HTTP API", () => {
     expect(off.body.box).toEqual({ configured: true });
   });
 
+  it("exposes Telegram as disconnected by default and persists allowlist/agent without echoing a token", async () => {
+    const before = await api("GET", "/api/config");
+    expect(before.body.telegram).toMatchObject({
+      configured: false,
+      enabled: false,
+      allowlist: [],
+      status: "disconnected",
+    });
+    expect(before.body.telegram.statusMessage).toMatch(/allowlist/i);
+    const bots = await api("GET", "/api/bots");
+    const botId = (bots.body.bots[0]?.id ?? (await api("POST", "/api/bots", { name: "Telegram Agent" })).body.bot.id) as string;
+    const put = await api("PUT", "/api/config", {
+      telegram: { enabled: false, defaultBotId: botId, allowlist: ["12345", "@alice"] },
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.telegram).toMatchObject({
+      configured: false,
+      enabled: false,
+      defaultBotId: botId,
+      allowlist: ["12345", "@alice"],
+      status: "disconnected",
+    });
+    expect(JSON.stringify(put.body)).not.toMatch(/telegram\.token|secret:\/\//);
+  });
+
   it("boot migrated the seeded plaintext secret out of config.json", async () => {
     // seeded pre-boot as plaintext (see beforeAll) — post-migration the file
     // holds a secret:// ref and the value lives only in the secret store

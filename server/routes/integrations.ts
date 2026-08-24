@@ -30,6 +30,7 @@ import type { Broadcast } from "../services/events.ts";
 import type { BotsService } from "../services/bots.ts";
 import type { GroupsService } from "../services/groups.ts";
 import type { TurnsService } from "../services/turns.ts";
+import { parseAllowlist, type TelegramConfigStatus, type TelegramService } from "../telegram.ts";
 import { json, readBody, type RouteHandler } from "./context.ts";
 
 export interface IntegrationsRoutes {
@@ -38,6 +39,7 @@ export interface IntegrationsRoutes {
   internal: RouteHandler;
   /** /api/instances, /api/config, /api/connectors — behind the token gate. */
   api: RouteHandler;
+  configStatus(): Record<string, unknown>;
 }
 
 export function createIntegrationsRoutes(deps: {
@@ -49,8 +51,9 @@ export function createIntegrationsRoutes(deps: {
   commsToken: string;
   broadcast: Broadcast;
   reloadProviders(): Promise<void>;
+  telegram?: TelegramService;
 }): IntegrationsRoutes {
-  const { bots, groups, turns, registry, cfg, commsToken, broadcast, reloadProviders } = deps;
+  const { bots, groups, turns, registry, cfg, commsToken, broadcast, reloadProviders, telegram } = deps;
   const commsBus = { store: bindCommsStore(bots, groups), broadcast };
 
   function configStatus() {
@@ -72,6 +75,22 @@ export function createIntegrationsRoutes(deps: {
       openai: { configured: Boolean(cfg.openai?.key) },
       openrouter: { configured: Boolean(cfg.openrouter?.key) },
       omnirouter: { configured: Boolean(cfg.omnirouter?.key) },
+      telegram: telegramStatus(),
+    };
+  }
+
+  function telegramStatus(): TelegramConfigStatus {
+    if (telegram) return telegram.publicStatus();
+    return {
+      configured: Boolean(cfg.telegram?.token),
+      enabled: cfg.telegram?.enabled === true,
+      ...(typeof cfg.telegram?.defaultBotId === "string" && cfg.telegram.defaultBotId
+        ? { defaultBotId: cfg.telegram.defaultBotId }
+        : {}),
+      allowlist: parseAllowlist(cfg.telegram?.allowlist),
+      status: "disconnected",
+      statusMessage:
+        "Telegram is disconnected. Paste a bot token from @BotFather, pick an agent, and add an allowlist to connect.",
     };
   }
 
@@ -390,7 +409,7 @@ export function createIntegrationsRoutes(deps: {
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch: Record<string, object> = {};
-      for (const key of ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter"] as const) {
+      for (const key of ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter", "telegram"] as const) {
         if (body[key] && typeof body[key] === "object") patch[key] = body[key];
       }
       if (!Object.keys(patch).length) {
@@ -412,8 +431,29 @@ export function createIntegrationsRoutes(deps: {
           return true;
         }
       }
+      if (patch.telegram) {
+        const t = patch.telegram as Record<string, unknown>;
+        const bad =
+          (t.enabled !== undefined && typeof t.enabled !== "boolean" && "telegram.enabled must be a boolean") ||
+          (t.defaultBotId !== undefined && typeof t.defaultBotId !== "string" && "telegram.defaultBotId must be a string") ||
+          (t.token !== undefined && typeof t.token !== "string" && "telegram.token must be a string") ||
+          (t.allowlist !== undefined && !Array.isArray(t.allowlist) && "telegram.allowlist must be an array of user or chat ids");
+        if (bad) {
+          json(res, 400, { error: bad });
+          return true;
+        }
+        if (Array.isArray(t.allowlist)) {
+          if (t.allowlist.some((item) => typeof item !== "string")) {
+            json(res, 400, { error: "telegram.allowlist must be an array of user or chat ids" });
+            return true;
+          }
+          t.allowlist = parseAllowlist(t.allowlist);
+        }
+        if (typeof t.defaultBotId === "string") t.defaultBotId = t.defaultBotId.trim();
+      }
       await saveConfig(patch);
       Object.assign(cfg, loadConfig());
+      telegram?.applyConfig();
       await reloadProviders();
       const status = configStatus();
       broadcast({ kind: "config", ...status });
@@ -482,5 +522,5 @@ export function createIntegrationsRoutes(deps: {
     return false;
   };
 
-  return { internal, api };
+  return { internal, api, configStatus };
 }

@@ -46,6 +46,8 @@ import { createDesktopAccessGrantService } from "./services/desktop-access-grant
 import { createDesktopViewerBroker } from "./services/desktop-viewer-broker.ts";
 import { createSseHub, type Broadcast, type SseHub } from "./services/events.ts";
 import { createListenerPoller } from "./listeners/index.ts";
+import { createTelegramApi, type TelegramApi } from "./telegram-api.ts";
+import { createTelegramService, type TelegramService } from "./telegram.ts";
 import { createRoutinesService, type RoutinesService } from "./services/routines.ts";
 import { createSecurityAuditService } from "./services/security-audit.ts";
 import { createTeachService, type TeachService } from "./services/teach.ts";
@@ -91,6 +93,8 @@ export interface CreateApplicationInput {
   reloadProviders(): Promise<void>;
   /** A2: injectable so tests never hit a live image API. */
   generateAvatarImages?: GenerateAvatarImages;
+  /** Injected Telegram Bot API (tests). Default long-polls api.telegram.org. */
+  telegramApi?: TelegramApi;
 }
 
 export interface Application {
@@ -105,6 +109,7 @@ export interface Application {
     routines: RoutinesService;
     teach: TeachService;
     proactive: Proactive;
+    telegram: TelegramService;
   };
 }
 
@@ -177,8 +182,10 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // projected through the publicBot allowlist before it hits the wire
   // (live SSE + durable ui-stream replay).
   let botsRef: BotsService | null = null;
+  let telegramRef: TelegramService | null = null;
   const broadcast: Broadcast = (payload) => {
     hub.broadcast(projectPublicBotFrame(payload, (id) => botsRef?.publicBot(id) ?? null));
+    telegramRef?.onBroadcast(payload);
   };
 
   // canonical events are mirrored into SQLite (event_log); the per-thread
@@ -292,6 +299,21 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // same repositories/registries as everything else, never message content
   const diagnostics = createDiagnosticsService({ repos, providers: registry, computers, stamp });
 
+  let integrationsRef: ReturnType<typeof createIntegrationsRoutes> | null = null;
+  const telegram = createTelegramService({
+    cfg: () => cfg,
+    api: input.telegramApi ?? createTelegramApi(),
+    conversations: repos.telegramConversations,
+    bots,
+    startTurn: (botId, text) => turns.startTurn(botId, text),
+    now: () => clock.now(),
+    onStatusChange: () => {
+      const snapshot = integrationsRef?.configStatus();
+      if (snapshot) broadcast({ kind: "config", ...snapshot });
+    },
+  });
+  telegramRef = telegram;
+
   const integrations = createIntegrationsRoutes({
     bots,
     groups,
@@ -301,7 +323,10 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     commsToken,
     broadcast,
     reloadProviders: input.reloadProviders,
+    telegram,
   });
+  integrationsRef = integrations;
+  telegram.applyConfig();
 
   // route order preserves the pre-refactor dispatch: internal comms first
   // (their own token), then the launch-token gate, then the public surface
@@ -432,6 +457,6 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       proactive.tick(now);
     },
     hub,
-    services: { bots, groups, turns, routines, teach, proactive },
+    services: { bots, groups, turns, routines, teach, proactive, telegram },
   };
 }

@@ -38,6 +38,15 @@ export interface AppConfig {
   openrouter?: { key?: string; url?: string };
   /** OmniRouter BYO key. Write-only. Optional url for a self-hosted gateway. */
   omnirouter?: { key?: string; url?: string };
+  /** Optional Telegram chat interface. token is write-only (SecretStore).
+   * enabled/defaultBotId/allowlist are settings, not secrets. Default is
+   * disconnected; an empty allowlist authorizes nobody. */
+  telegram?: {
+    token?: string;
+    enabled?: boolean;
+    defaultBotId?: string;
+    allowlist?: string[];
+  };
 
   instances?: InstanceConfigMap;
 
@@ -95,9 +104,10 @@ export const SECRET_FIELDS = [
   { section: "openai", prop: "key" },
   { section: "openrouter", prop: "key" },
   { section: "omnirouter", prop: "key" },
+  { section: "telegram", prop: "token" },
 ] as const;
 
-const CONFIG_SECTIONS = ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter"] as const;
+const CONFIG_SECTIONS = ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter", "telegram"] as const;
 
 export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};

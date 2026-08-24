@@ -113,6 +113,25 @@ describe("config persistence hardening", () => {
     expect(readdirSync(DATA_DIR).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
 
+  it("seals the Telegram bot token and persists allowlist/agent settings in plaintext", async () => {
+    ensureDirs();
+    const token = canary("telegram");
+    await saveConfig({
+      telegram: { token, enabled: true, defaultBotId: "bot-1", allowlist: ["12345", "@alice"] },
+    });
+    const raw = readFileSync(join(DATA_DIR, "config.json"), "utf8");
+    expect(raw).not.toContain(token);
+    const disk = JSON.parse(raw);
+    expect(disk.telegram.token).toBe("secret://telegram.token");
+    expect(disk.telegram.enabled).toBe(true);
+    expect(disk.telegram.defaultBotId).toBe("bot-1");
+    expect(disk.telegram.allowlist).toEqual(["12345", "@alice"]);
+    const cfg = loadConfig();
+    expect(cfg.telegram?.token).toBe(token);
+    expect(cfg.telegram?.enabled).toBe(true);
+    expect(cfg.telegram?.allowlist).toEqual(["12345", "@alice"]);
+  });
+
   it("clearing a key deletes the ref from config.json and the stored secret", async () => {
     ensureDirs();
     const key = canary("omni");

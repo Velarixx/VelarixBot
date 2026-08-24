@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, useStore, type ConfigStatus, type InstanceInfo } from "@/state/store";
 import { ApiKeyRow } from "./ApiKeys";
+import { TelegramSettings } from "./TelegramSettings";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
 
@@ -411,6 +412,8 @@ export function AppSettingsPanel() {
             <ApiKeyRow section="omnirouter" label="OmniRouter key" placeholder="Paste key — never shown again" />
           </div>
         </div>
+
+        <TelegramSettings />
 
         <EngineCliRows />
 

@@ -750,6 +750,29 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 19,
+    name: "telegram-conversations",
+    up(db) {
+      db.exec(`
+        CREATE TABLE telegram_conversations(
+          chat_id TEXT PRIMARY KEY NOT NULL
+            CHECK(typeof(chat_id) = 'text' AND length(chat_id) > 0),
+          user_id TEXT,
+          bot_id TEXT NOT NULL
+            CHECK(typeof(bot_id) = 'text' AND length(bot_id) > 0),
+          thread_id TEXT NOT NULL
+            CHECK(typeof(thread_id) = 'text' AND length(thread_id) > 0),
+          created_at INTEGER NOT NULL
+            CHECK(typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 9007199254740991),
+          updated_at INTEGER NOT NULL
+            CHECK(typeof(updated_at) = 'integer' AND updated_at BETWEEN created_at AND 9007199254740991)
+        );
+        CREATE INDEX telegram_conversations_bot ON telegram_conversations(bot_id, updated_at);
+        CREATE INDEX telegram_conversations_thread ON telegram_conversations(thread_id, updated_at);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {
