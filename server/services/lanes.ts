@@ -6,7 +6,8 @@
 // round-robin across lanes so one lane cannot starve another. Default is
 // one running turn per bot. Durable SQLite keys dedupe retries.
 //
-// Request lineage (P7) is out of scope.
+// Request lineage (P7) is layered on top: this scheduler passes a
+// caller-supplied requestId through to startTurn and does not mint one.
 import { newId } from "../contracts.ts";
 import {
   SCHEDULER_LANES,
@@ -27,6 +28,8 @@ export interface LaneTurnOpts {
   systemNote?: string;
   autonomyContinue?: boolean;
   idempotencyKey?: string;
+  /** P7 lineage id. Passed through to startTurn; this module does not mint it. */
+  requestId?: string;
 }
 
 export { SCHEDULER_LANES, type SchedulerLane };
@@ -65,6 +68,7 @@ export interface LaneEnqueueResult {
   botId: string;
   status: "queued" | "running" | "duplicate" | "cancelled";
   started?: { threadId: string; messageId: string };
+  requestId?: string;
   settled: Promise<unknown>;
 }
 
@@ -115,7 +119,7 @@ function isTurnStart(value: unknown): value is { threadId: string; messageId: st
   return typeof rec.threadId === "string" && typeof rec.messageId === "string";
 }
 
-function snapshotOf(item: LaneItem): LaneWorkSnapshot {
+  function snapshotOf(item: LaneItem): LaneWorkSnapshot {
   return {
     workId: item.workId,
     lane: item.lane,
@@ -125,6 +129,11 @@ function snapshotOf(item: LaneItem): LaneWorkSnapshot {
     ...(item.idempotencyKey ? { idempotencyKey: item.idempotencyKey } : {}),
     ...(item.reason ? { reason: item.reason } : {}),
   };
+}
+
+function requestIdOf(opts?: LaneTurnOpts): string | undefined {
+  const id = typeof opts?.requestId === "string" ? opts.requestId.trim() : "";
+  return id || undefined;
 }
 
 function turnOptsForLane(lane: SchedulerLane, opts?: LaneTurnOpts): LaneTurnOpts | undefined {
@@ -158,6 +167,7 @@ export function createLaneScheduler(deps: {
   let pumping = false;
 
   function emit(item: LaneItem): void {
+    const requestId = requestIdOf(item.opts);
     deps.broadcast({
       kind: "lane",
       workId: item.workId,
@@ -165,6 +175,7 @@ export function createLaneScheduler(deps: {
       botId: item.botId,
       status: item.status,
       ...(item.idempotencyKey ? { idempotencyKey: item.idempotencyKey } : {}),
+      ...(requestId ? { requestId } : {}),
       ...(item.reason ? { reason: item.reason } : {}),
     });
   }
@@ -304,6 +315,7 @@ export function createLaneScheduler(deps: {
             lane: claimed.row.lane,
             botId: claimed.row.botId,
             status: "duplicate",
+            ...(requestIdOf(input.opts) ? { requestId: requestIdOf(input.opts) } : {}),
             settled: Promise.resolve(undefined),
           };
         }
@@ -337,6 +349,7 @@ export function createLaneScheduler(deps: {
           botId: item.botId,
           status: item.status === "cancelled" ? "cancelled" : "running",
           ...(started ? { started } : {}),
+          ...(requestIdOf(item.opts) ? { requestId: requestIdOf(item.opts) } : {}),
           settled: item.settledGate.promise,
         };
       }
@@ -345,6 +358,7 @@ export function createLaneScheduler(deps: {
         lane: item.lane,
         botId: item.botId,
         status: item.status === "cancelled" ? "cancelled" : "queued",
+        ...(requestIdOf(item.opts) ? { requestId: requestIdOf(item.opts) } : {}),
         settled: item.settledGate.promise,
       };
     },

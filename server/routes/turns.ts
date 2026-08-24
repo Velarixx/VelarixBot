@@ -1,10 +1,12 @@
 // Turn lifecycle over HTTP: send a message, answer a pending card, interrupt.
 import { attachmentPathRefs, expandAttachmentPaths } from "../attachments.ts";
+import { newId } from "../contracts.ts";
 import type { LaneScheduler } from "../services/lanes.ts";
+import type { LineageService } from "../services/lineage.ts";
 import type { TurnsService } from "../services/turns.ts";
 import { json, readBody, type RouteHandler } from "./context.ts";
 
-export function createTurnsRoutes(deps: { turns: TurnsService; lanes: LaneScheduler }): RouteHandler {
+export function createTurnsRoutes(deps: { turns: TurnsService; lanes: LaneScheduler; lineage?: LineageService }): RouteHandler {
   const { turns, lanes } = deps;
   return async ({ req, res, path, method }) => {
     let m = path.match(/^\/api\/bots\/([\w-]+)\/messages$/);
@@ -29,11 +31,12 @@ export function createTurnsRoutes(deps: { turns: TurnsService; lanes: LaneSchedu
         ? body.mentionSkillIds.map((id: unknown) => String(id).trim()).filter(Boolean)
         : [];
       const idempotencyKey = typeof body.idempotencyKey === "string" && body.idempotencyKey.trim() ? body.idempotencyKey.trim() : undefined;
+      const requestId = deps.lineage?.begin({ source: "user", botId: m[1] }).requestId ?? newId();
       const accepted = await lanes.enqueue({
         lane: "user",
         botId: m[1],
         text,
-        opts: { attachments, extraSkillIds },
+        opts: { attachments, extraSkillIds, requestId },
         ...(idempotencyKey ? { idempotencyKey } : {}),
       });
       if (accepted.status === "cancelled") {
@@ -47,6 +50,7 @@ export function createTurnsRoutes(deps: { turns: TurnsService; lanes: LaneSchedu
         workId: accepted.workId,
         lane: accepted.lane,
         status: accepted.status,
+        requestId: accepted.requestId ?? requestId,
         ...(accepted.started ?? {}),
       });
       return true;

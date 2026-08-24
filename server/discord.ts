@@ -7,6 +7,7 @@ import { redactSecrets } from "./redact-text.ts";
 import type { BotsService } from "./services/bots.ts";
 import type { GroupsService } from "./services/groups.ts";
 import type { StartTurnOpts } from "./services/turns.ts";
+import type { LineageService } from "./services/lineage.ts";
 import type { DiscordConversationsRepository } from "./repositories/discord-conversations.ts";
 import {
   CHANNEL_EVENTS_INHERIT_STANDING_APPROVALS,
@@ -156,6 +157,7 @@ export function createDiscordService(deps: {
   now: () => number;
   connectOpts?: () => Partial<DiscordConnectInput>;
   onStatusChange?: () => void;
+  lineage?: LineageService;
 }): DiscordService {
   const connector = deps.connector ?? createDiscordChannelConnector({ id: "discord" });
   let runtime: DiscordPublicStatus = "disconnected";
@@ -310,7 +312,7 @@ export function createDiscordService(deps: {
     return null;
   }
 
-  async function sendSafe(addressTarget: string, text: string, replyToId?: string): Promise<void> {
+  async function sendSafe(addressTarget: string, text: string, replyToId?: string, requestId?: string): Promise<void> {
     if (!isLive()) return;
     const safe = discordSafeText(text);
     if (!safe) return;
@@ -319,6 +321,7 @@ export function createDiscordService(deps: {
       address: connector.parseAddress(addressTarget),
       text: safe,
       ...(replyToId ? { replyToId } : {}),
+      ...(requestId ? { requestId } : {}),
     });
   }
 
@@ -353,14 +356,21 @@ export function createDiscordService(deps: {
       now: deps.now(),
     });
     originByThread.set(target.threadId, message.address.target);
+    const requestId = deps.lineage?.begin({
+      source: "channel",
+      sourceRef: message.id,
+      botId: target.botId,
+      threadId: target.threadId,
+    }).requestId;
     try {
       await deps.startTurn(target.botId, message.text, {
         unattended: true,
         idempotencyKey: `channel:discord:${message.id}`,
+        ...(requestId ? { requestId } : {}),
         ...(target.groupId ? { groupThreadId: target.threadId } : {}),
       });
       lastWorkflow.set(message.address.target, "working");
-      await sendSafe(message.address.target, discordWorkflowNotice("working"), message.id);
+      await sendSafe(message.address.target, discordWorkflowNotice("working"), message.id, requestId);
     } catch (error) {
       const raw = error instanceof Error ? error.message : "could not start a turn";
       if (/already working/i.test(raw)) {
@@ -456,10 +466,11 @@ export function createDiscordService(deps: {
         : undefined;
       const stopReason = typeof bot.workflowStopReason === "string" ? bot.workflowStopReason : undefined;
       const notice = discordWorkflowNotice(status, waiting, stopReason);
+      const requestId = deps.lineage?.forThread(threadId);
       for (const target of targets) {
         if (lastWorkflow.get(target) === status) continue;
         lastWorkflow.set(target, status);
-        void sendSafe(target, notice);
+        void sendSafe(target, notice, undefined, requestId);
       }
       if (status === "completed" || status === "paused" || status === "blocked" || status === "needs_input") {
         originByThread.delete(threadId);
@@ -470,16 +481,17 @@ export function createDiscordService(deps: {
       const targets = targetsFor(payload.threadId);
       if (!targets.length) return;
       const message = payload.message;
+      const requestId = deps.lineage?.forThread(payload.threadId);
       if (message.kind === "text" && message.role === "bot" && typeof message.text === "string") {
         const text = discordSafeText(message.text);
-        if (text) for (const target of targets) void sendSafe(target, text);
+        if (text) for (const target of targets) void sendSafe(target, text, undefined, requestId);
         return;
       }
       if (message.kind === "options" && isRecord(message.card)) {
         const requestType = message.card.requestType;
         if (requestType === "secret" || requestType === "credential") {
           for (const target of targets) {
-            void sendSafe(target, "Needs input — open VelarixBot to respond. Secrets are never sent over Discord.");
+            void sendSafe(target, "Needs input — open VelarixBot to respond. Secrets are never sent over Discord.", undefined, requestId);
           }
         }
       }

@@ -11,6 +11,7 @@ import { redactSecrets } from "./redact-text.ts";
 import type { BotsService } from "./services/bots.ts";
 import type { TelegramApi, TelegramApiUpdate } from "./telegram-api.ts";
 import type { TelegramConversationsRepository } from "./repositories/telegram-conversations.ts";
+import type { LineageService } from "./services/lineage.ts";
 import {
   isWorkflowStatus,
   waitingLabel,
@@ -209,9 +210,10 @@ export function createTelegramService(deps: {
   api: TelegramApi;
   conversations: TelegramConversationsRepository;
   bots: BotsService;
-  startTurn: (botId: string, text: string, opts?: { unattended?: boolean; idempotencyKey?: string }) => Promise<unknown>;
+  startTurn: (botId: string, text: string, opts?: { unattended?: boolean; idempotencyKey?: string; requestId?: string }) => Promise<unknown>;
   now: () => number;
   onStatusChange?: () => void;
+  lineage?: LineageService;
 }): TelegramService {
   let running = false;
   let abort: AbortController | null = null;
@@ -267,12 +269,18 @@ export function createTelegramService(deps: {
     return enabled && Boolean(token);
   }
 
-  async function sendSafe(chatId: string, text: string, attachments?: ChannelAttachmentCandidate[]): Promise<void> {
+  async function sendSafe(
+    chatId: string,
+    text: string,
+    attachments?: ChannelAttachmentCandidate[],
+    requestId?: string,
+  ): Promise<void> {
     const { token } = settings();
     if (!token || !isLive()) return;
     const prepared = prepareTelegramSend({ text, attachments });
     if (!prepared.ok || !prepared.text) return;
     await deps.api.sendMessage(token, chatId, prepared.text);
+    if (requestId) deps.lineage?.noteOutbound(requestId, `telegram:${chatId}`);
   }
 
   function resolveAgent(): { id: string; name: string; threadId: string } | null {
@@ -315,13 +323,20 @@ export function createTelegramService(deps: {
       now: deps.now(),
     });
     originByThread.set(agent.threadId, inbound.identity.chatId);
+    const requestId = deps.lineage?.begin({
+      source: "channel",
+      sourceRef: `telegram:${inbound.updateId}`,
+      botId: agent.id,
+      threadId: agent.threadId,
+    }).requestId;
     try {
       await deps.startTurn(agent.id, inbound.text, {
         unattended: true,
         idempotencyKey: `channel:telegram:${inbound.updateId}`,
+        ...(requestId ? { requestId } : {}),
       });
       lastWorkflow.set(inbound.identity.chatId, "working");
-      await sendSafe(inbound.identity.chatId, telegramWorkflowNotice("working"));
+      await sendSafe(inbound.identity.chatId, telegramWorkflowNotice("working"), undefined, requestId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "could not start a turn";
       if (/already working/i.test(message)) {
@@ -430,10 +445,11 @@ export function createTelegramService(deps: {
         : undefined;
       const stopReason = typeof bot.workflowStopReason === "string" ? bot.workflowStopReason : undefined;
       const notice = telegramWorkflowNotice(status, waiting, stopReason);
+      const requestId = deps.lineage?.forThread(threadId);
       for (const chatId of chats) {
         if (lastWorkflow.get(chatId) === status) continue;
         lastWorkflow.set(chatId, status);
-        void sendSafe(chatId, notice);
+        void sendSafe(chatId, notice, undefined, requestId);
       }
       if (status === "completed" || status === "paused" || status === "blocked" || status === "needs_input") {
         originByThread.delete(threadId);
@@ -444,28 +460,29 @@ export function createTelegramService(deps: {
       const chats = chatIdsFor(payload.threadId);
       if (!chats.length) return;
       const message = payload.message;
+      const requestId = deps.lineage?.forThread(payload.threadId);
       if (message.kind === "text" && message.role === "bot" && typeof message.text === "string") {
         const text = telegramSafeText(message.text);
-        if (text) for (const chatId of chats) void sendSafe(chatId, text);
+        if (text) for (const chatId of chats) void sendSafe(chatId, text, undefined, requestId);
         return;
       }
       if (message.kind === "activity" && isRecord(message.tool)) {
         const command = typeof message.tool.command === "string" ? message.tool.command : "";
         const name = typeof message.tool.name === "string" ? message.tool.name : "";
         const label = telegramSafeCommand(command || name);
-        if (label) for (const chatId of chats) void sendSafe(chatId, `Progress: ${label}`);
+        if (label) for (const chatId of chats) void sendSafe(chatId, `Progress: ${label}`, undefined, requestId);
         return;
       }
       if (message.kind === "options" && isRecord(message.card)) {
         const requestType = message.card.requestType;
         if (requestType === "secret" || requestType === "credential") {
           for (const chatId of chats) {
-            void sendSafe(chatId, "Needs input — open VelarixBot to respond. Secrets are never sent over Telegram.");
+            void sendSafe(chatId, "Needs input — open VelarixBot to respond. Secrets are never sent over Telegram.", undefined, requestId);
           }
           return;
         }
         if (requestType === "question" || requestType === "permission") {
-          for (const chatId of chats) void sendSafe(chatId, telegramWorkflowNotice("needs_input"));
+          for (const chatId of chats) void sendSafe(chatId, telegramWorkflowNotice("needs_input"), undefined, requestId);
         }
       }
     }

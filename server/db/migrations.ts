@@ -807,7 +807,7 @@ export const MIGRATIONS: Migration[] = [
     // inbound or routine fire with the same key cannot start a second
     // turn. The live queue itself stays in-memory; routine_runs claims
     // and bot interruption recovery stay authoritative for crash
-    // recovery. Not request lineage (P7).
+    // recovery. Request lineage (P7) is a later table.
     version: 21,
     name: "lane-idempotency",
     up(db) {
@@ -827,6 +827,73 @@ export const MIGRATIONS: Migration[] = [
             CHECK(status IN ('queued', 'running', 'cancelled', 'done'))
         );
         CREATE INDEX lane_idempotency_bot ON lane_idempotency(bot_id, created_at);
+      `);
+    },
+  },
+  {
+    // P7: request lineage (inbound → turn → tools → outbound) plus local
+    // per-provider usage totals. Local diagnostics / activity records only.
+    // Not a telemetry pipeline, invoice, or remote sink.
+    version: 22,
+    name: "request-lineage-and-usage",
+    up(db) {
+      db.exec(`
+        CREATE TABLE request_lineage (
+          request_id TEXT PRIMARY KEY NOT NULL
+            CHECK(typeof(request_id) = 'text' AND length(request_id) BETWEEN 1 AND 128),
+          source TEXT NOT NULL
+            CHECK(source IN ('user', 'channel', 'routine', 'agent')),
+          source_ref TEXT
+            CHECK(source_ref IS NULL OR (typeof(source_ref) = 'text' AND length(source_ref) BETWEEN 1 AND 512)),
+          bot_id TEXT
+            CHECK(bot_id IS NULL OR (typeof(bot_id) = 'text' AND length(bot_id) > 0)),
+          thread_id TEXT
+            CHECK(thread_id IS NULL OR (typeof(thread_id) = 'text' AND length(thread_id) > 0)),
+          turn_id TEXT
+            CHECK(turn_id IS NULL OR (typeof(turn_id) = 'text' AND length(turn_id) > 0)),
+          work_id TEXT
+            CHECK(work_id IS NULL OR (typeof(work_id) = 'text' AND length(work_id) > 0)),
+          lane TEXT
+            CHECK(lane IS NULL OR lane IN ('user', 'channel', 'agent', 'background')),
+          outbound_id TEXT
+            CHECK(outbound_id IS NULL OR (typeof(outbound_id) = 'text' AND length(outbound_id) > 0)),
+          error TEXT
+            CHECK(error IS NULL OR (typeof(error) = 'text' AND length(error) BETWEEN 1 AND 240)),
+          created_at INTEGER NOT NULL
+            CHECK(typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 9007199254740991),
+          updated_at INTEGER NOT NULL
+            CHECK(typeof(updated_at) = 'integer' AND updated_at BETWEEN created_at AND 9007199254740991)
+        );
+        CREATE INDEX request_lineage_source_ref ON request_lineage(source, source_ref);
+        CREATE INDEX request_lineage_thread ON request_lineage(thread_id, updated_at);
+        CREATE TABLE request_lineage_steps (
+          request_id TEXT NOT NULL
+            CHECK(typeof(request_id) = 'text' AND length(request_id) BETWEEN 1 AND 128),
+          seq INTEGER NOT NULL
+            CHECK(typeof(seq) = 'integer' AND seq >= 1),
+          kind TEXT NOT NULL
+            CHECK(kind IN ('inbound', 'turn', 'tool', 'outbound', 'error')),
+          ref TEXT
+            CHECK(ref IS NULL OR (typeof(ref) = 'text' AND length(ref) BETWEEN 1 AND 256)),
+          detail TEXT
+            CHECK(detail IS NULL OR (typeof(detail) = 'text' AND length(detail) BETWEEN 1 AND 240)),
+          created_at INTEGER NOT NULL
+            CHECK(typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 9007199254740991),
+          PRIMARY KEY (request_id, seq),
+          FOREIGN KEY (request_id) REFERENCES request_lineage(request_id) ON DELETE CASCADE
+        );
+        CREATE TABLE provider_usage (
+          provider TEXT PRIMARY KEY NOT NULL
+            CHECK(typeof(provider) = 'text' AND length(provider) BETWEEN 1 AND 128),
+          requests INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(requests) = 'integer' AND requests >= 0),
+          input_tokens INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(input_tokens) = 'integer' AND input_tokens >= 0),
+          output_tokens INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(output_tokens) = 'integer' AND output_tokens >= 0),
+          updated_at INTEGER NOT NULL
+            CHECK(typeof(updated_at) = 'integer' AND updated_at BETWEEN 0 AND 9007199254740991)
+        );
       `);
     },
   },

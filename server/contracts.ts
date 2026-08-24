@@ -57,6 +57,9 @@ export interface RuntimeEventBase {
   turnId?: TurnId;
   itemId?: string;
   requestId?: string;
+  /** P7 request lineage — inbound → turn → tools → outbound. Distinct from
+   * permission/ask `requestId` on request.opened / request.resolved. */
+  lineageId?: string;
   raw?: { source: string; payload: unknown };
   // ── P1.3 durable-stream envelope ─────────────────────────────────────
   // Stamped by the event log when the event is persisted (the bus emits

@@ -87,6 +87,8 @@ import { createGroupsService, type GroupsService } from "./groups.ts";
 import type { RoutinesService } from "./routines.ts";
 import type { TeachService } from "./teach.ts";
 import type { LaneScheduler } from "./lanes.ts";
+import type { LineageService, LineageSource } from "./lineage.ts";
+import type { UsageService } from "./usage.ts";
 
 const SERVICES_DIR = dirname(fileURLToPath(import.meta.url));
 export const SECRET_CARD_ANSWER = "••••";
@@ -111,6 +113,8 @@ export interface StartTurnOpts {
   autonomyContinue?: boolean;
   /** Scheduler-only; startTurn ignores this. Lane wrappers peel it off. */
   idempotencyKey?: string;
+  /** P7 request lineage. Minted at inbound; startTurn binds the thread to it. */
+  requestId?: string;
 }
 
 export interface TurnsServiceDeps {
@@ -136,6 +140,10 @@ export interface TurnsServiceDeps {
   onIdle?: (botId: string) => void;
   /** P6: optional lane scheduler for agent (bot-to-bot) hops. */
   lanes?: () => LaneScheduler | null;
+  /** P7: request lineage. Optional so existing turn tests stay unchanged. */
+  lineage?: LineageService;
+  /** P7: local per-provider usage totals for routed inference. */
+  usage?: UsageService;
 }
 
 export interface TurnsService {
@@ -166,6 +174,8 @@ export interface TurnsService {
 
 export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   const { cfg, registry, computers, bus, repos, bots, teach, proactive, broadcast, port, commsToken } = deps;
+  const lineage = deps.lineage;
+  const usage = deps.usage;
   const store = bots; // message + bot accessors (repository-backed)
   const groups = deps.groups ?? createGroupsService({ repos });
   const commsBus = { store: bindCommsStore(bots, groups), broadcast };
@@ -524,6 +534,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           groupThreadId,
           // snapshot at hop time (ask_bot / group thread / queue drain)
           unattended: hopUnattended(opts),
+          ...(lineage?.forThread(asker?.threadId ?? "") ? { requestId: lineage.forThread(asker!.threadId) } : {}),
         })
         .catch((err) => finish(`(couldn't start that bot: ${err instanceof Error ? err.message : String(err)})`));
     });
@@ -931,8 +942,31 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     broadcast({ kind: "message", threadId, message });
   }
 
+  function lineageSourceFor(opts?: StartTurnOpts): LineageSource {
+    if ((opts?.commsDepth ?? 0) > 0) return "agent";
+    if (opts?.unattended) return "routine";
+    return "user";
+  }
+
+  function requestIdForEvent(event: RuntimeEvent): string | undefined {
+    if (event.lineageId) return event.lineageId;
+    return lineage?.forThread(event.threadId);
+  }
+
   bus.subscribe((event: RuntimeEvent) => {
-    broadcast({ kind: "runtime", event });
+    const requestId = requestIdForEvent(event);
+    const stamped = requestId && !event.lineageId ? { ...event, lineageId: requestId } : event;
+    broadcast({ kind: "runtime", event: stamped, ...(requestId ? { requestId } : {}) });
+    if (requestId && lineage) {
+      if (event.type === "turn.started" && event.turnId) lineage.noteTurn(requestId, event.turnId);
+      if (event.type === "item.started" && event.itemType === "tool") {
+        lineage.noteTool(requestId, event.itemId, event.title);
+      }
+      if (event.type === "runtime.error" && event.message) lineage.noteError(requestId, event.message);
+      if (event.type === "turn.completed" && !event.ok) {
+        lineage.noteError(requestId, event.stopReason ?? "turn failed");
+      }
+    }
     const bot = store.botByThread(event.threadId);
     if (!bot) return;
 
@@ -1114,6 +1148,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (frame) pushMessage({ role: "bot", kind: "screen", png: frame.png, mime: frame.mime });
         const tokens = (event.turnId ? turnUsage.get(event.turnId) : undefined) ?? { input: 0, output: 0, cost: null };
         bots.recordTurnUsage(bot.id, { ...tokens, cost: event.cost ?? null });
+        usage?.record(event.provider, { requests: 1, inputTokens: tokens.input, outputTokens: tokens.output });
         if (event.turnId) turnUsage.delete(event.turnId);
         const options = event.turnId ? responseOptionsByTurn.get(event.turnId) : undefined;
         if (event.turnId) responseOptionsByTurn.delete(event.turnId);
@@ -1391,6 +1426,17 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     // so P0.1 interactive Always-allow still auto-resolves.
     if (opts?.unattended) markUnattended(bot.id, now());
     else if (commsDepth === 0) clearUnattended(bot.id);
+
+    const providedRequestId = typeof opts?.requestId === "string" && opts.requestId.trim() ? opts.requestId.trim() : "";
+    const requestId = lineage
+      ? lineage.begin({
+          ...(providedRequestId ? { requestId: providedRequestId } : {}),
+          source: lineageSourceFor(opts),
+          botId,
+          threadId: bot.threadId,
+        }).requestId
+      : providedRequestId || newId();
+    lineage?.bindThread(bot.threadId, requestId);
 
     const instance = registry.get(bot.modelSelection.instanceId);
     if (!instance) {

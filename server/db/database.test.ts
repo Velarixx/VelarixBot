@@ -36,6 +36,9 @@ const MANDATED_TABLES = [
   "telegram_conversations",
   "discord_conversations",
   "lane_idempotency",
+  "request_lineage",
+  "request_lineage_steps",
+  "provider_usage",
 ];
 
 describe("database + migrations", () => {

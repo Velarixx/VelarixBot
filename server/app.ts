@@ -60,7 +60,9 @@ import { createRoutinesService, type RoutinesService } from "./services/routines
 import { createSecurityAuditService } from "./services/security-audit.ts";
 import { createTeachService, type TeachService } from "./services/teach.ts";
 import { createLaneScheduler, splitLaneTurnOpts, type LaneScheduler, type LaneTurnOpts, type SchedulerLane } from "./services/lanes.ts";
+import { createLineageService, type LineageService } from "./services/lineage.ts";
 import { createTurnsService, type TurnsService } from "./services/turns.ts";
+import { createUsageService, type UsageService } from "./services/usage.ts";
 import type { ModelSelection } from "./contracts.ts";
 import { configureAgentTasks } from "./agent-tasks.ts";
 import { configureMemoryStore } from "./memory.ts";
@@ -124,6 +126,8 @@ export interface Application {
     discord: DiscordService;
     channels: ChannelsService;
     lanes: LaneScheduler;
+    lineage: LineageService;
+    usage: UsageService;
   };
 }
 
@@ -274,6 +278,9 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // on it, the computer routes' suspend guard and "in use by" read it
   const computerLeases = createLeaseBroker();
 
+  const lineage = createLineageService({ store: repos.lineage, now: () => clock.now() });
+  const usage = createUsageService({ store: repos.usage, now: () => clock.now() });
+
   let routinesRef: RoutinesService | null = null;
   const turns = createTurnsService({
     cfg,
@@ -293,6 +300,8 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     leases: computerLeases,
     onIdle: (botId) => lanesRef?.noteIdle(botId),
     lanes: () => lanesRef,
+    lineage,
+    usage,
   });
 
   const lanes = createLaneScheduler({
@@ -359,6 +368,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     registry: channelRegistry,
     bus,
     now: () => clock.now(),
+    lineage,
   });
   channels.register(discordConnector);
 
@@ -370,6 +380,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     bots,
     startTurn: (botId, text, opts) => enqueueLane("channel", botId, text, opts),
     now: () => clock.now(),
+    lineage,
     onStatusChange: () => {
       const snapshot = integrationsRef?.configStatus();
       if (snapshot) broadcast({ kind: "config", ...snapshot });
@@ -385,6 +396,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     groups,
     startTurn: (botId, text, opts) => enqueueLane("channel", botId, text, { ...opts, unattended: true }),
     now: () => clock.now(),
+    lineage,
     connectOpts: input.discordConnect,
     onStatusChange: () => {
       const snapshot = integrationsRef?.configStatus();
@@ -441,10 +453,10 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       broadcast,
       generateAvatarImages: input.generateAvatarImages ?? defaultAvatarImageGenerator(),
     }),
-    createTurnsRoutes({ turns, lanes }),
+    createTurnsRoutes({ turns, lanes, lineage }),
     createLaneRoutes({ lanes }),
     createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
-    createDiagnosticsRoutes({ diagnostics }),
+    createDiagnosticsRoutes({ diagnostics, lineage, usage }),
     createChannelsRoutes({ channels }),
     integrations.api,
     createComputersRoutes({
@@ -555,6 +567,6 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       proactive.tick(now);
     },
     hub,
-    services: { bots, groups, turns, routines, teach, proactive, telegram, discord, channels, lanes },
+    services: { bots, groups, turns, routines, teach, proactive, telegram, discord, channels, lanes, lineage, usage },
   };
 }

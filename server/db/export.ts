@@ -48,6 +48,25 @@ export const EXPORT_TABLES: Array<{ table: string; columns: string[] }> = [
   { table: "memory_rows", columns: ["id", "bot_id", "type", "text", "pinned", "use_count", "created_at", "updated_at"] },
   { table: "computer_bindings", columns: ["bot_id", "box_id", "created_at", "updated_at"] },
   { table: "groups", columns: ["seq", "id", "thread_id", "created_at", "data"] },
+  {
+    table: "request_lineage",
+    columns: [
+      "request_id",
+      "source",
+      "source_ref",
+      "bot_id",
+      "thread_id",
+      "turn_id",
+      "work_id",
+      "lane",
+      "outbound_id",
+      "error",
+      "created_at",
+      "updated_at",
+    ],
+  },
+  { table: "request_lineage_steps", columns: ["request_id", "seq", "kind", "ref", "detail", "created_at"] },
+  { table: "provider_usage", columns: ["provider", "requests", "input_tokens", "output_tokens", "updated_at"] },
 ];
 
 function checksumOf(lines: string[]): string {
