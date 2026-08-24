@@ -1,7 +1,7 @@
 // Auto-update popup — a small card floating bottom-left, driven by the
 // preload's updater bridge. Renders nothing in the browser/dev (no bridge)
 // and while idle/checking; appears only when actionable: an update to
-// download, a download in progress, a restart to apply, or an error.
+// download, a download in progress, install-and-restart, or an error.
 import { useState } from "react";
 import { ArrowDownToLine, RefreshCw, Sparkles, X } from "lucide-react";
 import { useUpdaterState } from "@/lib/updater";
@@ -23,15 +23,19 @@ export function UpdateBanner() {
         ? `Downloading ${s.version ?? "update"}…`
         : s.status === "downloaded"
           ? `${s.version} is ready`
-          : "Update check failed";
+          : s.status === "installing"
+            ? `Installing ${s.version ?? "update"}…`
+            : "Update check failed";
   const subtitle =
     s.status === "available"
       ? "A newer version is ready to download."
       : s.status === "downloading"
         ? `${Math.round(s.percent ?? 0)}%`
         : s.status === "downloaded"
-          ? "Restart to finish updating."
-          : (s.message ?? "Something went wrong.");
+          ? "We'll quit, install the update, and reopen VelarixBot."
+          : s.status === "installing"
+            ? (s.message ?? "Quitting to install the update…")
+            : (s.message ?? "Something went wrong.");
 
   return (
     <div className="animate-panel-in fixed bottom-4 left-4 z-50 w-[300px] rounded-xl border border-hairline/40 bg-panel p-3.5 shadow-2xl shadow-black/50">
@@ -45,7 +49,7 @@ export function UpdateBanner() {
             {subtitle}
           </div>
         </div>
-        {s.status !== "downloading" && (
+        {s.status !== "downloading" && s.status !== "installing" && (
           <button
             onClick={() => setDismissed(key)}
             className="shrink-0 rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
@@ -65,7 +69,7 @@ export function UpdateBanner() {
         </div>
       )}
 
-      {s.status !== "downloading" && (
+      {s.status !== "downloading" && s.status !== "installing" && (
         <div className="mt-2.5 flex gap-2">
           {s.status === "available" && (
             <button
@@ -80,7 +84,7 @@ export function UpdateBanner() {
               onClick={() => void updater.install()}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-accent py-1.5 text-[13px] font-medium text-white"
             >
-              <RefreshCw size={13} /> Restart to update
+              <RefreshCw size={13} /> Install and restart
             </button>
           )}
           {s.status === "error" && (

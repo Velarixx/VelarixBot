@@ -51,6 +51,11 @@ export function compareVersions(a, b) {
   return comparePrerelease(ar, br);
 }
 
+export function pickChecksumAsset(release) {
+  const assets = Array.isArray(release?.assets) ? release.assets : [];
+  return assets.find((a) => /^SHA256SUMS\.txt$/i.test(String(a?.name ?? ""))) ?? null;
+}
+
 export function pickAsset(release, platform, arch) {
   const assets = Array.isArray(release?.assets) ? release.assets : [];
   if (platform === "darwin") {

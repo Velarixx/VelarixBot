@@ -848,6 +848,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       mentionSkillIds?: string[],
     ) => {
       posting.add(botId);
+      const bot = stateRef.current.bots.find((row) => row.id === botId);
+      if (bot?.computer === "local" && typeof window !== "undefined") void window.ogb?.ensureCua?.();
       api(`/api/bots/${botId}/messages`, {
         method: "POST",
         body: JSON.stringify({ text, attachments: attachments ?? [], mentionSkillIds: mentionSkillIds ?? [] }),

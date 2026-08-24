@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
   <title id="title">VelarixBot</title>
-  <desc id="desc">A large silver gradient cursor entering from the left side of a dark app tile. Artwork sits on the 70% Apple-grid inset so macOS 26 Dock neighbors are not visually smaller.</desc>
+  <desc id="desc">A large silver gradient cursor entering from the left side of a dark app tile. Artwork sits on the 60% Apple-grid inset so macOS 26 Dock neighbors are not visually smaller.</desc>
 
   <defs>
     <clipPath id="mac-tile">
@@ -24,8 +24,8 @@
 
   <!-- Transparent canvas; the baked squircle is inset (not full-bleed).
        macOS 26 Dock applies its own mask — a 1024-fill tile reads oversized
-       and sharp-cornered next to Notes / VS Code. 70% matches the icns packer. -->
-  <g transform="translate(153.6 153.6) scale(0.7)">
+       and sharp-cornered next to Notes / VS Code. 60% matches the icns packer. -->
+  <g transform="translate(204.8 204.8) scale(0.6)">
   <g clip-path="url(#mac-tile)">
     <rect width="1024" height="1024" fill="url(#tile)" />
 

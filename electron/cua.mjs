@@ -23,6 +23,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   HOST_BUNDLE_ID,
+  deferredCuaConnection,
   isNamedPipePath,
   resolveCuaConnection,
   resolveDriverBinaryWith,
@@ -30,6 +31,7 @@ import {
 
 let embeddedHost = null; // EmbeddedCuaDriverHost | null
 let connection = null; // descriptor exposed to harness + renderer
+let ensurePromise = null;
 
 function saveConnection() {
   fs.mkdirSync(app.getPath("userData"), { recursive: true });
@@ -75,6 +77,11 @@ async function startEmbedded(binary) {
   return embeddedHost.start();
 }
 
+export function prepareDeferredCua() {
+  connection = deferredCuaConnection();
+  return saveConnection();
+}
+
 export async function startCua() {
   connection = await resolveCuaConnection({
     platform: process.platform,
@@ -85,6 +92,20 @@ export async function startCua() {
     home: app.getPath("home"),
   });
   return saveConnection();
+}
+
+/** Start the local computer daemon only when a feature needs it.
+ * Launch and ordinary text chat must not spawn cua-driver (TCC prompts). */
+export function ensureCua() {
+  if (connection?.mode === "embedded" || connection?.mode === "standalone") {
+    return Promise.resolve(connection);
+  }
+  if (!ensurePromise) {
+    ensurePromise = startCua().finally(() => {
+      ensurePromise = null;
+    });
+  }
+  return ensurePromise;
 }
 
 export function cuaPermissionsStatus() {
@@ -117,4 +138,5 @@ export async function stopCua() {
 export function registerCuaIpc() {
   ipcMain.handle("cua:connection", () => connection);
   ipcMain.handle("cua:permissions", () => cuaPermissionsStatus());
+  ipcMain.handle("cua:ensure", () => ensureCua());
 }

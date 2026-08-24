@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   bundledDriverNames,
+  deferredCuaConnection,
   isNamedPipePath,
   localCuaPlatformSupported,
   mcpConnection,
@@ -147,6 +148,15 @@ describe("darwin cua connection is unchanged", () => {
       embedded: true,
     });
     expect(conn.mcpArgs).toEqual(["mcp", "--embedded", "--socket", "/tmp/cua.sock"]);
+  });
+});
+
+describe("deferred local CUA", () => {
+  it("is not a live MCP spawn, so chat does not depend on the daemon", () => {
+    const deferred = deferredCuaConnection();
+    expect(deferred.mode).toBe("deferred");
+    expect(deferred.mcpCommand).toBeUndefined();
+    expect(deferred.mcpArgs).toBeUndefined();
   });
 });
 

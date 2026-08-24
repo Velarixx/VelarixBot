@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld("ogb", {
   permRequestMic: () => ipcRenderer.invoke("perm:request-mic"),
   /** Opens System Settings on the given privacy pane: mic|screen|speech. */
   permOpenSettings: (pane) => ipcRenderer.invoke("perm:open-settings", pane),
+  /** Start local computer control. No-op until This Mac / a local-computer turn. */
+  ensureCua: () => ipcRenderer.invoke("cua:ensure"),
 
   notify: (payload) => ipcRenderer.invoke("notify:show", payload),
   onNotifyClick: (cb) => {
@@ -47,7 +49,7 @@ contextBridge.exposeInMainWorld("ogb", {
   },
 
   /** In-app auto-update. State object:
-   *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"error",
+   *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"installing"|"error",
    *    version?, percent?, message?, tokenConfigured? }. onState fires immediately
    *    with the current state, then on every transition. Packaged app only. */
   updater: {

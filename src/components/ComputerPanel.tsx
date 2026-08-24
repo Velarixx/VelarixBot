@@ -205,6 +205,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   const [localMisses, setLocalMisses] = useState(0);
   useEffect(() => {
     if (phase !== "local" || !window.ogb) return;
+    void window.ogb.ensureCua?.();
     let alive = true;
     setLocalMisses(0);
     const shoot = async () => {

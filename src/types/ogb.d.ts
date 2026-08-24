@@ -18,6 +18,8 @@ declare global {
       permStatus(): Promise<{ mic: string }>;
       /** Triggers the macOS microphone prompt; resolves true when granted. */
       permRequestMic(): Promise<boolean>;
+      /** Start the local computer daemon. Feature path only — not launch. */
+      ensureCua?(): Promise<unknown>;
       /** Opens System Settings on a privacy pane: mic|screen|speech. */
       permOpenSettings(pane: "mic" | "screen" | "speech"): Promise<void>;
       /** Native OS toast. Missing permission is a silent skip. */
@@ -51,7 +53,7 @@ declare global {
 }
 
 export interface UpdaterState {
-  status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "error";
+  status: "idle" | "checking" | "available" | "downloading" | "downloaded" | "installing" | "error";
   version?: string;
   percent?: number;
   message?: string;

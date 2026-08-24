@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { mintApiToken, serverUrlFilter, withAuthHeader } from "./api-auth.mjs";
 import { createSecretBrokerHandler } from "./secret-broker.mjs";
-import { startCua, stopCua, registerCuaIpc } from "./cua.mjs";
+import { prepareDeferredCua, stopCua, registerCuaIpc } from "./cua.mjs";
 import { packagedLocalCuaSupported } from "./cua-connection.mjs";
 import { startSpeech, stopSpeech } from "./speech.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
@@ -632,10 +632,15 @@ app.whenReady().then(async () => {
   registerCuaIpc();
   registerUpdaterIpc();
   registerNotifyIpc(() => mainWindow);
-  // Start the CUA daemon before the window so the harness can pick up the
-  // connection descriptor on first render. Never blocks window creation on
-  // failure — computer use degrades to "unavailable", the rest still works.
-  startCua().catch((e) => console.error("[cua] start failed:", e));
+  // Do not spawn cua-driver at launch — that is what prompts Accessibility,
+  // Screen Recording, and (from the driver) Apple Music before the user
+  // asked for This Mac. Write a deferred descriptor so chat still works;
+  // ensureCua() starts the daemon on the local-computer feature path.
+  try {
+    prepareDeferredCua();
+  } catch (e) {
+    console.error("[cua] deferred prepare failed:", e);
+  }
   const prefs = loadPrefs();
   trayEnabled = parseTrayEnabled(prefs);
   const servicePref = parseServiceEnabledPref(prefs);
