@@ -1,7 +1,7 @@
 // P7 request lineage — one id from inbound through turn, tools, and
 // outbound. Layers on the existing bus / startTurn / channel events.
 // Errors are redacted and length-bounded before they touch SQLite.
-// Local diagnostics only: no remote sink, no Sentry, no product analytics.
+// Local diagnostics only: no remote sink, no product analytics.
 import { newId } from "../contracts.ts";
 import { redactSecrets } from "../redact-text.ts";
 import {

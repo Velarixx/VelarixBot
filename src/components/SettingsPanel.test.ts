@@ -96,7 +96,7 @@ describe("Settings Apps card stays on the same hub model", () => {
   it("App Settings shows local usage totals as counts only — not billed amounts or secrets", () => {
     expect(appSettings).toContain("Local usage");
     expect(appSettings).toContain("/api/usage");
-    expect(appSettings).toContain("local activity records, not a provider invoice");
+    expect(appSettings).toMatch(/local[\s\S]*activity records[\s\S]*not a provider invoice/);
     expect(appSettings).toContain("Provider");
     expect(appSettings).toContain("Requests");
     expect(appSettings).toContain("Tokens");

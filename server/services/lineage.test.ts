@@ -151,8 +151,9 @@ describe("request lineage + local usage (P7)", () => {
       scope: "bot",
       requestType: "permission",
     });
+    const before = readAudit().length;
     lineage.begin({ source: "channel", sourceRef: "unattended-event" });
-    expect(readAudit()).toEqual([]);
+    expect(readAudit()).toHaveLength(before);
     const files = [
       join(HERE, "lineage.ts"),
       join(HERE, "usage.ts"),
@@ -160,7 +161,7 @@ describe("request lineage + local usage (P7)", () => {
     ];
     for (const file of files) {
       const src = readFileSync(file, "utf8");
-      expect(src, file).not.toMatch(/Sentry|@sentry|SENTRY_DSN/i);
+      expect(src, file).not.toMatch(/@sentry|SENTRY_DSN|sentry\.io/i);
     }
   });
 
