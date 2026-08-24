@@ -5,6 +5,12 @@
 import { normalizeComputerBinding } from "./computer/provider.ts";
 import type { ModelSelection, ThreadId } from "./contracts.ts";
 import { isValidTimeZone, zonedNextClockRun } from "./timezone.ts";
+import {
+  isWorkflowStatus,
+  validWaitingFor,
+  type WorkflowStatus,
+  type WorkflowWaitingFor,
+} from "./workflow.ts";
 
 const BLOB_HASH_RE = /^[0-9a-f]{64}$/;
 function validStoredHash(v: unknown): v is string {
@@ -53,6 +59,13 @@ export interface MessageComm {
   withName: string;
   withColor?: MausColor;
 }
+export const MESSAGE_REPORT_KINDS = ["progress", "blocker", "completion", "handoff"] as const;
+export type MessageReportKind = (typeof MESSAGE_REPORT_KINDS)[number];
+export interface MessageReport {
+  kind: MessageReportKind;
+  fromBotId: string;
+  taskId?: string;
+}
 export interface Message {
   id: string; role: "bot" | "user"; kind: "text" | "options" | "activity" | "screen"; text?: string;
   card?: OptionCardData; tool?: { name: string; ok?: boolean; status?: "completed" | "failed" | "cancelled" | "timed_out"; command?: string }; png?: string; mime?: string; at: number; usage?: Usage;
@@ -62,6 +75,10 @@ export interface Message {
   from?: MessageFrom;
   /** Chip link from a 1:1 thread to the A ⇄ B channel. */
   comm?: MessageComm;
+  /** Delegated-agent report in the lead feed (#119). */
+  report?: MessageReport;
+  /** Assignment / report link to a persisted agent task (#120). */
+  task?: { id: string };
 }
 /** Sidebar DM (`Name ⇄ Name`) for ask_bot / delegate_bot visibility. Not a room/bulletin product. */
 export interface GroupRecord {
@@ -117,6 +134,15 @@ export interface BotRecord {
   notifyEvents?: Partial<Record<"request.opened" | "turn.completed" | "stall.nudge" | "peer.reply", boolean>>;
   /** Bots sharing this thread's transcript (group mention / ask_bot). */
   threadParticipants?: string[];
+  /** User-controlled full-autonomy setting. Missing/false = off (never an implicit default). */
+  fullAutonomy?: boolean;
+  /** Explicit lead-chat workflow chip (#116). Independent of BotState. */
+  workflowStatus?: WorkflowStatus;
+  workflowWaitingFor?: WorkflowWaitingFor[];
+  /** Why autonomous execution stopped (or why the lead is idle after a wave). */
+  workflowStopReason?: string;
+  /** Autonomous continue hops in the current user-started wave. */
+  workflowAutonomyHops?: number;
 }
 /** Explicit GitHub Events API allow-list. No wildcard, no implied *. */
 export const GITHUB_LISTENER_EVENTS = [
@@ -235,6 +261,15 @@ export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } 
     ...(typeof b.skillId === "string" && b.skillId.trim() ? { skillId: b.skillId.trim() } : {}),
     ...(validNotifyEvents(b.notifyEvents) ? { notifyEvents: validNotifyEvents(b.notifyEvents) } : {}),
     ...(validStringList(b.threadParticipants) ? { threadParticipants: validStringList(b.threadParticipants) } : {}),
+    ...(b.fullAutonomy === true ? { fullAutonomy: true } : {}),
+    ...(isWorkflowStatus(b.workflowStatus) ? { workflowStatus: b.workflowStatus } : {}),
+    ...(validWaitingFor(b.workflowWaitingFor)?.length ? { workflowWaitingFor: validWaitingFor(b.workflowWaitingFor) } : {}),
+    ...(typeof b.workflowStopReason === "string" && b.workflowStopReason.trim()
+      ? { workflowStopReason: b.workflowStopReason.trim() }
+      : {}),
+    ...(typeof b.workflowAutonomyHops === "number" && Number.isFinite(b.workflowAutonomyHops) && b.workflowAutonomyHops > 0
+      ? { workflowAutonomyHops: Math.floor(b.workflowAutonomyHops) }
+      : {}),
   };
 }
 

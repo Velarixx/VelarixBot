@@ -254,3 +254,62 @@ describe("setup card → Settings", () => {
     expect(state.bots[0]?.messages[0]?.card?.answered).toBe("Switch model in Settings");
   });
 });
+
+describe("lead workflow + assigned tasks", () => {
+  it("hydrates persisted full-autonomy, workflow, and tasks then upserts without duplicating", () => {
+    let state = reducer(initialState, {
+      type: "hydrate",
+      bots: [
+        bot({
+          id: "lead",
+          fullAutonomy: true,
+          workflowStatus: "waiting",
+          workflowWaitingFor: [{ botId: "helper", name: "Helper" }],
+          workflowStopReason: undefined,
+        }),
+      ],
+      tasks: [
+        {
+          id: "task-1",
+          assigneeBotId: "helper",
+          fromBotId: "lead",
+          fromName: "Chief",
+          sourceThreadId: "thread-1",
+          assignment: "research this",
+          state: "active",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    });
+    expect(state.bots[0]?.fullAutonomy).toBe(true);
+    expect(state.bots[0]?.workflowStatus).toBe("waiting");
+    expect(state.tasks).toHaveLength(1);
+    state = reducer(state, {
+      type: "taskUpsert",
+      task: {
+        id: "task-1",
+        assigneeBotId: "helper",
+        fromBotId: "lead",
+        fromName: "Chief",
+        sourceThreadId: "thread-1",
+        assignment: "research this",
+        state: "completed",
+        result: "done",
+        createdAt: 1,
+        updatedAt: 2,
+      },
+    });
+    expect(state.tasks).toHaveLength(1);
+    expect(state.tasks[0]?.state).toBe("completed");
+    state = reducer(state, { type: "selectTask", id: "task-1" });
+    expect(state.selectedTaskId).toBe("task-1");
+  });
+
+  it("toggles full-autonomy as a user-controlled bot setting", () => {
+    let state = reducer(initialState, { type: "hydrate", bots: [bot({ id: "lead" })] });
+    expect(state.bots[0]?.fullAutonomy).toBeUndefined();
+    state = reducer(state, { type: "updateBot", botId: "lead", patch: { fullAutonomy: true } });
+    expect(state.bots[0]?.fullAutonomy).toBe(true);
+  });
+});

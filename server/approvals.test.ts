@@ -236,6 +236,17 @@ describe("approval rules", () => {
     });
     expect(autoResolvePermission({ id: BOT, requireApproval: true }, "list_bots", "Allow list_bots")).toBeNull();
   });
+
+  it("full-autonomy does not bypass stored rules or Require approval", () => {
+    persistAllowRule({ botId: BOT, tool: "list_bots", summary: "Allow list_bots", behavior: "allow", always: true });
+    const autonomous = { id: BOT, fullAutonomy: true };
+    expect(autoResolvePermission(autonomous, "list_bots", "Allow list_bots")).toEqual({
+      behavior: "allow",
+      source: "rule",
+    });
+    const gated = { id: BOT, fullAutonomy: true, requireApproval: true };
+    expect(autoResolvePermission(gated, "list_bots", "Allow list_bots")).toBeNull();
+  });
 });
 
 describe("unattended consult (before any allow-list)", () => {

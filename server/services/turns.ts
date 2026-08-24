@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   activityOutcome,
+  completedNote,
   createActivityIndex,
   rememberToolCompletion,
   releaseThreadItems,
@@ -55,15 +56,29 @@ import {
   memoryPrompt,
 } from "../memory.ts";
 import { suggestionCardsFor, suggestionItemsFromRepeatedWorkflows } from "../suggestions.ts";
+import {
+  agentTasks,
+  openTasksForSource,
+  patchAgentTask,
+} from "../agent-tasks.ts";
 import { agentsCommsPrompt } from "../chief-of-staff.ts";
 import { bindCommsStore, mirrorReply } from "../comms-visibility.ts";
 import { discardDelegations, drainDelegations } from "../delegations.ts";
+import {
+  AUTONOMY_CONTINUE_PROMPT,
+  AUTONOMY_STOP,
+  MAX_AUTONOMY_HOPS,
+  removeWaitingFor,
+  upsertWaitingFor,
+  type WorkflowStatus,
+  type WorkflowWaitingFor,
+} from "../workflow.ts";
 import { createPeerQueue } from "../peer-queue.ts";
 import type { Proactive } from "../proactive.ts";
 import type { Repositories } from "../repositories/index.ts";
 import { parseResponseOptions, responseOptionsPrompt, shouldAttachResponseOptions } from "../response-options.ts";
 import { cliMissing, engineSetupCard, isMachineStateCode, isSpawnFailure, normalizeBotColor, normalizeBotName, userFacingBlock } from "../engine-setup.ts";
-import { enabledSkillIds, LAST_BOT_ERROR, listenerScheduleFromArgs, mentionedBots, uniqueSkillIds, wouldEmptyWorkspace, type Message, type Usage } from "../store.ts";
+import { enabledSkillIds, LAST_BOT_ERROR, listenerScheduleFromArgs, mentionedBots, uniqueSkillIds, wouldEmptyWorkspace, type MausColor, type Message, type Usage } from "../store.ts";
 import { deleteSkillsForBot, getSkill, saveSkill, skillSystemNote, skillsForTurn } from "../teach.ts";
 import type { Broadcast } from "./events.ts";
 import type { BotsService } from "./bots.ts";
@@ -90,6 +105,8 @@ export interface StartTurnOpts {
   unattended?: boolean;
   /** Appended to the system prompt (untrusted-event fence lives here). */
   systemNote?: string;
+  /** Full-autonomy follow-up: no user bubble; the lead reviews reports and continues. */
+  autonomyContinue?: boolean;
 }
 
 export interface TurnsServiceDeps {
@@ -155,6 +172,187 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const bot = store.publicBot(id);
     if (bot) broadcast({ kind: "bot", bot });
   };
+
+  const delegatedByThread = new Map<
+    string,
+    { sourceBotId: string; sourceThreadId: string; taskId?: string; channelId?: string }
+  >();
+
+  function setWorkflow(
+    botId: string,
+    patch: {
+      workflowStatus?: WorkflowStatus;
+      workflowWaitingFor?: WorkflowWaitingFor[];
+      workflowStopReason?: string;
+      workflowAutonomyHops?: number;
+    },
+  ): void {
+    store.patchBot(botId, patch);
+    broadcastBot(botId);
+  }
+
+  function broadcastTask(task: { id: string } | null): void {
+    if (task) broadcast({ kind: "task", task });
+  }
+
+  function upsertLeadReport(
+    threadId: string,
+    report: NonNullable<Message["report"]>,
+    message: Omit<Message, "id" | "at" | "report">,
+  ): Message {
+    const existing = report.taskId
+      ? store
+          .messagesFor(threadId)
+          .find((row) => row.report?.taskId === report.taskId && row.report?.kind === report.kind)
+      : undefined;
+    if (existing) {
+      const patched = store.patchMessage(threadId, existing.id, { ...message, report });
+      if (patched) {
+        broadcast({ kind: "message.patch", threadId, message: patched });
+        return patched;
+      }
+    }
+    const appended = store.appendMessage(threadId, { ...message, report });
+    broadcast({ kind: "message", threadId, message: appended });
+    return appended;
+  }
+
+  function delegatedContext(bot: { id: string; threadId: string }): {
+    sourceBotId: string;
+    sourceThreadId: string;
+    taskId?: string;
+    channelId?: string;
+  } | null {
+    const live = delegatedByThread.get(bot.threadId);
+    if (live) return live;
+    const active = agentTasks()
+      .listByAssignee(bot.id)
+      .find((task) => task.state === "active" || task.state === "pending");
+    if (!active) return null;
+    return { sourceBotId: active.fromBotId, sourceThreadId: active.sourceThreadId, taskId: active.id };
+  }
+
+  function waitingFromOpenTasks(sourceThreadId: string): WorkflowWaitingFor[] {
+    const seen = new Set<string>();
+    const out: WorkflowWaitingFor[] = [];
+    for (const task of openTasksForSource(sourceThreadId)) {
+      if (seen.has(task.assigneeBotId)) continue;
+      seen.add(task.assigneeBotId);
+      out.push({ botId: task.assigneeBotId, name: store.bot(task.assigneeBotId)?.name ?? task.fromName });
+    }
+    return out;
+  }
+
+  function maybeAutonomyContinue(leadId: string): void {
+    const lead = store.bot(leadId);
+    if (!lead || lead.busy) return;
+    if (isUnattended(lead.id)) {
+      setWorkflow(lead.id, {
+        workflowStatus: "completed",
+        workflowWaitingFor: [],
+        workflowStopReason: AUTONOMY_STOP.off,
+      });
+      return;
+    }
+    if (lead.fullAutonomy !== true) {
+      setWorkflow(lead.id, {
+        workflowStatus: "completed",
+        workflowWaitingFor: [],
+        workflowStopReason: AUTONOMY_STOP.off,
+      });
+      return;
+    }
+    const hops = lead.workflowAutonomyHops ?? 0;
+    if (hops >= MAX_AUTONOMY_HOPS) {
+      setWorkflow(lead.id, {
+        workflowStatus: "paused",
+        workflowWaitingFor: [],
+        workflowStopReason: AUTONOMY_STOP.boundary,
+      });
+      return;
+    }
+    setWorkflow(lead.id, {
+      workflowStatus: "working",
+      workflowWaitingFor: [],
+      workflowStopReason: undefined,
+      workflowAutonomyHops: hops + 1,
+    });
+    void startTurn(lead.id, AUTONOMY_CONTINUE_PROMPT, { autonomyContinue: true, commsDepth: 0 }).catch(() => {
+      setWorkflow(lead.id, {
+        workflowStatus: "blocked",
+        workflowStopReason: AUTONOMY_STOP.blocked("could not continue the workflow"),
+      });
+    });
+  }
+
+  function settleDelegatedPeer(
+    peer: { id: string; threadId: string; name: string; color?: MausColor },
+    outcome: { ok: boolean; text?: string; detail?: string },
+  ): void {
+    const ctx = delegatedContext(peer);
+    if (!ctx) return;
+    delegatedByThread.delete(peer.threadId);
+    const reply = (outcome.text ?? "").trim();
+    if (ctx.taskId) {
+      broadcastTask(
+        patchAgentTask(
+          ctx.taskId,
+          outcome.ok
+            ? { state: "completed", result: reply || undefined }
+            : { state: "blocked", blocker: outcome.detail || reply || "blocked" },
+        ),
+      );
+    }
+    const lead = store.botByThread(ctx.sourceThreadId) ?? store.bot(ctx.sourceBotId);
+    if (!lead) return;
+    const channel = ctx.channelId ? groups.get(ctx.channelId) : groups.dmGroup(lead.id, peer.id);
+    const comm = channel
+      ? { groupId: channel.id, withBotId: peer.id, withName: peer.name, withColor: peer.color }
+      : undefined;
+    if (outcome.ok) {
+      upsertLeadReport(
+        lead.threadId,
+        { kind: "completion", fromBotId: peer.id, taskId: ctx.taskId },
+        {
+          role: "bot",
+          kind: "text",
+          text: reply || `@${peer.name} finished`,
+          from: { botId: peer.id, name: peer.name, color: peer.color },
+          comm,
+          task: ctx.taskId ? { id: ctx.taskId } : undefined,
+        },
+      );
+    } else {
+      upsertLeadReport(
+        lead.threadId,
+        { kind: "blocker", fromBotId: peer.id, taskId: ctx.taskId },
+        {
+          role: "bot",
+          kind: "text",
+          text: outcome.detail || reply || `@${peer.name} is blocked`,
+          from: { botId: peer.id, name: peer.name, color: peer.color },
+          comm,
+          task: ctx.taskId ? { id: ctx.taskId } : undefined,
+        },
+      );
+      setWorkflow(lead.id, {
+        workflowStatus: "blocked",
+        workflowWaitingFor: removeWaitingFor(lead.workflowWaitingFor, peer.id),
+        workflowStopReason: AUTONOMY_STOP.peerBlocked(peer.name, outcome.detail),
+      });
+      return;
+    }
+    const waiting = waitingFromOpenTasks(lead.threadId);
+    if (waiting.length) {
+      setWorkflow(lead.id, {
+        workflowStatus: "waiting",
+        workflowWaitingFor: waiting,
+        workflowStopReason: undefined,
+      });
+      return;
+    }
+    maybeAutonomyContinue(lead.id);
+  }
 
   /** The provider a bot.computer binding resolves to — null for off/unbound
    * (including bindings whose provider was removed from config). */
@@ -259,6 +457,14 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     if (!target) return Promise.resolve("(no such bot)");
     const threadId = target.threadId;
     const groupThreadId = opts?.groupThreadId;
+    const asker = opts?.fromBotId ? store.bot(opts.fromBotId) : null;
+    if (asker) {
+      setWorkflow(asker.id, {
+        workflowStatus: "waiting",
+        workflowWaitingFor: upsertWaitingFor(asker.workflowWaitingFor, { botId: target.id, name: target.name }),
+        workflowStopReason: undefined,
+      });
+    }
     return new Promise((resolve) => {
       let text = "";
       let done = false;
@@ -267,11 +473,21 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         done = true;
         clearTimeout(timer);
         unsub();
+        if (asker) {
+          const latest = store.bot(asker.id);
+          const waiting = removeWaitingFor(latest?.workflowWaitingFor, target.id);
+          setWorkflow(asker.id, {
+            workflowStatus: waiting.length ? "waiting" : "working",
+            workflowWaitingFor: waiting,
+          });
+        }
         if (groupThreadId && out && !out.startsWith("(couldn't start") && !out.startsWith("(timed out") && !out.startsWith("(no such")) {
           const note = store.appendMessage(groupThreadId, {
             role: "bot",
             kind: "text",
             text: `@${target.name}: ${out}`,
+            from: { botId: target.id, name: target.name, color: target.color },
+            report: { kind: "completion", fromBotId: target.id },
           });
           broadcast({ kind: "message", threadId: groupThreadId, message: note });
           const owner = store.botByThread(groupThreadId);
@@ -779,6 +995,36 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (event.requestId) askMessageByRequest.set(event.requestId, message.id);
         bots.patchBot(bot.id, { state: "NEEDS_INPUT" });
         proactive.noteState(bot.id, "NEEDS_INPUT");
+        const peerCtx = delegatedContext(bot);
+        if (permission && !credential) {
+          setWorkflow(bot.id, { workflowStatus: "blocked", workflowStopReason: AUTONOMY_STOP.approval });
+          if (peerCtx?.taskId) {
+            broadcastTask(patchAgentTask(peerCtx.taskId, { state: "blocked", blocker: event.summary || "Approval needed" }));
+          }
+          if (peerCtx) {
+            const lead = store.botByThread(peerCtx.sourceThreadId) ?? store.bot(peerCtx.sourceBotId);
+            if (lead) {
+              upsertLeadReport(
+                lead.threadId,
+                { kind: "blocker", fromBotId: bot.id, taskId: peerCtx.taskId },
+                {
+                  role: "bot",
+                  kind: "text",
+                  text: event.summary || "Approval needed",
+                  from: { botId: bot.id, name: bot.name, color: bot.color },
+                  task: peerCtx.taskId ? { id: peerCtx.taskId } : undefined,
+                },
+              );
+              setWorkflow(lead.id, {
+                workflowStatus: "blocked",
+                workflowWaitingFor: removeWaitingFor(lead.workflowWaitingFor, bot.id),
+                workflowStopReason: AUTONOMY_STOP.peerBlocked(bot.name, "needs approval"),
+              });
+            }
+          }
+        } else {
+          setWorkflow(bot.id, { workflowStatus: "needs_input", workflowStopReason: AUTONOMY_STOP.input });
+        }
         broadcastBot(bot.id);
         break;
       }
@@ -813,6 +1059,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         proactive.noteState(bot.id, "BLOCKED");
         notifyIdle(bot.id);
         discardDelegations(commsBus, event.threadId);
+        setWorkflow(bot.id, {
+          workflowStatus: "blocked",
+          workflowStopReason: AUTONOMY_STOP.blocked(blocked.stateDetail),
+        });
+        settleDelegatedPeer(bot, { ok: false, detail: blocked.stateDetail });
         broadcastBot(bot.id);
         break;
       }
@@ -860,9 +1111,41 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         proactive.noteState(bot.id, event.ok ? "DONE" : "BLOCKED");
         notifyIdle(bot.id);
         if (event.ok) {
-          drainDelegations(commsBus, event.threadId, (toBotId, message, commsDepth, _sourceThreadId, channel) => {
+          drainDelegations(commsBus, event.threadId, (toBotId, message, commsDepth, sourceThreadId, channel, taskId) => {
             const target = store.bot(toBotId);
+            const source = store.botByThread(sourceThreadId);
             let unsub: (() => void) | undefined;
+            if (target && source) {
+              delegatedByThread.set(target.threadId, {
+                sourceBotId: source.id,
+                sourceThreadId,
+                taskId,
+                channelId: channel?.id,
+              });
+              setWorkflow(source.id, {
+                workflowStatus: "waiting",
+                workflowWaitingFor: upsertWaitingFor(source.workflowWaitingFor, {
+                  botId: target.id,
+                  name: target.name,
+                }),
+                workflowStopReason: undefined,
+              });
+              const task = taskId ? agentTasks().get(taskId) : null;
+              upsertLeadReport(
+                source.threadId,
+                { kind: "progress", fromBotId: target.id, taskId },
+                {
+                  role: "bot",
+                  kind: "activity",
+                  tool: { name: `@${target.name} started${task?.reason ? `: ${task.reason}` : ""}` },
+                  from: { botId: target.id, name: target.name, color: target.color },
+                  comm: channel
+                    ? { groupId: channel.id, withBotId: target.id, withName: target.name, withColor: target.color }
+                    : undefined,
+                  task: taskId ? { id: taskId } : undefined,
+                },
+              );
+            }
             if (target && channel) {
               let text = "";
               unsub = bus.subscribe((e: RuntimeEvent) => {
@@ -883,6 +1166,39 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           });
         } else {
           discardDelegations(commsBus, event.threadId);
+        }
+        {
+          const asPeer = delegatedContext(bot);
+          const lastText = [...store.messagesFor(event.threadId)]
+            .reverse()
+            .find((row) => row.kind === "text" && row.role === "bot" && !row.report)?.text;
+          if (asPeer && asPeer.sourceThreadId !== bot.threadId) {
+            settleDelegatedPeer(bot, {
+              ok: event.ok,
+              text: lastText,
+              detail: event.ok ? undefined : (blocked?.stateDetail ?? event.stopReason ?? undefined),
+            });
+          } else if (event.ok) {
+            const waiting = waitingFromOpenTasks(bot.threadId);
+            if (waiting.length) {
+              setWorkflow(bot.id, {
+                workflowStatus: "waiting",
+                workflowWaitingFor: waiting,
+                workflowStopReason: undefined,
+              });
+            } else {
+              setWorkflow(bot.id, {
+                workflowStatus: "completed",
+                workflowWaitingFor: [],
+                workflowStopReason: bot.fullAutonomy === true ? AUTONOMY_STOP.completed : AUTONOMY_STOP.off,
+              });
+            }
+          } else {
+            setWorkflow(bot.id, {
+              workflowStatus: "blocked",
+              workflowStopReason: AUTONOMY_STOP.blocked(blocked?.stateDetail ?? event.stopReason ?? "the turn failed"),
+            });
+          }
         }
         settleRunningActivities(event.threadId, activityOutcome(event.ok, event.stopReason).status);
         const thenStartTurn = deps.routines().settleTurn(event.threadId, event.ok, event.stopReason);
@@ -1028,6 +1344,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
     proactive.reset(botId);
     const commsDepth = opts?.commsDepth ?? 0;
+    const autonomyContinue = opts?.autonomyContinue === true;
     const visited = uniqueIds([...(opts?.visited ?? []), bot.id]);
     const groupThreadId = opts?.groupThreadId ?? (commsDepth === 0 ? bot.threadId : undefined);
     // listener / inherited hop: mark this bot. A person typing into this
@@ -1057,7 +1374,13 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       throw Object.assign(new Error(`unsafe configuration: local computer cannot be combined with ${what}`), { status: 409 });
     }
 
-    const userMessage = store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
+    const userMessage = autonomyContinue
+      ? store.appendMessage(bot.threadId, {
+          role: "bot",
+          kind: "activity",
+          tool: completedNote("Continuing autonomously"),
+        })
+      : store.appendMessage(bot.threadId, { role: "user", kind: "text", text });
     broadcast({ kind: "message", threadId: bot.threadId, message: userMessage });
 
     // transcript for API-backed drivers: settled text turns only
@@ -1066,6 +1389,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       .filter((m) => m.kind === "text" && m.text && m.id !== userMessage.id)
       .slice(-40)
       .map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), text: m.text! }));
+    if (autonomyContinue) transcript.push({ role: "user", text });
 
     const attachedSkills = skillsForTurn(bot, opts?.extraSkillIds ?? []);
     const persona = [
@@ -1080,7 +1404,19 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     // busy flips immediately so the composer locks; the dispatch itself runs
     // in the background — box provisioning can take ~90s and must never
     // hang the HTTP request
-    bots.patchBot(bot.id, { busy: true, unread: false, state: "RUNNING", stateDetail: undefined });
+    bots.patchBot(bot.id, {
+      busy: true,
+      unread: false,
+      state: "RUNNING",
+      stateDetail: undefined,
+      workflowStatus: "working",
+      workflowStopReason: undefined,
+      ...(autonomyContinue
+        ? {}
+        : commsDepth === 0
+          ? { workflowWaitingFor: [], workflowAutonomyHops: 0 }
+          : {}),
+    });
     proactive.noteState(bot.id, "RUNNING");
     broadcastBot(bot.id);
 
@@ -1214,7 +1550,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
             (integrations.computer && instance.driverKind !== "boxAgent" && computerProvider?.turnPrompt
               ? ` ${computerProvider.turnPrompt}`
               : "") +
-            (integrations.agents ? agentsCommsPrompt() : "") +
+            (integrations.agents ? agentsCommsPrompt({ fullAutonomy: bot.fullAutonomy === true }) : "") +
             (integrations.memory
               ? " You have remember and recall tools. remember saves a lasting note for this bot (or the shared workspace). recall reads those notes. Prefer remember for durable facts instead of relying on chat history."
               : "") +
@@ -1252,6 +1588,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         proactive.noteState(bot.id, "BLOCKED");
         notifyIdle(bot.id);
         discardDelegations(commsBus, bot.threadId);
+        setWorkflow(bot.id, {
+          workflowStatus: "blocked",
+          workflowStopReason: AUTONOMY_STOP.blocked(blocked.stateDetail),
+        });
+        settleDelegatedPeer(bot, { ok: false, detail: blocked.stateDetail });
         broadcastBot(bot.id);
       }
     })();
@@ -1341,6 +1682,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     proactive.noteState(bot.id, "BLOCKED");
     notifyIdle(bot.id);
     discardDelegations(commsBus, bot.threadId);
+    setWorkflow(bot.id, {
+      workflowStatus: "paused",
+      workflowStopReason: AUTONOMY_STOP.paused,
+    });
+    settleDelegatedPeer(bot, { ok: false, detail: "interrupted" });
     broadcastBot(bot.id);
     return { ok: true };
   }

@@ -20,6 +20,13 @@ describe("Settings Apps card stays on the same hub model", () => {
     expect(settings).not.toMatch(/mcpServers/);
   });
 
+  it("exposes full-autonomy as an explicit persisted setting", () => {
+    expect(settings).toContain('aria-label="Full autonomy"');
+    expect(settings).toContain("patch({ fullAutonomy: !bot.fullAutonomy })");
+    expect(settings).toMatch(/Off by default/);
+    expect(settings).toMatch(/Safety-sensitive actions still respect/);
+  });
+
   it("does not change P0.1 Always allow copy or behavior", () => {
     expect(settings).toContain('aria-label="Always allow"');
     expect(settings).toMatch(/Let this bot do routine reads, writes, tool calls, and connected-app actions without/);

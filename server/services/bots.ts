@@ -84,6 +84,11 @@ export function toPublicBot(bot: BotRecord, messages: Message[] = []): PublicBot
   if (bot.skillId !== undefined) pub.skillId = bot.skillId;
   if (bot.notifyEvents !== undefined) pub.notifyEvents = bot.notifyEvents;
   if (bot.threadParticipants !== undefined) pub.threadParticipants = bot.threadParticipants;
+  if (bot.fullAutonomy !== undefined) pub.fullAutonomy = bot.fullAutonomy;
+  if (bot.workflowStatus !== undefined) pub.workflowStatus = bot.workflowStatus;
+  if (bot.workflowWaitingFor !== undefined) pub.workflowWaitingFor = bot.workflowWaitingFor;
+  if (bot.workflowStopReason !== undefined) pub.workflowStopReason = bot.workflowStopReason;
+  if (bot.workflowAutonomyHops !== undefined) pub.workflowAutonomyHops = bot.workflowAutonomyHops;
   return pub;
 }
 
@@ -305,7 +310,7 @@ export function createDesktopGlobalBotsService(opts: BotsServiceOptions): BotsSe
         else patch = { ...patch, color };
       }
       if (patch.modelSelection !== undefined && !validModelSelection(patch.modelSelection)) invalid("modelSelection");
-      for (const field of ["alwaysAllow", "requireApproval", "mascotPinned"] as const) {
+      for (const field of ["alwaysAllow", "requireApproval", "mascotPinned", "fullAutonomy"] as const) {
         if (patch[field] !== undefined && typeof patch[field] !== "boolean") invalid(field);
       }
       const next: Partial<BotRecord> = { ...patch };
@@ -388,6 +393,21 @@ export function createDesktopGlobalBotsService(opts: BotsServiceOptions): BotsSe
       }
       if (Object.prototype.hasOwnProperty.call(patch, "avatarCandidates") && patch.avatarCandidates == null) {
         delete b.avatarCandidates;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "workflowStatus") && !patch.workflowStatus) {
+        delete b.workflowStatus;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "workflowWaitingFor") && !patch.workflowWaitingFor?.length) {
+        delete b.workflowWaitingFor;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "workflowStopReason") && !patch.workflowStopReason) {
+        delete b.workflowStopReason;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "workflowAutonomyHops") && !patch.workflowAutonomyHops) {
+        delete b.workflowAutonomyHops;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "fullAutonomy") && patch.fullAutonomy !== true) {
+        delete b.fullAutonomy;
       }
       // a write that matched no row must not report success — the caller
       // would broadcast/answer with a record the store does not hold. The

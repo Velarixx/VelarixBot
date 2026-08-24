@@ -8,12 +8,24 @@ import { OptionCard } from "./OptionCard";
 import { Composer } from "./Composer";
 import { ModelPicker } from "./ModelPicker";
 import { ActivityChip } from "./ActivityChip";
+import { AgentReportView } from "./AgentReport";
+import { TaskPanelView } from "./TaskPanel";
 import { UserAttachments } from "./UserAttachments";
 import { cn } from "@/lib/cn";
 import { splitAttachedFiles } from "@/lib/chat-message";
+import { tasksForBot } from "@/lib/agent-task";
 import { formatCompactTokens, formatUsageCost, stateLabel, type BotState } from "@/lib/product";
+import { workflowLabel, type WorkflowStatus } from "@/lib/workflow";
 
 const stateTone: Record<BotState, string> = { IDLE: "bg-raised text-ink-secondary", RUNNING: "bg-accent/15 text-accent", DONE: "bg-success/15 text-success", BLOCKED: "bg-danger/15 text-danger", NEEDS_INPUT: "bg-warning/15 text-warning" };
+const workflowTone: Record<WorkflowStatus, string> = {
+  working: "bg-accent/15 text-accent",
+  waiting: "bg-warning/15 text-warning",
+  blocked: "bg-danger/15 text-danger",
+  needs_input: "bg-warning/15 text-warning",
+  paused: "bg-raised text-ink-secondary",
+  completed: "bg-success/15 text-success",
+};
 
 /** Long user messages collapse behind a fade so pasted walls of text don't
  * bury the conversation; bots get full markdown. */
@@ -150,6 +162,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   };
 
   const first = bot.messages[0];
+  const assigned = tasksForBot(state.tasks, bot.id);
+  const workflowStatus = bot.workflowStatus;
+  const stopReason = bot.workflowStopReason;
 
   return (
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
@@ -176,9 +191,35 @@ export function ChatView({ bot }: { bot: Bot }) {
             )}
           </span>
           {bot.busy && <Loader2 size={14} className="animate-spin text-ink-secondary" />}
-          <span title={bot.stateDetail} className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide", stateTone[bot.state ?? "IDLE"])}>{stateLabel(bot.state ?? "IDLE")}</span>
+          {workflowStatus ? (
+            <span
+              title={stopReason ?? workflowLabel(workflowStatus, bot.workflowWaitingFor)}
+              className={cn(
+                "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                workflowTone[workflowStatus],
+              )}
+            >
+              {workflowLabel(workflowStatus, bot.workflowWaitingFor)}
+            </span>
+          ) : (
+            <span title={bot.stateDetail} className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide", stateTone[bot.state ?? "IDLE"])}>{stateLabel(bot.state ?? "IDLE")}</span>
+          )}
         </button>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            role="switch"
+            aria-label="Full autonomy"
+            aria-checked={bot.fullAutonomy === true}
+            title="Full autonomy: the lead continues planning, delegating, and reviewing until completion, a blocker, or a safety boundary. Approval rules still apply."
+            onClick={() => dispatch({ type: "updateBot", botId: bot.id, patch: { fullAutonomy: !bot.fullAutonomy } })}
+            className={cn(
+              "hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] sm:flex",
+              bot.fullAutonomy ? "border-accent/40 bg-accent/10 text-accent" : "border-hairline/40 text-ink-secondary hover:text-ink",
+            )}
+          >
+            Full autonomy {bot.fullAutonomy ? "on" : "off"}
+          </button>
           <span title="Lifetime provider-reported usage" className="hidden text-[11px] text-ink-secondary xl:inline">{formatCompactTokens((bot.usage?.input ?? 0) + (bot.usage?.output ?? 0))} tokens · {formatUsageCost(bot.usage?.cost ?? null)}</span>
           {bot.busy && (
             <button
@@ -209,6 +250,15 @@ export function ChatView({ bot }: { bot: Bot }) {
         <div className="mx-auto w-full max-w-[900px] px-5">
           <div className="mb-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger">
             {state.error}
+          </div>
+        </div>
+      )}
+
+      {stopReason && workflowStatus && workflowStatus !== "working" && workflowStatus !== "waiting" && (
+        <div className="mx-auto w-full max-w-[900px] px-5">
+          <div className="mb-2 rounded-lg border border-hairline/40 bg-raised/70 px-3 py-2">
+            <div className="mb-0.5 text-[13px] font-semibold text-ink">Autonomous execution stopped</div>
+            <div className="text-[13px] text-ink-secondary">{stopReason}</div>
           </div>
         </div>
       )}
@@ -248,6 +298,20 @@ export function ChatView({ bot }: { bot: Bot }) {
             </div>
           )}
           {bot.messages.map((m) => {
+            if (m.report) {
+              return (
+                <AgentReportView
+                  key={m.id}
+                  message={m}
+                  onOpenAgent={(id) => dispatch({ type: "select", id })}
+                  onOpenTask={(id) => {
+                    const task = state.tasks.find((item) => item.id === id);
+                    if (task) dispatch({ type: "select", id: task.assigneeBotId });
+                    dispatch({ type: "selectTask", id });
+                  }}
+                />
+              );
+            }
             switch (m.kind) {
               case "options":
                 return <OptionCard key={m.id} botId={bot.id} message={m} />;
@@ -301,6 +365,12 @@ export function ChatView({ bot }: { bot: Bot }) {
           <ArrowDown size={13} /> Jump to latest
         </button>
       )}
+
+      <TaskPanelView
+        tasks={assigned}
+        selectedTaskId={state.selectedTaskId}
+        onSelectTask={(id) => dispatch({ type: "selectTask", id })}
+      />
 
       <Composer bot={bot} />
     </main>

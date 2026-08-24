@@ -8,6 +8,7 @@ import { DATA_DIR } from "./config.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import { defaultDbPath, openDatabase } from "./db/database.ts";
 import type { SqliteDatabase } from "./db/sqlite-native.ts";
+import { configureAgentTasks } from "./agent-tasks.ts";
 import { queueDelegation, _pendingCount, _resetPending } from "./delegations.ts";
 import { EventBus } from "./harness/bus.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
@@ -36,6 +37,7 @@ describe("delegate_bot drain through turns", () => {
     rmSync(DATA_DIR, { recursive: true, force: true });
     db = openDatabase(defaultDbPath());
     repos = createRepositories(db);
+    configureAgentTasks(repos.agentTasks);
     sendTurns = [];
 
     const fake = makeFakeDriver();
@@ -95,6 +97,7 @@ describe("delegate_bot drain through turns", () => {
 
   afterEach(() => {
     _resetPending();
+    configureAgentTasks(null);
     try {
       db.close();
     } catch {
