@@ -176,25 +176,40 @@ export type GithubListenerEvent =
   | "pull_request_review"
   | "pull_request_review_comment";
 export type SlackListenerMatch = "mention" | "keyword" | "message";
+export type DiscordListenerMatch = "mention" | "dm" | "channel" | "keyword" | "reaction" | "thread";
+export type GithubListenerSchedule = {
+  kind: "listener";
+  source: "github";
+  everyMinutes?: number;
+  repo?: { owner: string; name: string };
+  events?: GithubListenerEvent[];
+};
+export type SlackListenerSchedule = {
+  kind: "listener";
+  source: "slack";
+  everyMinutes?: number;
+  channel?: string;
+  match?: SlackListenerMatch;
+  keyword?: string;
+};
+export type DiscordListenerSchedule = {
+  kind: "listener";
+  source: "discord";
+  everyMinutes?: number;
+  match?: DiscordListenerMatch;
+  channel?: string;
+  keyword?: string;
+  emoji?: string;
+};
+export type ListenerSchedule = GithubListenerSchedule | SlackListenerSchedule | DiscordListenerSchedule;
 export type RoutineSchedule =
   | { kind: "interval"; everyMinutes: number }
   | { kind: "daily"; time: string; timeZone?: string }
   | { kind: "weekdays"; time: string; timeZone?: string }
-  | {
-      kind: "listener";
-      source: "github";
-      everyMinutes?: number;
-      repo?: { owner: string; name: string };
-      events?: GithubListenerEvent[];
-    }
-  | {
-      kind: "listener";
-      source: "slack";
-      everyMinutes?: number;
-      channel?: string;
-      match?: SlackListenerMatch;
-      keyword?: string;
-    };
+  | GithubListenerSchedule
+  | SlackListenerSchedule
+  | DiscordListenerSchedule
+  | { kind: "group"; anyOf: ListenerSchedule[]; everyMinutes?: number };
 export type MissedPolicy = "skip" | "run-once" | "catch-up";
 export interface RoutineRun {
   seq: number; startedAt: number; finishedAt: number | null; scheduledFor: number | null;

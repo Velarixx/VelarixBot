@@ -43,6 +43,23 @@ describe("routine schedule helpers", () => {
       match: "keyword",
       keyword: "deploy",
     });
+    expect(
+      listenerScheduleFromForm({
+        kind: "discord",
+        everyMinutes: 15,
+        time: "09:00",
+        repoOwner: "",
+        repoName: "",
+        events: [],
+        channel: "",
+        match: "mention",
+        keyword: "",
+      }),
+    ).toEqual({
+      kind: "listener",
+      source: "discord",
+      match: "mention",
+    });
   });
 
   it("labels listeners with the concrete filter, not a generic interval", () => {
@@ -53,7 +70,17 @@ describe("routine schedule helpers", () => {
         repo: { owner: "Velarixx", name: "VelarixBot" },
         events: ["push"],
       }),
-    ).toBe("github Velarixx/VelarixBot (push)");
-    expect(scheduleLabel({ kind: "listener", source: "slack", channel: "#eng", match: "mention" })).toBe("slack #eng (mention)");
+    ).toBe("GitHub Velarixx/VelarixBot (push)");
+    expect(scheduleLabel({ kind: "listener", source: "slack", channel: "#eng", match: "mention" })).toBe("Slack #eng (mention)");
+    expect(scheduleLabel({ kind: "listener", source: "discord", match: "dm" })).toBe("Discord DM");
+    expect(
+      scheduleLabel({
+        kind: "group",
+        anyOf: [
+          { kind: "listener", source: "github", repo: { owner: "Velarixx", name: "VelarixBot" }, events: ["push"] },
+          { kind: "listener", source: "discord", match: "mention" },
+        ],
+      }),
+    ).toBe("Any of: GitHub Velarixx/VelarixBot (push); Discord mention");
   });
 });

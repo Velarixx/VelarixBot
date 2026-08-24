@@ -27,6 +27,9 @@ export function createListenerPoller(deps: {
   const slackFeed = deps.slackFeed ?? createSlackFeed();
   return async (schedule, cursor) => {
     try {
+      if (schedule.source === "discord") {
+        return { status: "no-match" as const, cursor, reason: "discord triggers are event-driven" };
+      }
       if (schedule.source === "github") {
         return await pollGithubListener(schedule, cursor, {
           token: deps.cfg().github?.token,

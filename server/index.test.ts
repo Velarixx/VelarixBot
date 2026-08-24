@@ -780,6 +780,42 @@ describe("harness HTTP API", () => {
     expect(wildcard.body.error).toMatch(/owner\/name/);
   });
 
+  it("round-trips a discord trigger and a grouped any-of trigger", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const discord = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "Discord mentions",
+      prompt: "Handle the mention",
+      schedule: { kind: "discord", match: "mention" },
+    });
+    expect(discord.status).toBe(201);
+    expect(discord.body.routine.schedule).toMatchObject({ kind: "listener", source: "discord", match: "mention" });
+    const grouped = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "Any of",
+      prompt: "Grouped",
+      schedule: {
+        kind: "group",
+        anyOf: [
+          { kind: "listener", source: "github", repo: "Velarixx/VelarixBot", events: ["push"] },
+          { kind: "discord", match: "dm" },
+        ],
+      },
+    });
+    expect(grouped.status).toBe(201);
+    expect(grouped.body.routine.schedule.kind).toBe("group");
+    expect(grouped.body.routine.schedule.anyOf).toHaveLength(2);
+    const bad = await api("POST", "/api/routines", {
+      botId: bot.id,
+      name: "Empty group",
+      prompt: "Nope",
+      schedule: { kind: "group", anyOf: [] },
+    });
+    expect(bad.status).toBe(500);
+    expect(bad.body.error).toMatch(/at least one/);
+  });
+
   it("round-trips a routine thenStartTurn trigger", async () => {
     const { body } = await api("GET", "/api/bots");
     const bot = body.bots[0];

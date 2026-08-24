@@ -165,6 +165,8 @@ export const GITHUB_LISTENER_EVENTS = [
 export type GithubListenerEvent = (typeof GITHUB_LISTENER_EVENTS)[number];
 export const SLACK_LISTENER_MATCHES = ["mention", "keyword", "message"] as const;
 export type SlackListenerMatch = (typeof SLACK_LISTENER_MATCHES)[number];
+export const DISCORD_LISTENER_MATCHES = ["mention", "dm", "channel", "keyword", "reaction", "thread"] as const;
+export type DiscordListenerMatch = (typeof DISCORD_LISTENER_MATCHES)[number];
 export type GithubListenerSchedule = {
   kind: "listener";
   source: "github";
@@ -180,12 +182,29 @@ export type SlackListenerSchedule = {
   match?: SlackListenerMatch;
   keyword?: string;
 };
+export type DiscordListenerSchedule = {
+  kind: "listener";
+  source: "discord";
+  everyMinutes?: number;
+  match?: DiscordListenerMatch;
+  channel?: string;
+  keyword?: string;
+  emoji?: string;
+};
+export type ListenerSchedule = GithubListenerSchedule | SlackListenerSchedule | DiscordListenerSchedule;
+export type GroupSchedule = {
+  kind: "group";
+  anyOf: ListenerSchedule[];
+  everyMinutes?: number;
+};
 export type RoutineSchedule =
   | { kind: "interval"; everyMinutes: number }
   | { kind: "daily"; time: string; timeZone?: string }
   | { kind: "weekdays"; time: string; timeZone?: string }
   | GithubListenerSchedule
-  | SlackListenerSchedule;
+  | SlackListenerSchedule
+  | DiscordListenerSchedule
+  | GroupSchedule;
 export interface ThenStartTurn { botId: string; prompt: string }
 /** What the scheduler does with occurrences that came due while VelarixBot
  * was closed or asleep: drop them (skip), coalesce them into one run
@@ -284,7 +303,7 @@ export function nextRunAt(schedule: RoutineSchedule, from = Date.now()): number 
     if (!Number.isFinite(schedule.everyMinutes) || schedule.everyMinutes <= 0) throw new Error("invalid interval");
     return from + schedule.everyMinutes * 60_000;
   }
-  if (schedule.kind === "listener") {
+  if (schedule.kind === "listener" || schedule.kind === "group") {
     const every = Number.isFinite(schedule.everyMinutes) && (schedule.everyMinutes ?? 0) > 0 ? schedule.everyMinutes! : 15;
     return from + every * 60_000;
   }
@@ -308,6 +327,7 @@ export function nextRunAt(schedule: RoutineSchedule, from = Date.now()): number 
 
 const GITHUB_EVENT_SET = new Set<string>(GITHUB_LISTENER_EVENTS);
 const SLACK_MATCH_SET = new Set<string>(SLACK_LISTENER_MATCHES);
+const DISCORD_MATCH_SET = new Set<string>(DISCORD_LISTENER_MATCHES);
 const GITHUB_NAME_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]{0,99}$/;
 const GITHUB_OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
@@ -365,9 +385,20 @@ export function parseSlackMatch(raw: unknown): SlackListenerMatch | null {
   return SLACK_MATCH_SET.has(match) ? (match as SlackListenerMatch) : null;
 }
 
+export function parseDiscordMatch(raw: unknown): DiscordListenerMatch | null {
+  const match = String(raw ?? "").trim().toLowerCase();
+  return DISCORD_MATCH_SET.has(match) ? (match as DiscordListenerMatch) : null;
+}
+
+export function parseDiscordEmoji(raw: unknown): string | null {
+  const emoji = String(raw ?? "").trim();
+  if (!emoji || emoji.length > 64) return null;
+  return emoji;
+}
+
 /** MCP / form args → a complete listener schedule, or a reason it isn't. */
 export function listenerScheduleFromArgs(
-  source: "github" | "slack",
+  source: "github" | "slack" | "discord",
   args: Record<string, unknown>,
   everyMinutes: number,
 ): { schedule: RoutineSchedule } | { error: string } {
@@ -384,6 +415,7 @@ export function listenerScheduleFromArgs(
         channel: args.channel,
         match: args.match,
         keyword: args.keyword,
+        emoji: args.emoji,
       },
       { strictListener: true },
     );
@@ -394,17 +426,33 @@ export function listenerScheduleFromArgs(
 }
 
 export function listenerFilterComplete(schedule: RoutineSchedule): boolean {
+  if (schedule.kind === "group") {
+    return schedule.anyOf.length > 0 && schedule.anyOf.every(listenerFilterComplete);
+  }
   if (schedule.kind !== "listener") return true;
   if (schedule.source === "github") {
     return Boolean(schedule.repo?.owner && schedule.repo?.name && schedule.events?.length);
+  }
+  if (schedule.source === "discord") {
+    if (schedule.match === "keyword") return Boolean(schedule.keyword?.trim());
+    return Boolean(schedule.match);
   }
   if (schedule.match === "keyword") return Boolean(schedule.channel && schedule.keyword?.trim());
   return Boolean(schedule.channel && schedule.match);
 }
 
-function parseListenerSchedule(s: Record<string, unknown>, strict: boolean): RoutineSchedule {
-  const source = s.source === "slack" ? "slack" : s.source === "github" ? "github" : "";
-  if (source !== "github" && source !== "slack") throw new Error("listener must be github or slack");
+function parseListenerSchedule(s: Record<string, unknown>, strict: boolean): ListenerSchedule {
+  const source =
+    s.source === "slack" || s.kind === "slack"
+      ? "slack"
+      : s.source === "discord" || s.kind === "discord"
+        ? "discord"
+        : s.source === "github" || s.kind === "github"
+          ? "github"
+          : "";
+  if (source !== "github" && source !== "slack" && source !== "discord") {
+    throw new Error("listener must be github, slack, or discord");
+  }
   const everyMinutes = Number(s.everyMinutes);
   const every = Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15;
   if (source === "github") {
@@ -418,6 +466,23 @@ function parseListenerSchedule(s: Record<string, unknown>, strict: boolean): Rou
       everyMinutes: every,
       ...(repo ? { repo } : {}),
       ...(events.length ? { events } : {}),
+    };
+  }
+  if (source === "discord") {
+    const match = parseDiscordMatch(s.match);
+    const channel = parseSlackChannel(s.channel);
+    const keyword = String(s.keyword ?? "").trim();
+    const emoji = parseDiscordEmoji(s.emoji);
+    if (strict && !match) throw new Error("discord trigger needs match: mention, dm, channel, keyword, reaction, or thread");
+    if (strict && match === "keyword" && !keyword) throw new Error("discord keyword match needs a keyword");
+    return {
+      kind: "listener",
+      source: "discord",
+      everyMinutes: every,
+      ...(match ? { match } : {}),
+      ...(channel ? { channel } : {}),
+      ...(match === "keyword" && keyword ? { keyword } : {}),
+      ...(match === "reaction" && emoji ? { emoji } : {}),
     };
   }
   const channel = parseSlackChannel(s.channel);
@@ -436,10 +501,52 @@ function parseListenerSchedule(s: Record<string, unknown>, strict: boolean): Rou
   };
 }
 
+const MAX_GROUP_CHILDREN = 8;
+
+function parseGroupSchedule(s: Record<string, unknown>, opts: { strictTimeZone?: boolean; strictListener?: boolean }): GroupSchedule {
+  const raw = s.anyOf ?? s.triggers ?? s.listeners;
+  if (!Array.isArray(raw)) throw new Error("grouped trigger needs anyOf: an array of listeners");
+  if (raw.length < 1) throw new Error("grouped trigger needs at least one listener");
+  if (raw.length > MAX_GROUP_CHILDREN) throw new Error(`grouped trigger is capped at ${MAX_GROUP_CHILDREN} listeners`);
+  const anyOf: ListenerSchedule[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") throw new Error("grouped trigger children must be listeners");
+    const child = item as Record<string, unknown>;
+    const kind = String(child.kind ?? "");
+    if (kind === "group" || kind === "cron" || kind === "interval" || kind === "daily" || kind === "weekdays") {
+      throw new Error("grouped trigger children must be github, slack, or discord listeners");
+    }
+    const parsed = parseListenerSchedule(child, opts.strictListener === true);
+    anyOf.push(parsed);
+  }
+  const everyMinutes = Number(s.everyMinutes);
+  const every = Number.isFinite(everyMinutes) && everyMinutes > 0 ? everyMinutes : 15;
+  return { kind: "group", anyOf, everyMinutes: every };
+}
+
 export function parseRoutineSchedule(raw: unknown, opts: { strictTimeZone?: boolean; strictListener?: boolean } = {}): RoutineSchedule {
   if (!raw || typeof raw !== "object") throw new Error("schedule required");
   const s = raw as Record<string, unknown>;
-  if (s.kind === "listener") return parseListenerSchedule(s, opts.strictListener === true);
+  if (s.kind === "listener" || s.kind === "github" || s.kind === "slack" || s.kind === "discord") {
+    return parseListenerSchedule(s, opts.strictListener === true);
+  }
+  if (s.kind === "group") return parseGroupSchedule(s, opts);
+  if (s.kind === "cron") {
+    if (s.clock === "interval" || (s.everyMinutes != null && s.time == null)) {
+      const everyMinutes = Number(s.everyMinutes);
+      if (!Number.isFinite(everyMinutes) || everyMinutes <= 0) throw new Error("invalid interval");
+      return { kind: "interval", everyMinutes };
+    }
+    const clockKind = s.clock === "weekdays" ? "weekdays" : "daily";
+    const time = String(s.time ?? "").slice(0, 5);
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error("invalid daily time");
+    let timeZone: string | undefined;
+    if (s.timeZone !== undefined && s.timeZone !== null && s.timeZone !== "") {
+      if (isValidTimeZone(s.timeZone)) timeZone = s.timeZone;
+      else if (opts.strictTimeZone) throw new Error("invalid time zone");
+    }
+    return { kind: clockKind, time, ...(timeZone ? { timeZone } : {}) };
+  }
   if (s.kind === "interval") {
     const everyMinutes = Number(s.everyMinutes);
     if (!Number.isFinite(everyMinutes) || everyMinutes <= 0) throw new Error("invalid interval");
