@@ -74,6 +74,24 @@ describe("bot record normalization", () => {
     expect(normalizeBot(baseBot)?.alwaysAllow).toBeUndefined();
   });
 
+  it("keeps full-autonomy and workflow fields only when valid", () => {
+    expect(normalizeBot({ ...baseBot, fullAutonomy: true })?.fullAutonomy).toBe(true);
+    expect(normalizeBot({ ...baseBot, fullAutonomy: "yes" } as unknown as Partial<BotRecord>)?.fullAutonomy).toBeUndefined();
+    expect(normalizeBot(baseBot)?.fullAutonomy).toBeUndefined();
+    const workflow = normalizeBot({
+      ...baseBot,
+      workflowStatus: "waiting",
+      workflowWaitingFor: [{ botId: "helper", name: "Helper" }, { botId: "", name: "Nope" }],
+      workflowStopReason: "  Full-autonomy is off — send a message to continue.  ",
+      workflowAutonomyHops: 2,
+    });
+    expect(workflow?.workflowStatus).toBe("waiting");
+    expect(workflow?.workflowWaitingFor).toEqual([{ botId: "helper", name: "Helper" }]);
+    expect(workflow?.workflowStopReason).toBe("Full-autonomy is off — send a message to continue.");
+    expect(workflow?.workflowAutonomyHops).toBe(2);
+    expect(normalizeBot({ ...baseBot, workflowStatus: "jogging" } as unknown as Partial<BotRecord>)?.workflowStatus).toBeUndefined();
+  });
+
   it("flips a crashed RUNNING record only when recovery is asked for", () => {
     const raw = { ...baseBot, busy: true, state: "RUNNING" };
     expect(normalizeBot(raw)).toMatchObject({ busy: true, state: "RUNNING" });

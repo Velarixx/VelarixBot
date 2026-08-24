@@ -253,6 +253,7 @@ describe("bots service", () => {
       { modelSelection: "gpt-5.6-terra" as unknown as { instanceId: string; model: string } },
       { modelSelection: { model: "x" } as unknown as { instanceId: string; model: string } },
       { alwaysAllow: "yes" as unknown as boolean },
+      { fullAutonomy: "yes" as unknown as boolean },
     ]) {
       expect(() => bots.patchBot(bot.id, bad)).toThrow(/invalid bot patch/);
     }

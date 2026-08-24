@@ -24,6 +24,10 @@ import {
   type QueuedPrompt,
 } from "@/lib/prompt-queue";
 import { advanceCursor, eventsUrl, INITIAL_CURSOR, shouldApplyFrame, type SseCursor } from "@/lib/sse-resume";
+import type { AgentTask } from "@/lib/agent-task";
+import type { WorkflowStatus, WorkflowWaitingFor } from "@/lib/workflow";
+
+export type { AgentTask } from "@/lib/agent-task";
 
 export type { QueuedPrompt };
 
@@ -58,6 +62,8 @@ export interface Message {
   at: number;
   from?: { botId: string; name: string; color?: MausColor };
   comm?: { groupId: string; withBotId: string; withName: string; withColor?: MausColor };
+  report?: { kind: "progress" | "blocker" | "completion" | "handoff"; fromBotId: string; taskId?: string };
+  task?: { id: string };
 }
 
 /** Sidebar A ⇄ B DM. Slim port — not a room/bulletin product. */
@@ -126,6 +132,12 @@ export interface Bot {
   skillId?: string;
   /** Other bots sharing this transcript (group mention / ask_bot). */
   threadParticipants?: string[];
+  /** User-controlled full-autonomy setting. Missing/false = off. */
+  fullAutonomy?: boolean;
+  workflowStatus?: WorkflowStatus;
+  workflowWaitingFor?: WorkflowWaitingFor[];
+  workflowStopReason?: string;
+  workflowAutonomyHops?: number;
   pinned?: boolean;
   hidden?: boolean;
   messages: Message[];
@@ -231,6 +243,8 @@ interface AppState {
   /** One create-bot modal. Plus / /new / empty-state open this; they do not POST. */
   createBotOpen: boolean;
   routines: Routine[];
+  tasks: AgentTask[];
+  selectedTaskId: string | null;
   /** in-flight assistant text per threadId (content.delta fold) */
   streaming: Record<string, string>;
   /** Unfiltered in-flight text retained while the visible projection hides
@@ -254,7 +268,9 @@ interface AppState {
 }
 
 type Action =
-  | { type: "hydrate"; bots: Bot[]; groups?: Group[] }
+  | { type: "hydrate"; bots: Bot[]; groups?: Group[]; tasks?: AgentTask[] }
+  | { type: "taskUpsert"; task: AgentTask }
+  | { type: "selectTask"; id: string | null }
   | { type: "selectGroup"; id: string }
   | { type: "groupUpsert"; group: Omit<Group, "messages"> & { messages?: Message[] } }
   | { type: "instances"; instances: InstanceInfo[] }
@@ -332,6 +348,7 @@ type Action =
           | "hidden"
           | "requireApproval"
           | "alwaysAllow"
+          | "fullAutonomy"
           | "enabledApps"
           | "enabledSkills"
           | "skillId"
@@ -374,7 +391,24 @@ export function reducer(state: AppState, action: Action): AppState {
         action.bots.some((b) => b.id === state.selectedId) && state.selectedId
           ? state.selectedId
           : (action.bots[0]?.id ?? "");
-      return { ...state, bots: action.bots, groups: action.groups ?? state.groups, selectedId };
+      return {
+        ...state,
+        bots: action.bots,
+        groups: action.groups ?? state.groups,
+        tasks: action.tasks ?? state.tasks,
+        selectedId,
+      };
+    }
+    case "selectTask":
+      return { ...state, selectedTaskId: action.id };
+    case "taskUpsert": {
+      const exists = state.tasks.some((task) => task.id === action.task.id);
+      return {
+        ...state,
+        tasks: exists
+          ? state.tasks.map((task) => (task.id === action.task.id ? action.task : task))
+          : [...state.tasks, action.task],
+      };
     }
     case "selectGroup":
       return {
@@ -723,6 +757,8 @@ export const initialState: AppState = {
   routineCreateBotId: null,
   createBotOpen: false,
   routines: [],
+  tasks: [],
+  selectedTaskId: null,
   streaming: {},
   streamingRaw: {},
   screens: {},
@@ -1036,7 +1072,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return api("/api/events/snapshot")
         .then((snap) => {
           if (!alive) return;
-          rawDispatch({ type: "hydrate", bots: snap.bots, groups: snap.groups ?? [] });
+          rawDispatch({
+            type: "hydrate",
+            bots: snap.bots,
+            groups: snap.groups ?? [],
+            tasks: Array.isArray(snap.tasks) ? snap.tasks : [],
+          });
           // SET (not advance): a resync is also the recovery from a
           // reset stream whose sequences restarted below our old cursor
           cursor = {
@@ -1155,6 +1196,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "routine.deleted":
           rawDispatch({ type: "routineDeleted", routineId: frame.routineId });
+          break;
+        case "task":
+          if (frame.task && typeof frame.task.id === "string") {
+            rawDispatch({ type: "taskUpsert", task: frame.task });
+          }
           break;
         // a key changed and the fleet hot-reloaded — refresh the picker so
         // newly available providers un-dim immediately

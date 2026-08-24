@@ -38,7 +38,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const patch = (
     p: Partial<
-      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "mascotPinned" | "iconShape" | "avatarNonce" | "avatarImageHash" | "requireApproval" | "alwaysAllow" | "enabledApps" | "enabledSkills" | "skillId">
+      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "mascotPinned" | "iconShape" | "avatarNonce" | "avatarImageHash" | "requireApproval" | "alwaysAllow" | "fullAutonomy" | "enabledApps" | "enabledSkills" | "skillId">
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   // Zero-key seeded re-roll: bump the persisted nonce and let the server
@@ -564,6 +564,35 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 })}
               </div>
             )}
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
+            <div>
+              <div className="text-[15px] font-medium text-ink">Full autonomy</div>
+              <div className="mt-0.5 text-[13px] text-ink-secondary">
+                When on, this lead continues planning, delegating, reviewing results, and advancing the
+                workflow until completion, a real blocker, or a configured safety boundary — without
+                routine progress prompts. Off by default. Safety-sensitive actions still respect
+                configured approval rules.
+              </div>
+            </div>
+            <button
+              role="switch"
+              aria-label="Full autonomy"
+              aria-checked={bot.fullAutonomy === true}
+              onClick={() => patch({ fullAutonomy: !bot.fullAutonomy })}
+              className={cn(
+                "relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors",
+                bot.fullAutonomy ? "bg-accent" : "bg-raised",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-[3px] size-5 rounded-full bg-white transition-all",
+                  bot.fullAutonomy ? "left-[21px]" : "left-[3px]",
+                )}
+              />
+            </button>
           </div>
 
           <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">

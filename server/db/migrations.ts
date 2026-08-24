@@ -731,6 +731,25 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 18,
+    name: "agent-tasks",
+    up(db) {
+      db.exec(`
+        CREATE TABLE agent_tasks(
+          id TEXT PRIMARY KEY,
+          assignee_bot_id TEXT NOT NULL,
+          from_bot_id TEXT NOT NULL,
+          source_thread_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          data TEXT NOT NULL
+        );
+        CREATE INDEX agent_tasks_assignee ON agent_tasks(assignee_bot_id, created_at);
+        CREATE INDEX agent_tasks_source ON agent_tasks(source_thread_id, created_at);
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

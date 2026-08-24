@@ -16,6 +16,7 @@ import {
   _pendingCount,
   _resetPending,
 } from "./delegations.ts";
+import { configureAgentTasks } from "./agent-tasks.ts";
 import { createRepositories, type Repositories } from "./repositories/index.ts";
 import { createBotsService, type BotsService } from "./services/bots.ts";
 import { createGroupsService, type GroupsService } from "./services/groups.ts";
@@ -38,6 +39,7 @@ describe("delegate_bot queue + visibility", () => {
     rmSync(DATA_DIR, { recursive: true, force: true });
     db = openDatabase(defaultDbPath());
     repos = createRepositories(db);
+    configureAgentTasks(repos.agentTasks);
     bots = createBotsService({ repos, defaultSelection: selection });
     groups = createGroupsService({ repos });
     from = bots.createBot();
@@ -57,6 +59,7 @@ describe("delegate_bot queue + visibility", () => {
 
   afterEach(() => {
     _resetPending();
+    configureAgentTasks(null);
     try {
       db.close();
     } catch {
@@ -114,6 +117,10 @@ describe("delegate_bot queue + visibility", () => {
     expect(bots.messagesFor(from.threadId).some((m) => m.tool?.name === "Delegated to @Helper: next step")).toBe(true);
     expect(bots.messagesFor(from.threadId).some((m) => m.tool?.name === "Messaged @Helper")).toBe(true);
     expect(bots.messagesFor(target.threadId).some((m) => m.tool?.name === "Message from @Chief")).toBe(true);
+    const assignment = bots.messagesFor(target.threadId).find((m) => m.text === "do this");
+    expect(assignment?.from?.name).toBe("Chief");
+    expect(assignment?.task?.id).toBeTruthy();
+    expect(assignment?.report?.kind).toBe("handoff");
 
     const channel = groups.dmGroup(from.id, target.id);
     expect(channel).toBeTruthy();

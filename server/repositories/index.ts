@@ -1,8 +1,10 @@
 // One factory: every repository over the same database handle, so
 // cross-repo operations (bot delete → thread + messages + events + runs)
 // can share transactions through SQLite itself.
+import type { AgentTasksStore } from "../agent-tasks.ts";
 import { collectAvatarHashes } from "../avatar-image.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
+import { createAgentTasksRepository } from "./agent-tasks.ts";
 import { createBotsRepository, type BotsRepository } from "./bots.ts";
 import { createComputerBindingsRepository, type ComputerBindingsRepository } from "./computer-bindings.ts";
 import { createDesktopAccessGrantsRepository, type DesktopAccessGrantsRepository } from "./desktop-access-grants.ts";
@@ -30,6 +32,7 @@ export interface Repositories {
   userWorkspaceBindings: UserWorkspaceBindingsRepository;
   snapshots: SnapshotsRepository;
   memoryRows: MemoryRowsStore;
+  agentTasks: AgentTasksStore;
   /** Delete a bot and everything hanging off it in ONE transaction:
    * routines (+ run history), the thread (messages + event log), the
    * computer binding, structured memory rows, and the bot row itself. */
@@ -49,6 +52,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
   const userWorkspaceBindings = createUserWorkspaceBindingsRepository(db);
   const snapshots = createSnapshotsRepository(db);
   const memoryRows = createMemoryRowsRepository(db);
+  const agentTasks = createAgentTasksRepository(db);
   const deleteBotRow = db.prepare("DELETE FROM bots WHERE id = ?");
 
   const deleteCascade = db.transaction((botId: string): { deleted: boolean; hashes: string[] } => {
@@ -57,6 +61,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     routines.deleteForBot(botId);
     computerBindings.delete(botId);
     memoryRows.deleteByBot(botId);
+    agentTasks.deleteForBot(botId);
     deleteBotRow.run(botId);
     const hashes = messages.deleteThreadRows(bot.threadId);
     return { deleted: true, hashes };
@@ -74,6 +79,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     userWorkspaceBindings,
     snapshots,
     memoryRows,
+    agentTasks,
     deleteBotCascade(botId) {
       const dying = collectAvatarHashes(bots.get(botId) ? [bots.get(botId)!] : []);
       const { deleted, hashes } = deleteCascade(botId);

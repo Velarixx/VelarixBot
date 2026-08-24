@@ -51,6 +51,7 @@ import { createSecurityAuditService } from "./services/security-audit.ts";
 import { createTeachService, type TeachService } from "./services/teach.ts";
 import { createTurnsService, type TurnsService } from "./services/turns.ts";
 import type { ModelSelection } from "./contracts.ts";
+import { configureAgentTasks } from "./agent-tasks.ts";
 import { configureMemoryStore } from "./memory.ts";
 import { getSkill, skillPrompt } from "./teach.ts";
 
@@ -161,6 +162,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
           now: () => clock.now(),
         };
   configureMemoryStore(repos.memoryRows);
+  configureAgentTasks(repos.agentTasks);
 
   // the hub's semantic frames are durable on the event log's "ui" stream
   // (P1.3): SSE id:/Last-Event-ID resume replays exactly the missed frames
@@ -304,7 +306,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // route order preserves the pre-refactor dispatch: internal comms first
   // (their own token), then the launch-token gate, then the public surface
   const desktopRoutes: RouteHandler[] = [
-    createEventsRoutes({ hub, bots, groups }),
+    createEventsRoutes({ hub, bots, groups, tasks: repos.agentTasks }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
     createBotsRoutes({

@@ -13,5 +13,13 @@ describe("coordinator agents prompt", () => {
     expect(prompt).toContain("delete_bot");
     expect(prompt).toContain("update_bot");
     expect(prompt).not.toMatch(/wait for the teammate's actual reply/i);
+    expect(prompt).not.toMatch(/Full-autonomy is on/i);
+  });
+
+  it("full-autonomy prompt is opt-in and still forbids routine progress prompts", () => {
+    const prompt = agentsCommsPrompt({ fullAutonomy: true });
+    expect(prompt).toMatch(/Full-autonomy is on/i);
+    expect(prompt).toMatch(/Do not ask the user for a routine progress prompt/i);
+    expect(prompt).toMatch(/Safety-sensitive actions still require configured approval/i);
   });
 });
