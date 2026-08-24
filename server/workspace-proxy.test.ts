@@ -99,6 +99,8 @@ describe("workspace-proxy MCP surface", () => {
       "run_skill",
       "attach_to_chat",
       "connect_app",
+      "list_approved_secrets",
+      "get_approved_secret",
     ]);
     const create = list.result.tools.find((t: { name: string }) => t.name === "create_routine");
     expect(Object.keys(create.inputSchema.properties)).toEqual(

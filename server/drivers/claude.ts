@@ -399,7 +399,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         args.push("--allowedTools", allowed.join(","));
       }
 
-      const env = claudeEnvironment();
+      const env = { ...claudeEnvironment({ ...process.env, ...input.environment }), ...turn.environment };
 
       const child = spawnCliHidden(config.cli, args, {
         cwd: turn.cwd ?? homedir(),

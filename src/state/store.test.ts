@@ -110,6 +110,27 @@ describe("composer prompt queue (store path)", () => {
   });
 });
 
+describe("per-bot Bitwarden allowlist", () => {
+  it("PATCHes only the selected bot — a second bot stays default-deny", () => {
+    let state = reducer(initialState, {
+      type: "hydrate",
+      bots: [
+        bot({ id: "bot-a", name: "Scout", bitwardenSecretIds: [] }),
+        bot({ id: "bot-b", name: "Helper", bitwardenSecretIds: ["sec-keep"] }),
+      ],
+    });
+    state = reducer(state, { type: "select", id: "bot-a" });
+    state = reducer(state, {
+      type: "updateBot",
+      botId: state.selectedId,
+      patch: { bitwardenSecretIds: ["sec-new"], bitwardenProjectIds: ["proj-1"] },
+    });
+    expect(state.bots.find((b) => b.id === "bot-a")?.bitwardenSecretIds).toEqual(["sec-new"]);
+    expect(state.bots.find((b) => b.id === "bot-a")?.bitwardenProjectIds).toEqual(["proj-1"]);
+    expect(state.bots.find((b) => b.id === "bot-b")?.bitwardenSecretIds).toEqual(["sec-keep"]);
+  });
+});
+
 describe("per-bot enabledApps (hub enable)", () => {
   it("PATCHes only the selected bot — a second bot's list is unchanged", () => {
     let state = reducer(initialState, {

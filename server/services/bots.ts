@@ -81,6 +81,8 @@ export function toPublicBot(bot: BotRecord, messages: Message[] = []): PublicBot
   if (bot.alwaysAllow !== undefined) pub.alwaysAllow = bot.alwaysAllow;
   if (bot.enabledApps !== undefined) pub.enabledApps = bot.enabledApps;
   if (bot.enabledSkills !== undefined) pub.enabledSkills = bot.enabledSkills;
+  if (bot.bitwardenSecretIds !== undefined) pub.bitwardenSecretIds = bot.bitwardenSecretIds;
+  if (bot.bitwardenProjectIds !== undefined) pub.bitwardenProjectIds = bot.bitwardenProjectIds;
   if (bot.skillId !== undefined) pub.skillId = bot.skillId;
   if (bot.notifyEvents !== undefined) pub.notifyEvents = bot.notifyEvents;
   if (bot.threadParticipants !== undefined) pub.threadParticipants = bot.threadParticipants;

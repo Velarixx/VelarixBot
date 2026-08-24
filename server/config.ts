@@ -47,6 +47,9 @@ export interface AppConfig {
     defaultBotId?: string;
     allowlist?: string[];
   };
+  /** Bitwarden Secrets Manager machine-account access token. Write-only.
+   * Optional identityUrl/apiUrl override US cloud (tests + self-host). */
+  bitwarden?: { accessToken?: string; identityUrl?: string; apiUrl?: string };
 
   instances?: InstanceConfigMap;
 
@@ -105,9 +108,10 @@ export const SECRET_FIELDS = [
   { section: "openrouter", prop: "key" },
   { section: "omnirouter", prop: "key" },
   { section: "telegram", prop: "token" },
+  { section: "bitwarden", prop: "accessToken" },
 ] as const;
 
-const CONFIG_SECTIONS = ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter", "telegram"] as const;
+const CONFIG_SECTIONS = ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter", "telegram", "bitwarden"] as const;
 
 export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};
@@ -124,6 +128,12 @@ export function loadConfig(): AppConfig {
   cfg.openai = { key: process.env.OPENAI_API_KEY, url: process.env.OPENAI_BASE_URL, ...cfg.openai };
   cfg.openrouter = { key: process.env.OPENROUTER_API_KEY, url: process.env.OPENROUTER_BASE_URL, ...cfg.openrouter };
   cfg.omnirouter = { key: process.env.OMNIROUTER_API_KEY, url: process.env.OMNIROUTER_BASE_URL, ...cfg.omnirouter };
+  cfg.bitwarden = {
+    accessToken: process.env.BWS_ACCESS_TOKEN,
+    identityUrl: process.env.BWS_IDENTITY_URL,
+    apiUrl: process.env.BWS_API_URL,
+    ...cfg.bitwarden,
+  };
   return cfg;
 }
 

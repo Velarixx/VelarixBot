@@ -29,6 +29,7 @@ import {
 import { clearUnattended, hopUnattended, isUnattended, markUnattended, configureUnattended } from "../unattended.ts";
 import * as composio from "../composio.ts";
 import { composioConfigured, composioSessionKey, ensureBotSession, sessionProxyEnv } from "../composio-sessions.ts";
+import { bitwardenConfigured, fetchApprovedSecretEnv, fetchApprovedSecrets } from "../bitwarden.ts";
 import type { ComputerProvider } from "../computer/provider.ts";
 import { createLeaseBroker, LEASE_WAIT_DEFAULT_MS, type LeaseBroker } from "../computer/leases.ts";
 import type { ComputerRegistry } from "../computer/registry.ts";
@@ -817,6 +818,34 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         }
         return { error: "attach_to_chat kind must be screenshot or file." };
       }
+      if (tool === "list_approved_secrets") {
+        if (!bitwardenConfigured(cfg)) {
+          return {
+            error: "Bitwarden Secrets Manager is not connected. The user must add a machine-account access token in App Settings. Never ask them to paste a token in chat.",
+          };
+        }
+        const approved = await fetchApprovedSecrets(cfg, bot);
+        const listed = approved.map((secret) => ({ id: secret.id, key: secret.key, ...(secret.projectId ? { projectId: secret.projectId } : {}) }));
+        return {
+          text: listed.length
+            ? `Approved secrets for this bot (names only): ${JSON.stringify(listed)}`
+            : "No Bitwarden secrets are approved for this bot. Default is none — the user must allow specific secret or project ids in Bot Settings.",
+        };
+      }
+      if (tool === "get_approved_secret") {
+        const id = String(args.id ?? args.secret_id ?? "").trim();
+        const key = String(args.key ?? "").trim();
+        if (!id && !key) return { error: "get_approved_secret needs id or key." };
+        if (!bitwardenConfigured(cfg)) {
+          return {
+            error: "Bitwarden Secrets Manager is not connected. The user must add a machine-account access token in App Settings. Never ask them to paste a token in chat.",
+          };
+        }
+        const approved = await fetchApprovedSecrets(cfg, bot);
+        const hit = approved.find((secret) => (id && secret.id === id) || (key && secret.key === key));
+        if (!hit) return { error: "that secret is not approved for this bot." };
+        return { text: hit.value };
+      }
       if (tool === "connect_app") {
         const slug = String(args.slug ?? "").trim().toLowerCase();
         if (!slug) return { error: "connect_app needs a catalog slug (e.g. github)." };
@@ -841,7 +870,9 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       return { error: `unknown workspace tool ${tool}` };
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      if (tool === "ask_secret" || /token|secret|password/i.test(message)) return { error: "couldn't complete that request" };
+      if (tool === "ask_secret" || tool === "get_approved_secret" || /token|secret|password/i.test(message)) {
+        return { error: "couldn't complete that request" };
+      }
       return { error: message };
     }
   }
@@ -1444,6 +1475,13 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           }
         }
         const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
+        // Same-tick sendTurn for fake/API instances (delegations drain).
+        // Only await Bitwarden when a token is configured AND this bot has
+        // an explicit allowlist — default-none stays synchronous.
+        const bitwarden =
+          bitwardenConfigured(cfg) && ((bot.bitwardenSecretIds?.length ?? 0) > 0 || (bot.bitwardenProjectIds?.length ?? 0) > 0)
+            ? await fetchApprovedSecretEnv(cfg, bot)
+            : { env: {}, keys: [] };
         if (bot.enabledApps?.length && composioSessionKey(cfg)) {
           const session = await ensureBotSession(cfg, bot.id, bot.enabledApps);
           if (session) {
@@ -1538,6 +1576,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           transcript,
           attachments: opts?.attachments,
           cwd: ensureBotWorkspace(bot.id),
+          ...(Object.keys(bitwarden.env).length ? { environment: bitwarden.env } : {}),
           system:
             persona +
             // 2026-08-18 [VERIFY]: #102 memoryPrompt used bumpUse: false.
@@ -1555,7 +1594,10 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
               ? " You have remember and recall tools. remember saves a lasting note for this bot (or the shared workspace). recall reads those notes. Prefer remember for durable facts instead of relying on chat history."
               : "") +
             (integrations.workspace
-              ? " Workspace tools: web_search and fetch_page look things up (you have no in-app browser). ask_choice asks the user a multiple-choice question. ask_secret asks for a password/code — the value never appears in chat; never ask them to paste a token in the transcript. create_routine schedules work (weekdays by default). A github listener needs one owner/name repo and an event list (token lives in App Settings). A slack listener needs a channel or DM plus mention|keyword|message, and connect_app first. save_skill / run_skill store and follow step recipes. attach_to_chat puts a computer screenshot or file into this thread. connect_app starts installing a catalog app (github, slack, …) via a user connect card."
+              ? " Workspace tools: web_search and fetch_page look things up (you have no in-app browser). ask_choice asks the user a multiple-choice question. ask_secret asks for a password/code — the value never appears in chat; never ask them to paste a token in the transcript. create_routine schedules work (weekdays by default). A github listener needs one owner/name repo and an event list (token lives in App Settings). A slack listener needs a channel or DM plus mention|keyword|message, and connect_app first. save_skill / run_skill store and follow step recipes. attach_to_chat puts a computer screenshot or file into this thread. connect_app starts installing a catalog app (github, slack, …) via a user connect card. list_approved_secrets / get_approved_secret read Bitwarden secrets the user explicitly allowed for this bot — never print those values."
+              : "") +
+            (bitwarden.keys.length
+              ? ` Approved Bitwarden secrets for this bot are in the process environment as ${bitwarden.keys.join(", ")}. Never print those values.`
               : "") +
             (tagged.length
               ? ` The user tagged ${tagged

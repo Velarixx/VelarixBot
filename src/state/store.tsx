@@ -129,6 +129,10 @@ export interface Bot {
   enabledApps?: string[];
   /** Taught skills this bot injects on every turn (library enable set). */
   enabledSkills?: string[];
+  /** Bitwarden secret ids this bot may receive. Empty/missing = none. */
+  bitwardenSecretIds?: string[];
+  /** Bitwarden project ids this bot may receive secrets from. Empty = none. */
+  bitwardenProjectIds?: string[];
   /** Legacy single attach. Empty enabledSkills + skillId set → [skillId]. */
   skillId?: string;
   /** Other bots sharing this transcript (group mention / ask_bot). */
@@ -154,6 +158,7 @@ export interface ConfigStatus {
   openrouter?: { configured: boolean };
   omnirouter?: { configured: boolean };
   telegram?: TelegramConfigStatus;
+  bitwarden?: { configured: boolean };
 }
 
 export type GithubListenerEvent =
@@ -354,6 +359,8 @@ type Action =
           | "enabledApps"
           | "enabledSkills"
           | "skillId"
+          | "bitwardenSecretIds"
+          | "bitwardenProjectIds"
         >
       >;
     };
@@ -1220,6 +1227,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               openrouter: frame.openrouter,
               omnirouter: frame.omnirouter,
               telegram: frame.telegram,
+              bitwarden: frame.bitwarden,
             },
           });
           api("/api/instances")

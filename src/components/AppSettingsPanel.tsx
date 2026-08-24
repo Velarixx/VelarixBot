@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { api, useStore, type ConfigStatus, type InstanceInfo } from "@/state/store";
 import { ApiKeyRow } from "./ApiKeys";
 import { TelegramSettings } from "./TelegramSettings";
+import { BITWARDEN_PATHS, type BitwardenHubStatus } from "@/lib/bitwarden";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
 
@@ -354,6 +355,73 @@ function UpdatesRow() {
   );
 }
 
+function BitwardenSecretsCard() {
+  const { dispatch } = useStore();
+  const [hub, setHub] = useState<BitwardenHubStatus | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  const refresh = () => {
+    api(BITWARDEN_PATHS.status)
+      .then((status: BitwardenHubStatus) => setHub(status))
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const disconnect = () => {
+    if (disconnecting) return;
+    setDisconnecting(true);
+    api(BITWARDEN_PATHS.disconnect, { method: "POST" })
+      .then((status: BitwardenHubStatus) => {
+        setHub(status);
+        return api("/api/config");
+      })
+      .then((config: ConfigStatus) => dispatch({ type: "configStatus", config }))
+      .catch(() => {})
+      .finally(() => setDisconnecting(false));
+  };
+
+  const status = hub?.status ?? (hub?.configured ? "error" : "disconnected");
+  const label = status === "connected" ? "Connected" : status === "error" ? "Error" : "Disconnected";
+  const dot =
+    status === "connected" ? "bg-success" : status === "error" ? "bg-danger" : "bg-raised-hover";
+
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center gap-2 text-[13px] text-ink-secondary">
+        <span className={cn("size-1.5 rounded-full", dot)} />
+        Bitwarden Secrets Manager
+        <span className={cn("text-[11px]", status === "connected" ? "text-success" : status === "error" ? "text-danger" : "text-ink-secondary")}>
+          {label}
+        </span>
+      </div>
+      <div className="text-[12px] leading-relaxed text-ink-secondary">
+        {hub?.error ? hub.error : hub?.nextStep ?? "Paste a machine-account access token. Agents only receive secrets you approve per bot."}
+      </div>
+      <div className="mt-3">
+        <ApiKeyRow
+          section="bitwarden"
+          label="Access token"
+          placeholder="0.…  machine account access token"
+          onSaved={() => refresh()}
+        />
+      </div>
+      {hub?.configured && (
+        <button
+          type="button"
+          onClick={disconnect}
+          disabled={disconnecting}
+          className="mt-2 text-[13px] text-danger hover:underline disabled:opacity-50"
+        >
+          Disconnect
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function AppSettingsPanel() {
   const { dispatch } = useStore();
 
@@ -399,6 +467,7 @@ export function AppSettingsPanel() {
             >
               Manage apps
             </button>
+            <BitwardenSecretsCard />
             <ApiKeyRow section="box" label="Box token" placeholder="Token from box.ascii.dev" />
             <SharedBoxRows />
             <ApiKeyRow

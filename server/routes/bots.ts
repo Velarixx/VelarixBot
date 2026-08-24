@@ -1,4 +1,5 @@
 // Bots CRUD (+ cards, per-bot memory, taught skills, teach sessions).
+import { parseBitwardenIdList } from "../bitwarden.ts";
 import { parseAllowedToolkits } from "../composio-filter.ts";
 import type { ComputerRegistry } from "../computer/registry.ts";
 import type { AppConfig } from "../config.ts";
@@ -306,11 +307,13 @@ export function createBotsRoutes(deps: {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: Record<string, unknown> = {};
-      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "mascotPinned", "iconShape", "avatarNonce", "avatarImageHash", "pinned", "hidden", "requireApproval", "alwaysAllow", "fullAutonomy", "enabledApps", "enabledSkills", "skillId", "threadParticipants"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "mascotPinned", "iconShape", "avatarNonce", "avatarImageHash", "pinned", "hidden", "requireApproval", "alwaysAllow", "fullAutonomy", "enabledApps", "enabledSkills", "skillId", "threadParticipants", "bitwardenSecretIds", "bitwardenProjectIds"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (body.avatarImageHash === null) patch.avatarImageHash = null;
       if (patch.enabledApps !== undefined) patch.enabledApps = parseAllowedToolkits(patch.enabledApps);
+      if (patch.bitwardenSecretIds !== undefined) patch.bitwardenSecretIds = parseBitwardenIdList(patch.bitwardenSecretIds);
+      if (patch.bitwardenProjectIds !== undefined) patch.bitwardenProjectIds = parseBitwardenIdList(patch.bitwardenProjectIds);
       // bot.computer is a provider BINDING — canonicalize (legacy "cloud" →
       // the bundled box binding) and reject anything not registered, so a
       // removed provider is an explicit 409, never a silent failover

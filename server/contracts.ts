@@ -146,6 +146,8 @@ export interface SendTurnInput {
   attachments?: Array<{ path: string; mime?: string }>;
   /** Per-bot override: still surface a permission card under provider full-auto. */
   requireApproval?: boolean;
+  /** Per-turn env merged after driver credential stripping (approved Bitwarden secrets). */
+  environment?: Record<string, string>;
 }
 
 export interface TurnStartResult {

@@ -53,11 +53,12 @@ describe("bots service", () => {
   it("publicBot allowlist omits resumeCursors and keeps public fields", () => {
     const bot = bots.createBot();
     bots.setResumeCursor(bot.id, "claude", "sess-must-not-leak");
-    bots.patchBot(bot.id, { enabledApps: ["gmail"], alwaysAllow: true });
+    bots.patchBot(bot.id, { enabledApps: ["gmail"], alwaysAllow: true, bitwardenSecretIds: ["sec-1"] });
     const pub = bots.publicBot(bot.id)!;
     expect(pub).not.toHaveProperty("resumeCursors");
     expect(JSON.stringify(pub)).not.toContain("sess-must-not-leak");
     expect(pub.enabledApps).toEqual(["gmail"]);
+    expect(pub.bitwardenSecretIds).toEqual(["sec-1"]);
     expect(pub.alwaysAllow).toBe(true);
     expect(pub.messages.length).toBeGreaterThan(0);
     expect(bots.bot(bot.id)?.resumeCursors).toEqual({ claude: "sess-must-not-leak" });

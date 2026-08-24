@@ -104,11 +104,15 @@ describe("bot record normalization", () => {
       notifyEvents: { "peer.reply": false, bogus: true, "turn.completed": "yes" },
       enabledApps: ["googledrive", "", 42],
       enabledSkills: ["skill-a", "", "skill-b"],
+      bitwardenSecretIds: ["sec-1", "", "sec-1"],
+      bitwardenProjectIds: ["proj-1"],
       threadParticipants: ["a", "b"],
     } as unknown as Partial<BotRecord>);
     expect(bot?.notifyEvents).toEqual({ "peer.reply": false });
     expect(bot?.enabledApps).toEqual(["googledrive", "42"]);
     expect(bot?.enabledSkills).toEqual(["skill-a", "skill-b"]);
+    expect(bot?.bitwardenSecretIds).toEqual(["sec-1", "sec-1"]);
+    expect(bot?.bitwardenProjectIds).toEqual(["proj-1"]);
     expect(bot?.threadParticipants).toEqual(["a", "b"]);
   });
 

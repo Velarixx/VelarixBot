@@ -236,7 +236,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         createdAt: new Date().toISOString(),
       });
 
-      const childEnv = () => {
+      const childEnv = (turnEnv?: Record<string, string>) => {
         const env: Record<string, string | undefined> = {
           ...process.env,
           ...input.environment,
@@ -244,6 +244,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         };
         applyAcpCredentialAllowlist(env, support.credentialEnv);
         support.transformEnv?.(env);
+        if (turnEnv) Object.assign(env, turnEnv);
         return env;
       };
 
@@ -274,7 +275,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         if (active.has(threadId)) throw new Error("a turn is already running on this thread");
         const turnId = newId();
         const cwd = turn.cwd ?? config.workspace ?? homedir();
-        const env = childEnv();
+        const env = childEnv(turn.environment);
         const mcpServers = acpMcpServers(turn);
 
         const child = spawnCliHidden(config.cli, support.spawnArgs(config, turn), {

@@ -21,6 +21,11 @@ import {
   publicSessions,
   revokeSession,
 } from "../composio-sessions.ts";
+import {
+  bitwardenStatus,
+  dropBitwardenSession,
+  publicBitwardenConfig,
+} from "../bitwarden.ts";
 import type { AppConfig } from "../config.ts";
 import { loadConfig, persistableFleet, saveConfig } from "../config.ts";
 import { MAX_DELEGATION_DEPTH, queueDelegation } from "../delegations.ts";
@@ -76,6 +81,7 @@ export function createIntegrationsRoutes(deps: {
       openrouter: { configured: Boolean(cfg.openrouter?.key) },
       omnirouter: { configured: Boolean(cfg.omnirouter?.key) },
       telegram: telegramStatus(),
+      bitwarden: publicBitwardenConfig(cfg),
     };
   }
 
@@ -409,7 +415,7 @@ export function createIntegrationsRoutes(deps: {
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch: Record<string, object> = {};
-      for (const key of ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter", "telegram"] as const) {
+      for (const key of ["xai", "composio", "box", "github", "openai", "openrouter", "omnirouter", "telegram", "bitwarden"] as const) {
         if (body[key] && typeof body[key] === "object") patch[key] = body[key];
       }
       if (!Object.keys(patch).length) {
@@ -451,6 +457,18 @@ export function createIntegrationsRoutes(deps: {
         }
         if (typeof t.defaultBotId === "string") t.defaultBotId = t.defaultBotId.trim();
       }
+      if (patch.bitwarden) {
+        const b = patch.bitwarden as Record<string, unknown>;
+        const bad =
+          (b.accessToken !== undefined && typeof b.accessToken !== "string" && "bitwarden.accessToken must be a string") ||
+          (b.identityUrl !== undefined && typeof b.identityUrl !== "string" && "bitwarden.identityUrl must be a string") ||
+          (b.apiUrl !== undefined && typeof b.apiUrl !== "string" && "bitwarden.apiUrl must be a string");
+        if (bad) {
+          json(res, 400, { error: bad });
+          return true;
+        }
+        dropBitwardenSession();
+      }
       await saveConfig(patch);
       Object.assign(cfg, loadConfig());
       telegram?.applyConfig();
@@ -458,6 +476,21 @@ export function createIntegrationsRoutes(deps: {
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       json(res, 200, status);
+      return true;
+    }
+
+    // ── Bitwarden Secrets Manager (optional; never required at boot) ──
+    if (method === "GET" && path === "/api/bitwarden") {
+      json(res, 200, await bitwardenStatus(cfg));
+      return true;
+    }
+    if (method === "POST" && path === "/api/bitwarden/disconnect") {
+      dropBitwardenSession();
+      await saveConfig({ bitwarden: { accessToken: "" } });
+      Object.assign(cfg, loadConfig());
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      json(res, 200, await bitwardenStatus(cfg));
       return true;
     }
 
