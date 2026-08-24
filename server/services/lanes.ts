@@ -171,7 +171,11 @@ export function createLaneScheduler(deps: {
 
   function persist(item: LaneItem, status: "queued" | "running" | "cancelled" | "done"): void {
     if (!item.idempotencyKey) return;
-    deps.keys.setStatus(item.idempotencyKey, status);
+    try {
+      deps.keys.setStatus(item.idempotencyKey, status);
+    } catch {
+      // a closed test database must not reject a settling dispatch
+    }
   }
 
   function rememberCancelled(item: LaneItem): void {

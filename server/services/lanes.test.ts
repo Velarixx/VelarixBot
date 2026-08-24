@@ -124,7 +124,11 @@ describe("lane scheduler (P6)", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    const snap = lanes.snapshot();
+    for (const item of [...snap.queued, ...snap.running]) {
+      await lanes.cancel({ workId: item.workId }).catch(() => {});
+    }
     try {
       db.close();
     } catch {
@@ -269,6 +273,7 @@ describe("lane scheduler (P6)", () => {
     expect(started).toHaveLength(1);
 
     finish("bot-a");
+    await first.settled;
     db.close();
     db = openDatabase(defaultDbPath());
     const restarted = createLaneScheduler({
