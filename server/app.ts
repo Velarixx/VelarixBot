@@ -25,8 +25,10 @@ import { OAuthTransactionStore } from "./oauth/transactions.ts";
 import { createProactive, type Proactive } from "./proactive.ts";
 import { UI_STREAM_ID } from "./repositories/event-log.ts";
 import type { Repositories } from "./repositories/index.ts";
+import { createChannelRegistry } from "./channels/registry.ts";
 import { createApprovalsRoutes } from "./routes/approvals.ts";
 import { createBotsRoutes } from "./routes/bots.ts";
+import { createChannelsRoutes } from "./routes/channels.ts";
 import { createComputersRoutes } from "./routes/computers.ts";
 import { json, type RouteCtx, type RouteHandler } from "./routes/context.ts";
 import { createDiagnosticsRoutes } from "./routes/diagnostics.ts";
@@ -40,6 +42,7 @@ import { createSaasDesktopAccessRoutes } from "./routes/saas-desktop-access.ts";
 import { createSessionRoutes } from "./routes/session.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
 import { createBotsService, projectPublicBotFrame, type BotsService } from "./services/bots.ts";
+import { createChannelsService, type ChannelsService } from "./services/channels.ts";
 import { createGroupsService, type GroupsService } from "./services/groups.ts";
 import { createDiagnosticsService } from "./services/diagnostics.ts";
 import { createDesktopAccessGrantService } from "./services/desktop-access-grants.ts";
@@ -110,6 +113,7 @@ export interface Application {
     teach: TeachService;
     proactive: Proactive;
     telegram: TelegramService;
+    channels: ChannelsService;
   };
 }
 
@@ -328,6 +332,16 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   integrationsRef = integrations;
   telegram.applyConfig();
 
+  // Channel connectors are in-memory this PR (no SQL, no live Gateway).
+  // Empty at boot — tests register the fake connector; Discord is a stub
+  // factory available to the registry, not auto-connected.
+  const channelRegistry = await createChannelRegistry();
+  const channels = createChannelsService({
+    registry: channelRegistry,
+    bus,
+    now: () => clock.now(),
+  });
+
   // route order preserves the pre-refactor dispatch: internal comms first
   // (their own token), then the launch-token gate, then the public surface
   const desktopRoutes: RouteHandler[] = [
@@ -348,6 +362,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     createTurnsRoutes({ turns }),
     createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
     createDiagnosticsRoutes({ diagnostics }),
+    createChannelsRoutes({ channels }),
     integrations.api,
     createComputersRoutes({
       bots,
@@ -457,6 +472,6 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       proactive.tick(now);
     },
     hub,
-    services: { bots, groups, turns, routines, teach, proactive, telegram },
+    services: { bots, groups, turns, routines, teach, proactive, telegram, channels },
   };
 }
