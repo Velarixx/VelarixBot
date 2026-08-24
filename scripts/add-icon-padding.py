@@ -23,11 +23,12 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 ICONSET = ROOT / "build" / "icon.iconset"
 ICON_1024 = ROOT / "build" / "icon-1024.png"
+APP_ICON = ROOT / "electron" / "resources" / "app-icon.png"
 ICNS = ROOT / "build" / "icon.icns"
 
-# 80% (10% margin/side) still read oversized vs macOS 26 neighbors
-# (Notes, VS Code). 70% is a tighter Apple-grid inset.
-TARGET_SCALE = 0.70
+# 80% then 70% still read oversized vs macOS 26 neighbors
+# (Notes, VS Code). 60% matches the Dock safe-area of those tiles.
+TARGET_SCALE = 0.60
 # Ignore near-transparent AA fringe when measuring content.
 ALPHA_THRESHOLD = 16
 
@@ -138,6 +139,8 @@ def main() -> None:
             add_padding(png)
     if ICON_1024.is_file():
         add_padding(ICON_1024)
+    if APP_ICON.is_file():
+        add_padding(APP_ICON)
     rebuild_icns(ICONSET, ICNS)
     print("done")
 

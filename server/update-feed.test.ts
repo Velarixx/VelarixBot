@@ -5,6 +5,7 @@ import {
   newestNewerRelease,
   NO_TOKEN_MESSAGE,
   pickAsset,
+  pickChecksumAsset,
   publicState,
   readGithubToken,
   tokenConfigured,
@@ -36,6 +37,10 @@ describe("update feed", () => {
     expect(pickAsset(newer, "darwin", "arm64")?.name).toContain("arm64.dmg");
     expect(pickAsset(newer, "darwin", "x64")?.name).toContain("x64.dmg");
     expect(pickAsset(newer, "win32", "x64")?.name).toMatch(/\.exe$/);
+    expect(pickChecksumAsset({ assets: [{ name: "SHA256SUMS.txt", url: "https://api.github.com/assets/sums" }] })?.name).toBe(
+      "SHA256SUMS.txt",
+    );
+    expect(pickChecksumAsset(newer)).toBeNull();
   });
 
   it("compares prerelease suffixes numerically so rc.10 is newer than rc.2", () => {

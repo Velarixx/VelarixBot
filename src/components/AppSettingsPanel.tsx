@@ -307,7 +307,9 @@ function UpdatesRow() {
         : s?.status === "downloading"
           ? `Downloading… ${Math.round(s.percent ?? 0)}%`
           : s?.status === "downloaded"
-            ? `${s.version} ready — restart to apply`
+            ? `${s.version} ready — install and restart`
+            : s?.status === "installing"
+              ? s.message ?? "Installing…"
             : s?.status === "error"
               ? `Check failed: ${s.message ?? "unknown error"}`
               : "You're on the latest version we know of.";
@@ -328,7 +330,14 @@ function UpdatesRow() {
             onClick={() => void updater.install()}
             className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white"
           >
-            Restart to update
+            Install and restart
+          </button>
+        ) : s?.status === "installing" ? (
+          <button
+            disabled
+            className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white opacity-40"
+          >
+            Installing…
           </button>
         ) : (
           <button

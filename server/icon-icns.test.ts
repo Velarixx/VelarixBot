@@ -8,6 +8,7 @@ const root = join(import.meta.dirname, "..");
 const ICNS = join(root, "build", "icon.icns");
 const SCRIPT = join(root, "scripts", "add-icon-padding.py");
 const SVG = join(root, "build", "icon.svg");
+const APP_ICON = join(root, "electron", "resources", "app-icon.png");
 /** git hash-object of the rc.4 icns that still looked oversized in the Dock. */
 const RC4_ICNS_BLOB = "760ebfdda80f51d5718e3c305699ff2d5cb9c224";
 
@@ -133,9 +134,9 @@ function opaqueScale(png: Buffer, alphaThreshold = 16): number {
 }
 
 describe("macOS Dock icon", () => {
-  it("uses a 70% Apple-grid inset and packs every iconset size into icns", () => {
+  it("uses a 60% Apple-grid inset and packs every iconset size into icns", () => {
     const script = readFileSync(SCRIPT, "utf8");
-    expect(script).toMatch(/TARGET_SCALE = 0\.70/);
+    expect(script).toMatch(/TARGET_SCALE = 0\.60/);
     expect(script).toContain('b"icp4"');
     expect(script).toContain('b"icp5"');
     expect(script).toContain('b"icp6"');
@@ -143,8 +144,8 @@ describe("macOS Dock icon", () => {
     expect(script).not.toMatch(/shell\s*=\s*True/);
 
     const svg = readFileSync(SVG, "utf8");
-    expect(svg).toMatch(/scale\(0\.7\)/);
-    expect(svg).toContain("translate(153.6 153.6)");
+    expect(svg).toMatch(/scale\(0\.6\)/);
+    expect(svg).toContain("translate(204.8 204.8)");
 
     const icns = readFileSync(ICNS);
     const types = icnsTypes(icns);
@@ -154,8 +155,12 @@ describe("macOS Dock icon", () => {
     }
 
     const scale = opaqueScale(icnsPng(icns, "ic10"));
-    expect(scale).toBeLessThanOrEqual(0.72);
-    expect(scale).toBeGreaterThan(0.62);
+    expect(scale).toBeLessThanOrEqual(0.62);
+    expect(scale).toBeGreaterThan(0.52);
+
+    // dock.setIcon uses this PNG at runtime and would undo icns padding
+    expect(opaqueScale(readFileSync(APP_ICON))).toBeLessThanOrEqual(0.62);
+    expect(opaqueScale(readFileSync(APP_ICON))).toBeGreaterThan(0.52);
 
     const blob = createHash("sha1")
       .update(Buffer.from(`blob ${icns.length}\0`))

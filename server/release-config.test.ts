@@ -73,5 +73,9 @@ describe("internal desktop releases", () => {
     expect(updater).toContain("releasesUrl");
     expect(updater).not.toContain("ghp_");
     expect(feed).toContain("Set a GitHub token");
+    expect(updater).toContain("SHA256SUMS");
+    expect(updater).toContain("ELECTRON_RUN_AS_NODE");
+    expect(updater).not.toContain("openPath");
+    expect(updater).not.toMatch(/shell:\s*true/);
   });
 });

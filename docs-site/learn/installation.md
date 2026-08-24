@@ -36,4 +36,4 @@ Bots run on agent CLIs you install and sign in separately: `claude`, `codex`, `g
 
 ## Updating
 
-The app checks the private release feed (App Settings → GitHub token) and updates in place from the update banner. Each release ships `SHA256SUMS.txt`; the in-app updater verifies before applying.
+The app checks the private release feed (App Settings → GitHub token) and updates in place from the update banner. Each release ships `SHA256SUMS.txt`; the in-app updater verifies the download, quits, and a helper replaces the installed app before relaunching. The UI reports success by reopening the new build, or an actionable error if install cannot finish.

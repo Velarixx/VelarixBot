@@ -71,6 +71,13 @@ export function mcpConnection({ mode, socketPath, mcpCommand, embedded }) {
   };
 }
 
+export function deferredCuaConnection() {
+  return {
+    mode: "deferred",
+    reason: "local computer starts when you use This Mac or This PC",
+  };
+}
+
 /**
  * Decide the cua-connection.json descriptor.
  * `socketAlive` and `startEmbedded` are injected so tests can fake the

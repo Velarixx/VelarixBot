@@ -56,8 +56,10 @@ mac:
   gatekeeperAssess: false
   notarize: false
   extendInfo:
-    NSMicrophoneUsageDescription: VelarixBot uses the microphone for voice dictation into the composer.
-    NSSpeechRecognitionUsageDescription: VelarixBot transcribes your voice on-device to type messages for you.
+    NSMicrophoneUsageDescription: VelarixBot uses the microphone only when you start voice dictation in the composer.
+    NSSpeechRecognitionUsageDescription: VelarixBot transcribes your voice on-device when you start dictation, so it can type the message for you.
+    NSAccessibilityUsageDescription: VelarixBot needs Accessibility when you ask a bot to control this Mac — clicks, typing, and window actions.
+    NSScreenCaptureUsageDescription: VelarixBot needs Screen Recording when you open This Mac or ask a bot to see the screen you told it to use.
 
 dmg:
   sign: false
