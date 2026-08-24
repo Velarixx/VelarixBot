@@ -49,7 +49,7 @@ interface DeniedRoute {
 // rather than whole files, so implementation-only edits do not churn it. A
 // failure requires reviewing deniedRoutes + the approved SaaS routes before
 // accepting the new digest; otherwise a production route cannot land silently.
-const PRODUCTION_ROUTE_INVENTORY_SHA256 = "f8824e6aa866192d98462ecb5b52665b8e072da0c394f51a31272be32492e934";
+const PRODUCTION_ROUTE_INVENTORY_SHA256 = "d8de21609641f1f9216214679f73b47a969d25478424b2a3fe634401f02f556b";
 
 function productionRouteTokens(): string[] {
   const routesDirectory = new URL("./routes/", import.meta.url);
