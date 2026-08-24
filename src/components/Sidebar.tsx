@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import {
   BellDot,
+  ChevronDown,
+  ChevronRight,
   ClipboardCopy,
   Copy,
   EyeOff,
@@ -20,7 +22,12 @@ import { BotFace } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
 import { formatCompactTokens, formatUsageCost, stateLabel, type BotState } from "@/lib/product";
-import { filterSidebarBots } from "@/lib/sidebar";
+import {
+  filterSidebarBots,
+  groupSidebarBotsByProject,
+  isProjectGroupExpanded,
+  toggleProjectGroupCollapsed,
+} from "@/lib/sidebar";
 
 const isElectron = navigator.userAgent.includes("Electron");
 
@@ -219,8 +226,10 @@ export function Sidebar() {
   const { state, dispatch } = useStore();
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [query, setQuery] = useState("");
+  const [collapsedProjects, setCollapsedProjects] = useState<string[]>([]);
 
   const visibleBots = filterSidebarBots(state.bots, query);
+  const projectGroups = groupSidebarBotsByProject(visibleBots);
 
   return (
     <aside
@@ -274,10 +283,46 @@ export function Sidebar() {
         >
           Conversations
         </h2>
-        <div className="flex flex-col gap-0.5">
-          {visibleBots.map((b) => (
-            <BotListItem key={b.id} bot={b} onMenu={setMenu} />
-          ))}
+        <div className="flex flex-col gap-1">
+          {projectGroups.map((group) => {
+            const expanded = isProjectGroupExpanded(collapsedProjects, group.key);
+            const panelId = `sidebar-project-${group.key || "unassigned"}`;
+            return (
+              <div key={group.key || "unassigned"} className="flex flex-col gap-0.5">
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  aria-controls={panelId}
+                  onClick={() => setCollapsedProjects((keys) => toggleProjectGroupCollapsed(keys, group.key))}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left hover:bg-raised/50"
+                >
+                  {expanded ? (
+                    <ChevronDown size={14} className="shrink-0 text-ink-secondary" />
+                  ) : (
+                    <ChevronRight size={14} className="shrink-0 text-ink-secondary" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-ink">{group.label}</span>
+                  <span className="shrink-0 text-[11px] text-ink-secondary">{group.agentCount}</span>
+                  {group.runningCount > 0 && (
+                    <span className="shrink-0 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-accent">
+                      {group.runningCount} running
+                    </span>
+                  )}
+                </button>
+                <div
+                  id={panelId}
+                  role="group"
+                  aria-label={group.label}
+                  hidden={!expanded}
+                  className={cn("flex flex-col gap-0.5", !expanded && "hidden")}
+                >
+                  {group.bots.map((b) => (
+                    <BotListItem key={b.id} bot={b} onMenu={setMenu} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
         {(() => {
           const q = query.trim().toLowerCase();

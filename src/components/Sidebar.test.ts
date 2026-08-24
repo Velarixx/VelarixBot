@@ -56,3 +56,36 @@ describe("conversation-first sidebar hierarchy", () => {
     expect(sidebar).toContain("group.unread &&");
   });
 });
+
+describe("project grouping in the agent list", () => {
+  it("groups the filtered list by the existing title association", () => {
+    expect(sidebar).toContain("groupSidebarBotsByProject(visibleBots)");
+    expect(sidebar).toContain("group.label");
+    expect(sidebar).toContain("group.agentCount");
+    expect(sidebar).toContain("group.runningCount");
+    expect(sidebar).toContain('group.key || "unassigned"');
+  });
+
+  it("keeps collapse state on the header and agents mounted for accessibility", () => {
+    expect(sidebar).toContain("aria-expanded={expanded}");
+    expect(sidebar).toContain("aria-controls={panelId}");
+    expect(sidebar).toContain("hidden={!expanded}");
+    expect(sidebar).toContain('!expanded && "hidden"');
+    expect(sidebar).toContain("toggleProjectGroupCollapsed(keys, group.key)");
+    expect(sidebar).toContain("isProjectGroupExpanded(collapsedProjects, group.key)");
+    expect(sidebar).toContain("<BotListItem key={b.id} bot={b} onMenu={setMenu} />");
+  });
+
+  it("keeps per-agent status and controls inside each grouped section", () => {
+    const header = sidebar.indexOf("projectGroups.map");
+    const item = sidebar.indexOf("function BotListItem");
+    const status = sidebar.indexOf("stateLabel(bot.state ?? \"IDLE\")");
+    const select = sidebar.indexOf('dispatch({ type: "select", id: bot.id })');
+    const menu = sidebar.indexOf("onContextMenu");
+    expect([header, item, status, select, menu].every((index) => index >= 0)).toBe(true);
+    expect(item).toBeLessThan(header);
+    expect(sidebar).toContain("stateTone[bot.state ?? \"IDLE\"]");
+    expect(sidebar).toContain('dispatch({ type: "updateBot", botId: bot.id, patch: { pinned: !bot.pinned } })');
+    expect(sidebar).toContain('dispatch({ type: "deleteBot", botId: bot.id })');
+  });
+});
