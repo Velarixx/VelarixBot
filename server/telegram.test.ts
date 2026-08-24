@@ -12,6 +12,7 @@ import {
   createTelegramService,
   isTelegramAuthorized,
   parseAllowlist,
+  prepareTelegramSend,
   TELEGRAM_COPY,
   telegramSafeCommand,
   telegramSafeText,
@@ -58,6 +59,34 @@ describe("telegram allowlist + redaction helpers", () => {
     expect(isTelegramAuthorized(["1"], { userId: "1", chatId: "1" })).toBe(true);
     expect(isTelegramAuthorized(["@Ada"], { userId: "9", chatId: "9", username: "ada" })).toBe(true);
     expect(isTelegramAuthorized(["9"], { userId: "1", chatId: "1" })).toBe(false);
+  });
+
+  it("rejects oversize and over-count attachments on the send path", () => {
+    const tooBig = prepareTelegramSend({
+      text: "hold",
+      attachments: [{ name: "huge.bin", sizeBytes: 51 * 1024 * 1024 }],
+    });
+    expect(tooBig.ok).toBe(false);
+    if (tooBig.ok) throw new Error("expected reject");
+    expect(tooBig.error).toMatch(/byte limit/);
+
+    const tooMany = prepareTelegramSend({
+      text: "hold",
+      attachments: Array.from({ length: 11 }, (_, i) => ({ name: `n${i}.txt`, sizeBytes: 1 })),
+    });
+    expect(tooMany.ok).toBe(false);
+    if (tooMany.ok) throw new Error("expected reject");
+    expect(tooMany.error).toMatch(/at most 10/);
+
+    const ok = prepareTelegramSend({
+      text: "hold",
+      attachments: [{ name: "note.txt", mime: "text/plain", sizeBytes: 12 }],
+    });
+    expect(ok).toEqual({
+      ok: true,
+      text: "hold",
+      attachments: [{ name: "note.txt", mime: "text/plain", sizeBytes: 12 }],
+    });
   });
 
   it("redacts secrets, credentials, Telegram tokens, and command data before send", () => {

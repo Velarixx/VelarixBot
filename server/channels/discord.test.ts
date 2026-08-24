@@ -225,6 +225,15 @@ describe("discord channel connector", () => {
     expect(tooBig.state).toBe("failed");
     expect(tooBig.error).toMatch(/byte limit/);
 
+    const tooMany = await connector.send({
+      connectorId: "discord",
+      address,
+      text: "hold",
+      attachments: Array.from({ length: 11 }, (_, i) => ({ id: `n${i}`, name: `n${i}.txt`, sizeBytes: 1 })),
+    });
+    expect(tooMany.state).toBe("failed");
+    expect(tooMany.error).toMatch(/at most 10/);
+
     const long = `${"x".repeat(2001)}`;
     const sent = await connector.send({ connectorId: "discord", address, text: long, replyToId: "prior" });
     expect(sent.state).toBe("sent");

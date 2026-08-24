@@ -1,6 +1,7 @@
 // In-process fake channel connector. Zero network. Powers the connector
 // conformance suite and service tests. Not registered at boot — tests
 // construct it (or load kind "fake" through the registry).
+import { enforceChannelUploadLimits } from "../attachments/channel-limits.ts";
 import { newId } from "../contracts.ts";
 import {
   emptyRateLimit,
@@ -241,7 +242,20 @@ export function createFakeChannelConnector(
         throw new Error("fake channel: outbound address is not a fake address for this connector");
       }
       const outboundId = newId();
-      return deliver(outboundId, message);
+      const bounds = enforceChannelUploadLimits("fake", message.attachments);
+      if (!bounds.ok) {
+        const retry: ChannelRetryState = {
+          attempts: 1,
+          maxAttempts,
+          retryable: false,
+          lastError: bounds.error,
+        };
+        const receipt = receiptFor(outboundId, "failed", retry, { error: bounds.error });
+        outbound.set(outboundId, { message, receipt });
+        emit({ type: "receipt", receipt });
+        return receipt;
+      }
+      return deliver(outboundId, { ...message, attachments: bounds.attachments });
     },
 
     async react(input) {

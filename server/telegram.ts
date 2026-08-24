@@ -2,6 +2,10 @@
 // (no webhook, no cloud relay). Token lives in the SecretStore. Empty
 // allowlist denies everyone. Outbound text always goes through redaction.
 import { redactCommand } from "./activity-status.ts";
+import {
+  enforceChannelUploadLimits,
+  type ChannelAttachmentCandidate,
+} from "./attachments/channel-limits.ts";
 import type { AppConfig } from "./config.ts";
 import { redactSecrets } from "./redact-text.ts";
 import type { BotsService } from "./services/bots.ts";
@@ -108,6 +112,23 @@ export function isTelegramAuthorized(allowlist: string[], identity: TelegramIden
 
 export function telegramSafeText(text: string): string {
   return redactSecrets(String(text ?? "")).slice(0, MAX_TELEGRAM_TEXT);
+}
+
+export function enforceTelegramAttachmentBounds(
+  attachments: ChannelAttachmentCandidate[] | undefined,
+  limits: { maxCount?: number; maxBytes?: number } = {},
+) {
+  return enforceChannelUploadLimits("telegram", attachments, limits);
+}
+
+/** Send-path gate: redact text and reject oversize/count before Telegram I/O. */
+export function prepareTelegramSend(input: {
+  text: string;
+  attachments?: ChannelAttachmentCandidate[];
+}): { ok: true; text: string; attachments: ChannelAttachmentCandidate[] } | { ok: false; error: string } {
+  const bounds = enforceTelegramAttachmentBounds(input.attachments);
+  if (!bounds.ok) return bounds;
+  return { ok: true, text: telegramSafeText(input.text), attachments: bounds.attachments };
 }
 
 export function telegramSafeCommand(command: string): string {
@@ -246,12 +267,12 @@ export function createTelegramService(deps: {
     return enabled && Boolean(token);
   }
 
-  async function sendSafe(chatId: string, text: string): Promise<void> {
+  async function sendSafe(chatId: string, text: string, attachments?: ChannelAttachmentCandidate[]): Promise<void> {
     const { token } = settings();
     if (!token || !isLive()) return;
-    const safe = telegramSafeText(text);
-    if (!safe) return;
-    await deps.api.sendMessage(token, chatId, safe);
+    const prepared = prepareTelegramSend({ text, attachments });
+    if (!prepared.ok || !prepared.text) return;
+    await deps.api.sendMessage(token, chatId, prepared.text);
   }
 
   function resolveAgent(): { id: string; name: string; threadId: string } | null {

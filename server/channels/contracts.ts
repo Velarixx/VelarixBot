@@ -5,8 +5,9 @@
 // messages, attachment metadata, reactions, sender identities, delivery
 // receipts, and retry/rate-limit bookkeeping.
 //
-// This file is contracts only. No live Gateway, no attachment-policy
-// engine, no routine triggers, no MCP, no scheduler, no request lineage.
+// This file is contracts only. Attachment policy lives in
+// server/attachments/. No live Gateway, no routine triggers, no MCP,
+// no scheduler, no request lineage.
 //
 // P0.1 pin: external channel events NEVER inherit standing approvals.
 // An inbound event does not auto-resolve Allow-once, Always-allow, an
@@ -49,7 +50,7 @@ export interface ChannelIdentity {
   bot?: boolean;
 }
 
-// ── attachments (metadata only — policy is a later priority) ───────────
+// ── attachments (metadata on the wire; policy in server/attachments/) ──
 
 export interface ChannelAttachmentMeta {
   id: string;
