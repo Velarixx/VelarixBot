@@ -285,7 +285,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const mcpOverlay = Object.keys(mcpServersConfig).length ? { mcp_servers: mcpServersConfig } : null;
 
       const workspace = turn.cwd ?? ensureBotWorkspace("codex");
-      const env = codexEnvironment();
+      const env = { ...codexEnvironment({ ...process.env, ...input.environment }), ...turn.environment };
 
       const child = spawnCliHidden(config.cli, ["app-server"], {
         cwd: workspace,

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronLeft, Trash2, X } from "lucide-react";
 import { api, useStore, type Bot, type Skill } from "@/state/store";
 import { CONNECTOR_PATHS, enabledAppSlugs, toggleEnabledApp } from "@/lib/apps";
+import { BITWARDEN_PATHS, bitwardenIds, toggleBitwardenId, type BitwardenHubStatus } from "@/lib/bitwarden";
 import { enabledSkillIds, toggleSkillId } from "@/lib/skills";
 import { BotFace, MausAvatar } from "./Avatar";
 import {
@@ -38,7 +39,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const patch = (
     p: Partial<
-      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "mascotPinned" | "iconShape" | "avatarNonce" | "avatarImageHash" | "requireApproval" | "alwaysAllow" | "fullAutonomy" | "enabledApps" | "enabledSkills" | "skillId">
+      Pick<Bot, "name" | "title" | "description" | "notifications" | "notifyEvents" | "computer" | "color" | "mascotExpression" | "mascotPinned" | "iconShape" | "avatarNonce" | "avatarImageHash" | "requireApproval" | "alwaysAllow" | "fullAutonomy" | "enabledApps" | "enabledSkills" | "skillId" | "bitwardenSecretIds" | "bitwardenProjectIds">
     >,
   ) => dispatch({ type: "updateBot", botId: bot.id, patch: p });
   // Zero-key seeded re-roll: bump the persisted nonce and let the server
@@ -57,6 +58,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const activeState = stateForBot(bot);
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const [apps, setApps] = useState<Array<{ slug: string; label: string }>>([]);
+  const [bitwarden, setBitwarden] = useState<BitwardenHubStatus | null>(null);
   const [rules, setRules] = useState<
     Array<{ id: string; tool: string; pattern: string; action: "allow" | "deny"; disabled?: boolean; quarantined?: boolean }>
   >([]);
@@ -88,6 +90,19 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    api(BITWARDEN_PATHS.status)
+      .then((status: BitwardenHubStatus) => {
+        if (!alive) return;
+        setBitwarden(status);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [bot.id]);
 
   useEffect(() => {
     let alive = true;
@@ -138,6 +153,14 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 
   const toggleApp = (slug: string) => {
     patch({ enabledApps: toggleEnabledApp(enabledAppSlugs(bot), slug) });
+  };
+
+  const toggleBitwardenSecret = (id: string) => {
+    patch({ bitwardenSecretIds: toggleBitwardenId(bot.bitwardenSecretIds, id) });
+  };
+
+  const toggleBitwardenProject = (id: string) => {
+    patch({ bitwardenProjectIds: toggleBitwardenId(bot.bitwardenProjectIds, id) });
   };
 
   const openAppsHub = () => {
@@ -753,6 +776,94 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                         aria-checked={on}
                         aria-label={`${on ? "Disable" : "Enable"} ${app.label}`}
                         onClick={() => toggleApp(app.slug)}
+                        className={cn(
+                          "relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors",
+                          on ? "bg-accent" : "bg-raised",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "absolute top-[3px] size-4 rounded-full bg-white transition-all",
+                            on ? "left-[17px]" : "left-[3px]",
+                          )}
+                        />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-xl bg-card p-4">
+            <div className="text-[15px] font-medium text-ink">Bitwarden secrets this bot may use</div>
+            <div className="mt-0.5 text-[13px] text-ink-secondary">
+              Explicit allowlist of secret and project ids. Default is none. Values never appear here.
+            </div>
+            {!bitwarden?.configured || bitwarden.status !== "connected" ? (
+              <div className="mt-3 text-[12px] text-ink-secondary">
+                {bitwarden?.status === "error"
+                  ? bitwarden.nextStep
+                  : "Connect Bitwarden Secrets Manager in App Settings first."}
+              </div>
+            ) : bitwarden.secrets.length === 0 && bitwarden.projects.length === 0 ? (
+              <div className="mt-3 text-[12px] text-ink-secondary">
+                No secrets or projects on this machine account yet.
+              </div>
+            ) : (
+              <div className="mt-3 max-h-56 overflow-y-auto rounded-lg border border-hairline/40">
+                {bitwarden.projects.map((project, i) => {
+                  const on = bitwardenIds(bot.bitwardenProjectIds).includes(project.id);
+                  return (
+                    <div
+                      key={`project-${project.id}`}
+                      className={cn("flex items-center justify-between gap-3 px-3 py-2", i > 0 && "border-t border-hairline/40")}
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-[13px] text-ink">{project.name}</div>
+                        <div className="truncate text-[12px] text-ink-secondary">Project</div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={on}
+                        aria-label={`${on ? "Disable" : "Enable"} Bitwarden project ${project.name}`}
+                        onClick={() => toggleBitwardenProject(project.id)}
+                        className={cn(
+                          "relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors",
+                          on ? "bg-accent" : "bg-raised",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "absolute top-[3px] size-4 rounded-full bg-white transition-all",
+                            on ? "left-[17px]" : "left-[3px]",
+                          )}
+                        />
+                      </button>
+                    </div>
+                  );
+                })}
+                {bitwarden.secrets.map((secret, i) => {
+                  const on = bitwardenIds(bot.bitwardenSecretIds).includes(secret.id);
+                  return (
+                    <div
+                      key={`secret-${secret.id}`}
+                      className={cn(
+                        "flex items-center justify-between gap-3 px-3 py-2",
+                        (i > 0 || bitwarden.projects.length > 0) && "border-t border-hairline/40",
+                      )}
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-[13px] text-ink">{secret.key}</div>
+                        <div className="truncate text-[12px] text-ink-secondary">Secret</div>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={on}
+                        aria-label={`${on ? "Disable" : "Enable"} Bitwarden secret ${secret.key}`}
+                        onClick={() => toggleBitwardenSecret(secret.id)}
                         className={cn(
                           "relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors",
                           on ? "bg-accent" : "bg-raised",

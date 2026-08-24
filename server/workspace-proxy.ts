@@ -128,6 +128,24 @@ const TOOLS = [
       required: ["slug"],
     },
   },
+  {
+    name: "list_approved_secrets",
+    description:
+      "List Bitwarden Secrets Manager secret ids and names approved for this bot. Returns names only — never values. Empty means none are approved.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_approved_secret",
+    description:
+      "Return one Bitwarden secret value that the user explicitly approved for this bot. Never print the value in chat, logs, or command previews.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Secret id." },
+        key: { type: "string", description: "Secret name, if id is unknown." },
+      },
+    },
+  },
 ];
 
 type Json = Record<string, unknown>;

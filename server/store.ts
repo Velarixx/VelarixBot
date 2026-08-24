@@ -128,6 +128,10 @@ export interface BotRecord {
   /** Taught skills this bot injects on every turn. Library is cross-bot;
    * this list is the per-bot enable set (same shape as enabledApps). */
   enabledSkills?: string[];
+  /** Bitwarden secret ids this bot may receive at execution time. Empty = none. */
+  bitwardenSecretIds?: string[];
+  /** Bitwarden project ids this bot may receive secrets from. Empty = none. */
+  bitwardenProjectIds?: string[];
   /** Legacy single attach. Empty enabledSkills + skillId set → [skillId]. */
   skillId?: string;
   /** Per-event notification overrides. Missing keys default on when `notifications` is on. */
@@ -258,6 +262,8 @@ export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } 
     ...(b.alwaysAllow === true ? { alwaysAllow: true } : {}),
     ...(validStringList(b.enabledApps) ? { enabledApps: validStringList(b.enabledApps) } : {}),
     ...(validStringList(b.enabledSkills) ? { enabledSkills: validStringList(b.enabledSkills) } : {}),
+    ...(validStringList(b.bitwardenSecretIds) ? { bitwardenSecretIds: validStringList(b.bitwardenSecretIds) } : {}),
+    ...(validStringList(b.bitwardenProjectIds) ? { bitwardenProjectIds: validStringList(b.bitwardenProjectIds) } : {}),
     ...(typeof b.skillId === "string" && b.skillId.trim() ? { skillId: b.skillId.trim() } : {}),
     ...(validNotifyEvents(b.notifyEvents) ? { notifyEvents: validNotifyEvents(b.notifyEvents) } : {}),
     ...(validStringList(b.threadParticipants) ? { threadParticipants: validStringList(b.threadParticipants) } : {}),

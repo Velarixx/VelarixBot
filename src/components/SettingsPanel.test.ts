@@ -64,6 +64,19 @@ describe("Settings Apps card stays on the same hub model", () => {
     expect(keys).not.toMatch(/apiKeyConfigured.*value/);
   });
 
+  it("exposes Bitwarden Secrets Manager in App Settings and a per-bot allowlist", () => {
+    expect(appSettings).toContain("Bitwarden Secrets Manager");
+    expect(appSettings).toContain("BITWARDEN_PATHS");
+    expect(appSettings).toContain("Disconnect");
+    expect(keys).toContain("bitwarden");
+    expect(keys).toContain("accessToken");
+    expect(settings).toContain("Bitwarden secrets this bot may use");
+    expect(settings).toContain("bitwardenSecretIds");
+    expect(settings).toContain("bitwardenProjectIds");
+    expect(settings).toContain("Default is none");
+    expect(settings).not.toMatch(/bitwarden.*value/i);
+  });
+
   it("backup copy states every covered domain and withholds Verified unless complete", () => {
     expect(appSettings).toContain("approval rules");
     expect(appSettings).toContain("skills");

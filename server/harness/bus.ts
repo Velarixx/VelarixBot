@@ -9,6 +9,7 @@ import { join } from "node:path";
 
 import { EVENTS_DIR } from "../config.ts";
 import type { ProviderInstance, RuntimeEvent, RuntimeEventListener } from "../contracts.ts";
+import { redactRegisteredSecrets } from "../redact-text.ts";
 
 export class EventBus {
   private listeners = new Set<RuntimeEventListener>();
@@ -30,14 +31,15 @@ export class EventBus {
   }
 
   publish(event: RuntimeEvent) {
+    const safe = redactEvent(event);
     try {
-      appendFileSync(join(EVENTS_DIR, `${event.threadId}.ndjson`), JSON.stringify(event) + "\n");
+      appendFileSync(join(EVENTS_DIR, `${safe.threadId}.ndjson`), JSON.stringify(safe) + "\n");
     } catch {
       /* logging must never take down the stream */
     }
     for (const listener of [...this.listeners]) {
       try {
-        listener(event);
+        listener(safe);
       } catch (e) {
         console.error("bus: listener threw", e);
       }
@@ -52,4 +54,19 @@ export class EventBus {
   detachAll() {
     for (const unsub of this.unsubscribes.splice(0)) unsub();
   }
+}
+
+function redactEvent(event: RuntimeEvent): RuntimeEvent {
+  return walk(event) as RuntimeEvent;
+}
+
+function walk(value: unknown): unknown {
+  if (typeof value === "string") return redactRegisteredSecrets(value);
+  if (Array.isArray(value)) return value.map(walk);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) out[key] = walk(item);
+    return out;
+  }
+  return value;
 }
