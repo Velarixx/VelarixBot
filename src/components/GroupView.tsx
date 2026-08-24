@@ -1,10 +1,27 @@
 // Slim A ⇄ B DM view. Renders the mirrored ask_bot / delegate_bot
 // exchange. Not a room, bulletin, or voice product.
 import { useEffect, useRef, useState } from "react";
-import { ArrowDown, Check, Loader2, X } from "lucide-react";
-import { useStore, formatTime, type Group, type Message } from "@/state/store";
+import { ArrowDown } from "lucide-react";
+import { useStore, formatTime, type Group } from "@/state/store";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { ActivityChip } from "./ActivityChip";
+import { UserAttachments } from "./UserAttachments";
+import { splitAttachedFiles } from "@/lib/chat-message";
 import { cn } from "@/lib/cn";
+
+function GroupUserText({ text }: { text: string }) {
+  const { body, paths } = splitAttachedFiles(text);
+  return (
+    <>
+      {body ? (
+        <div className="min-w-0 overflow-hidden whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+          {body}
+        </div>
+      ) : null}
+      <UserAttachments paths={paths} />
+    </>
+  );
+}
 
 function dayLabel(at: number): string {
   const d = new Date(at);
@@ -14,31 +31,6 @@ function dayLabel(at: number): string {
   if (diffDays === 0) return "Today";
   if (diffDays === 1) return "Yesterday";
   return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
-}
-
-function ActivityChip({ message }: { message: Message }) {
-  const tool = message.tool;
-  if (!tool) return null;
-  const failed = tool.ok === false;
-  return (
-    <div className="flex justify-start">
-      <div
-        className={cn(
-          "flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px]",
-          failed ? "text-danger" : "text-ink-secondary",
-        )}
-      >
-        {tool.ok === undefined ? (
-          <Loader2 size={13} className="animate-spin" />
-        ) : failed ? (
-          <X size={13} />
-        ) : (
-          <Check size={13} className="text-success" />
-        )}
-        <span className="max-w-[480px] truncate font-mono">{tool.name}</span>
-      </div>
-    </div>
-  );
 }
 
 export function GroupView({ group }: { group: Group }) {
@@ -80,7 +72,7 @@ export function GroupView({ group }: { group: Group }) {
 
       <div
         ref={scrollRef}
-        className="min-h-0 flex-1 overflow-y-auto px-5 pt-4"
+        className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-5 pt-4"
         onWheel={(e) => {
           if (e.deltaY < 0) setFollow(false);
           else if (atEnd()) setFollow(true);
@@ -89,7 +81,7 @@ export function GroupView({ group }: { group: Group }) {
           if (!follow && atEnd()) setFollow(true);
         }}
       >
-        <div className="mx-auto flex max-w-[900px] flex-col gap-3 pb-8">
+        <div className="mx-auto flex min-w-0 max-w-[900px] flex-col gap-3 pb-8">
           {first && (
             <div className="py-3 text-center text-[13px] text-ink-secondary">
               {dayLabel(first.at)} {formatTime(first.at)}
@@ -105,24 +97,24 @@ export function GroupView({ group }: { group: Group }) {
             if (m.kind !== "text" || !m.text) return null;
             const user = m.role === "user";
             return (
-              <div key={m.id} className={cn("flex w-full flex-col", user ? "items-end" : "items-start")}>
+              <div key={m.id} className={cn("flex w-full min-w-0 flex-col", user ? "items-end" : "items-start")}>
                 {!user && m.from && (
                   <div className="mb-1 px-1 text-[12px] font-medium text-ink-secondary">{m.from.name}</div>
                 )}
                 <div
                   className={cn(
-                    "max-w-[70%] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
-                    user ? "whitespace-pre-wrap bg-bubble-user text-ink" : "bg-card text-ink",
+                    "min-w-0 max-w-[70%] overflow-hidden rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
+                    user ? "bg-bubble-user text-ink" : "bg-card text-ink",
                   )}
                 >
-                  {user ? m.text : <ChatMarkdown text={m.text} />}
+                  {user ? <GroupUserText text={m.text} /> : <ChatMarkdown text={m.text} />}
                 </div>
               </div>
             );
           })}
           {streaming && (
             <div className="flex w-full justify-start">
-              <div className="max-w-[70%] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+              <div className="min-w-0 max-w-[70%] overflow-hidden rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
                 <ChatMarkdown text={streaming} streaming />
               </div>
             </div>

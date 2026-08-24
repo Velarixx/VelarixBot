@@ -137,6 +137,43 @@ describe("P1.3 resumable SSE against the real server", () => {
     after.close();
   });
 
+  it("reload reconstructs settled activity chips; a later step cannot leave an earlier one spinning", async () => {
+    const bot = await addBot("ActivityReload");
+    const live = await connectSse(h.base, h.token);
+    await h.api("POST", `/api/bots/${bot.id}/messages`, { text: "run a command" });
+    await live.until(turnDone(bot.threadId));
+    live.close();
+
+    const afterTurn = (await h.api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === bot.id);
+    const activities = (afterTurn.messages as Array<{ kind: string; tool?: { name?: string; ok?: boolean; status?: string } }>).filter(
+      (m) => m.kind === "activity",
+    );
+    expect(activities.length).toBeGreaterThan(0);
+    expect(activities.every((m) => m.tool?.ok !== undefined && m.tool?.status && m.tool.status !== "running")).toBe(true);
+    expect(activities.some((m) => m.tool?.status === "completed")).toBe(true);
+
+    const snap = await h.api("GET", "/api/events/snapshot");
+    const snapBot = snap.body.bots.find((b: { id: string }) => b.id === bot.id);
+    const snapActivities = (snapBot.messages as Array<{ id: string; kind: string; tool?: { ok?: boolean; status?: string } }>).filter(
+      (m) => m.kind === "activity",
+    );
+    expect(snapActivities.map((m) => ({ id: m.id, ok: m.tool?.ok, status: m.tool?.status }))).toEqual(
+      activities.map((m) => ({ id: (m as { id: string }).id, ok: m.tool?.ok, status: m.tool?.status })),
+    );
+
+    const reloaded = await connectSse(h.base, h.token, { query: snap.body.sequence });
+    await reloaded.until((f) => f.kind === "hello");
+    const folded = foldMessages(snapBot.messages, reloaded.frames, bot.threadId) as Array<{
+      id: string;
+      kind?: string;
+      tool?: { ok?: boolean; status?: string };
+    }>;
+    const foldedActivities = folded.filter((m) => m.kind === "activity");
+    expect(foldedActivities.every((m) => m.tool?.ok !== undefined && m.tool?.status)).toBe(true);
+    expect(foldedActivities.some((m) => m.tool?.ok === undefined)).toBe(false);
+    reloaded.close();
+  });
+
   it("a cursor the stream cannot honor is refused (resumed=false), so a client snapshots instead of silently missing events", async () => {
     const stale = await connectSse(h.base, h.token, { query: 1_000_000 });
     const hello = await stale.until((f) => f.kind === "hello");

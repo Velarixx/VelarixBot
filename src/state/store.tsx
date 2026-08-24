@@ -50,8 +50,8 @@ export interface Message {
   kind: "text" | "options" | "activity" | "screen";
   text?: string;
   card?: OptionCardData;
-  /** activity messages: tool name + outcome */
-  tool?: { name: string; ok?: boolean };
+  /** activity messages: tool name + outcome + optional full command */
+  tool?: { name: string; ok?: boolean; status?: "completed" | "failed" | "cancelled" | "timed_out"; command?: string };
   /** screen messages: a frame of the bot's computer (base64) */
   png?: string;
   mime?: string;

@@ -25,6 +25,7 @@ import type {
   RuntimeEventListener,
   SendTurnInput,
 } from "../../contracts.ts";
+import { terminalToolStatus } from "../../activity-status.ts";
 import { newEventId, newId } from "../../contracts.ts";
 import { augmentedPath } from "../../env-path.ts";
 import { acpImageBlocks, agentAcceptsImagePrompts } from "../../attachments.ts";
@@ -441,18 +442,20 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 type: "item.started",
                 itemType: "tool",
                 itemId: u.toolCallId,
-                title: String(u.rawInput?.command ?? u.title ?? "tool").slice(0, 80),
+                title: String(u.rawInput?.command ?? u.title ?? "tool"),
               });
               break;
             }
             case "tool_call_update": {
-              if (u.status === "completed" || u.status === "failed") {
+              const terminal = terminalToolStatus(String(u.status ?? ""));
+              if (terminal) {
                 emit({
                   ...base(threadId, turnId),
                   type: "item.completed",
                   itemType: "tool",
                   itemId: u.toolCallId,
-                  ok: u.status !== "failed",
+                  ok: terminal.ok,
+                  ...(terminal.reason ? { stopReason: terminal.reason } : {}),
                 });
               }
               break;

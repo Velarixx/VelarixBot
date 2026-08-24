@@ -5,7 +5,7 @@
 // session/prompt, and streams session/update notifications for a scripted
 // turn. Failure modes mirror how real ACP agents misbehave:
 //
-//   FAKE_ACP_MODE   happy (default) | exit-early | hang | no-auth | permission
+//   FAKE_ACP_MODE   happy (default) | activity-lifecycle | exit-early | hang | no-auth | permission
 //                   | credential (permission ask that is a sign-in handoff)
 //                   | malformed (garbage lines mid-protocol, then a normal
 //                     completion — the driver must skip them)
@@ -274,6 +274,31 @@ function playTurn() {
   };
   if (mode === "split-utf8") outSplitUtf8(chunk, "€");
   else out(chunk);
+  if (mode === "activity-lifecycle") {
+    // Earlier tool never completes; later tools cancel / time out / succeed.
+    // The harness must still settle the stale chip when the turn ends.
+    out({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "tc-stale",
+          title: "run",
+          rawInput: {
+            command: "curl -H token=sk-live-supersecret https://example.test/very/long/path/that/should/remain/inspectable\n--data ok",
+          },
+        },
+      },
+    });
+    out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "tc-cancel", title: "sleep 30" } } });
+    out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", toolCallId: "tc-cancel", status: "cancelled" } } });
+    out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "tc-timeout", title: "wait" } } });
+    out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", toolCallId: "tc-timeout", status: "timed_out" } } });
+    out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "tc-done", title: "echo later" } } });
+    out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", toolCallId: "tc-done", status: "completed" } } });
+    return;
+  }
   out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "tc-1", title: "run" } } });
   out({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "tool_call_update", toolCallId: "tc-1", status: "completed" } } });
 }

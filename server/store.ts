@@ -55,7 +55,7 @@ export interface MessageComm {
 }
 export interface Message {
   id: string; role: "bot" | "user"; kind: "text" | "options" | "activity" | "screen"; text?: string;
-  card?: OptionCardData; tool?: { name: string; ok?: boolean }; png?: string; mime?: string; at: number; usage?: Usage;
+  card?: OptionCardData; tool?: { name: string; ok?: boolean; status?: "completed" | "failed" | "cancelled" | "timed_out"; command?: string }; png?: string; mime?: string; at: number; usage?: Usage;
   /** Paged hydration: a screen frame whose pixels live at the per-image fetch. */
   hasImage?: boolean;
   /** Sender on a bot⇄bot DM transcript. */

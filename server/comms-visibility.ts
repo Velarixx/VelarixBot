@@ -2,6 +2,7 @@
 // per-thread chips for A⇄B DM visibility.
 // so ask_bot and delegate_bot share one A ⇄ B DM path.
 
+import { completedNote } from "./activity-status.ts";
 import type { BotRecord, GroupRecord, Message } from "./store.ts";
 
 export interface CommsStore {
@@ -74,7 +75,7 @@ export function mirrorExchange(
   note(bus, sourceThreadId, {
     role: "bot",
     kind: "activity",
-    tool: { name: `Messaged @${target.name}` },
+    tool: completedNote(`Messaged @${target.name}`),
     comm: channel
       ? { groupId: channel.id, withBotId: target.id, withName: target.name, withColor: target.color }
       : undefined,
@@ -82,7 +83,7 @@ export function mirrorExchange(
   note(bus, target.threadId, {
     role: "bot",
     kind: "activity",
-    tool: { name: `Message from @${from.name}` },
+    tool: completedNote(`Message from @${from.name}`),
     comm: channel
       ? { groupId: channel.id, withBotId: from.id, withName: from.name, withColor: from.color }
       : undefined,

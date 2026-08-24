@@ -8,6 +8,18 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  activityOutcome,
+  createActivityIndex,
+  rememberToolCompletion,
+  releaseThreadItems,
+  runningActivities,
+  runningTool,
+  settledTool,
+  takePendingCompletion,
+  trackOpenTool,
+  type ActivityStatus,
+} from "../activity-status.ts";
+import {
   appendAudit,
   argumentPattern,
   autoResolvePermission,
@@ -621,7 +633,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   // ── server-side event folding (upstream's ingestion worker, miniature) ──
   // The canonical stream is the source of truth; the persisted transcript
   // and every client view are projections of it.
-  const toolMessageByItem = new Map<string, string>(); // itemId -> messageId
+  const activityIndex = createActivityIndex();
   const askMessageByRequest = new Map<string, string>(); // requestId -> messageId
   const turnUsage = new Map<string, Usage>();
   const responseOptionsByTurn = new Map<string, string[]>();
@@ -629,6 +641,14 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
    * stopReason (often "spawn_error") and used to overwrite the concrete
    * spawn detail with the generic fallback. */
   const lastRuntimeMessage = new Map<string, string>();
+
+  function settleRunningActivities(threadId: string, status: ActivityStatus) {
+    releaseThreadItems(activityIndex, threadId);
+    for (const { id, tool } of runningActivities(store.messagesFor(threadId))) {
+      const patched = store.patchMessage(threadId, id, { tool: settledTool(tool, status) });
+      if (patched) broadcast({ kind: "message.patch", threadId, message: patched });
+    }
+  }
 
   function maybeAppendSetupCard(threadId: string, blocked: { stateCode: string; stateDetail: string }) {
     if (
@@ -691,13 +711,14 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
             responseOptionsByTurn.set(event.turnId, reply.options);
           }
         } else if (event.itemType === "tool" && event.itemId) {
-          const messageId = toolMessageByItem.get(event.itemId);
+          const outcome = activityOutcome(event.ok, event.stopReason);
+          const messageId = rememberToolCompletion(activityIndex, event.threadId, event.itemId, outcome);
           if (messageId) {
+            const existing = store.messagesFor(event.threadId).find((m) => m.id === messageId);
             const patched = store.patchMessage(event.threadId, messageId, {
-              tool: { name: store.messagesFor(event.threadId).find((m) => m.id === messageId)?.tool?.name ?? "tool", ok: event.ok },
+              tool: settledTool(existing?.tool, outcome.status),
             });
             if (patched) broadcast({ kind: "message.patch", threadId: event.threadId, message: patched });
-            toolMessageByItem.delete(event.itemId);
           }
           // the bot just finished acting — refresh its screen preview now
           pokeScreenPoller(bot.id);
@@ -705,8 +726,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         break;
       case "item.started":
         if (event.itemType === "tool") {
-          const message = pushMessage({ role: "bot", kind: "activity", tool: { name: event.title ?? "tool" } });
-          if (event.itemId) toolMessageByItem.set(event.itemId, message.id);
+          const pending = takePendingCompletion(activityIndex, event.threadId, event.itemId);
+          const base = runningTool(event.title ?? "tool");
+          const tool = pending ? settledTool(base, pending.status) : base;
+          const message = pushMessage({ role: "bot", kind: "activity", tool });
+          if (!pending) trackOpenTool(activityIndex, event.threadId, event.itemId, message.id);
         }
         break;
       case "request.opened": {
@@ -779,6 +803,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       case "runtime.error": {
         if (event.turnId) responseOptionsByTurn.delete(event.turnId);
         if (event.message) lastRuntimeMessage.set(event.threadId, event.message);
+        settleRunningActivities(event.threadId, activityOutcome(false, event.message).status);
         stopScreenPoller(bot.id);
         releaseComputerLease(bot.id);
         const blocked = userFacingBlock({ runtimeMessage: event.message, stopReason: isSpawnFailure(undefined, event.message) ? "spawn_error" : undefined });
@@ -859,6 +884,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         } else {
           discardDelegations(commsBus, event.threadId);
         }
+        settleRunningActivities(event.threadId, activityOutcome(event.ok, event.stopReason).status);
         const thenStartTurn = deps.routines().settleTurn(event.threadId, event.ok, event.stopReason);
         if (thenStartTurn) proactive.routineCompleted(thenStartTurn);
         if (event.ok) {
@@ -1213,6 +1239,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         stopScreenPoller(bot.id);
         releaseComputerLease(bot.id);
         const message = e instanceof Error ? e.message : String(e);
+        settleRunningActivities(bot.threadId, activityOutcome(false, message).status);
         const blocked = userFacingBlock({ runtimeMessage: message, stopReason: isSpawnFailure(undefined, message) ? "spawn_error" : undefined });
         const failure = store.appendMessage(bot.threadId, {
           role: "bot",
@@ -1306,10 +1333,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const instance = registry.get(bot.modelSelection.instanceId);
     // Abort releases the machine lease (or queued wait) and its screenshot
     // interval immediately. A later turn.completed cleanup is idempotent.
-    stopScreenPoller(botId);
-    releaseComputerLease(botId);
-    await instance?.adapter.interruptTurn(bot.threadId);
-    bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
+        stopScreenPoller(botId);
+        releaseComputerLease(botId);
+        settleRunningActivities(bot.threadId, "cancelled");
+        await instance?.adapter.interruptTurn(bot.threadId);
+        bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
     proactive.noteState(bot.id, "BLOCKED");
     notifyIdle(bot.id);
     discardDelegations(commsBus, bot.threadId);

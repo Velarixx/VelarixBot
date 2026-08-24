@@ -5,6 +5,7 @@
 // turn.completed and starts the peer at depth+1. Fail/interrupt discards
 // the queue and drops the source chip. In-memory only — a restart drops
 // the queue (do not persist).
+import { completedNote, failedNote } from "./activity-status.ts";
 import { newId } from "./contracts.ts";
 import { getOrCreateChannel, mirrorExchange, type CommsBus } from "./comms-visibility.ts";
 import type { BotRecord, GroupRecord } from "./store.ts";
@@ -51,7 +52,7 @@ export function queueDelegation(
   const chip = bus.store.appendMessage(sourceThreadId, {
     role: "bot",
     kind: "activity",
-    tool: { name: label },
+    tool: { name: label }, // running until drain or discard
   });
   bus.broadcast({ kind: "message", threadId: sourceThreadId, message: chip });
   list.push({ ...item, id: newId(), chipMessageId: chip.id });
@@ -93,17 +94,17 @@ export function discardDelegations(bus: CommsBus, threadId: string): void {
     const existing = bus.store.messagesFor(threadId).find((m) => m.id === item.chipMessageId);
     const name = existing?.tool?.name ?? "Delegated to @";
     const patched = bus.store.patchMessage(threadId, item.chipMessageId, {
-      tool: { name, ok: false },
+      tool: failedNote(name, "cancelled"),
     });
     if (patched) bus.broadcast({ kind: "message.patch", threadId, message: patched });
   }
   const note = bus.store.appendMessage(threadId, {
     role: "bot",
     kind: "activity",
-    tool: {
-      name: `${list.length} queued delegation${list.length > 1 ? "s" : ""} dropped — the turn did not finish`,
-      ok: false,
-    },
+    tool: failedNote(
+      `${list.length} queued delegation${list.length > 1 ? "s" : ""} dropped — the turn did not finish`,
+      "cancelled",
+    ),
   });
   bus.broadcast({ kind: "message", threadId, message: note });
 }
@@ -123,19 +124,33 @@ function processOne(
 ): void {
   const target = bus.store.bot(item.toBotId);
   if (!target) {
+    if (item.chipMessageId) {
+      const existing = bus.store.messagesFor(sourceThreadId).find((m) => m.id === item.chipMessageId);
+      const patched = bus.store.patchMessage(sourceThreadId, item.chipMessageId, {
+        tool: failedNote(existing?.tool?.name ?? `Delegated to ${item.toBotId}`),
+      });
+      if (patched) bus.broadcast({ kind: "message.patch", threadId: sourceThreadId, message: patched });
+    }
     const note = bus.store.appendMessage(sourceThreadId, {
       role: "bot",
       kind: "activity",
-      tool: { name: `error: delegation to ${item.toBotId} failed — no such bot`, ok: false },
+      tool: failedNote(`error: delegation to ${item.toBotId} failed — no such bot`),
     });
     bus.broadcast({ kind: "message", threadId: sourceThreadId, message: note });
     return;
   }
   if (target.busy) {
+    if (item.chipMessageId) {
+      const existing = bus.store.messagesFor(sourceThreadId).find((m) => m.id === item.chipMessageId);
+      const patched = bus.store.patchMessage(sourceThreadId, item.chipMessageId, {
+        tool: failedNote(existing?.tool?.name ?? `Delegated to @${target.name}`, "cancelled"),
+      });
+      if (patched) bus.broadcast({ kind: "message.patch", threadId: sourceThreadId, message: patched });
+    }
     const note = bus.store.appendMessage(sourceThreadId, {
       role: "bot",
       kind: "activity",
-      tool: { name: `Delegation to @${target.name} canceled — @${target.name} is busy`, ok: false },
+      tool: failedNote(`Delegation to @${target.name} canceled — @${target.name} is busy`, "cancelled"),
     });
     bus.broadcast({ kind: "message", threadId: sourceThreadId, message: note });
     return;
@@ -146,6 +161,7 @@ function processOne(
     const existing = bus.store.messagesFor(sourceThreadId).find((m) => m.id === item.chipMessageId);
     if (existing) {
       const patched = bus.store.patchMessage(sourceThreadId, item.chipMessageId, {
+        tool: completedNote(existing.tool?.name ?? `Delegated to @${target.name}`),
         comm: { groupId: channel.id, withBotId: target.id, withName: target.name, withColor: target.color },
       });
       if (patched) bus.broadcast({ kind: "message.patch", threadId: sourceThreadId, message: patched });

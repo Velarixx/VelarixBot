@@ -40,6 +40,7 @@ import type {
   RuntimeEventListener,
   SendTurnInput,
 } from "../contracts.ts";
+import { terminalToolStatus } from "../activity-status.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { ensureBotWorkspace } from "../config.ts";
 import { augmentedPath } from "../env-path.ts";
@@ -476,7 +477,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             const item = p.item ?? {};
             const title =
               item.type === "commandExecution"
-                ? String(item.command ?? "shell").slice(0, 80)
+                ? String(item.command ?? "shell")
                 : item.type === "fileChange"
                   ? "edit"
                   : item.type === "mcpToolCall"
@@ -499,12 +500,16 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: item.text });
               }
             } else if (["commandExecution", "fileChange", "mcpToolCall"].includes(item.type)) {
+              const terminal = terminalToolStatus(String(item.status ?? "")) ?? {
+                ok: item.status !== "failed" && item.status !== "declined",
+              };
               emit({
                 ...base(threadId, turnId),
                 type: "item.completed",
                 itemType: "tool",
                 itemId: item.id,
-                ok: item.status !== "failed" && item.status !== "declined",
+                ok: terminal.ok,
+                ...(terminal.reason ? { stopReason: terminal.reason } : {}),
               });
             } else if (item.type === "reasoning") {
               emit({ ...base(threadId, turnId), type: "item.updated", itemType: "reasoning", tokens: null });

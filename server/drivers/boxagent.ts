@@ -258,7 +258,7 @@ export const BoxAgentDriver: ProviderDriver<BoxAgentConfig> = {
                   type: "item.started",
                   itemType: "tool",
                   itemId: id,
-                  title: String(ev.title ?? ev.command ?? kind).slice(0, 80),
+                  title: String(ev.title ?? ev.command ?? kind),
                 });
               }
             }

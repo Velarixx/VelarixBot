@@ -123,6 +123,10 @@ describe("delegate_bot queue + visibility", () => {
     expect(channelTexts).toContain("do this");
     const chip = bots.messagesFor(from.threadId).find((m) => m.tool?.name === "Delegated to @Helper: next step");
     expect(chip?.comm?.groupId).toBe(channel!.id);
+    expect(chip?.tool).toMatchObject({ ok: true, status: "completed" });
+    expect(
+      bots.messagesFor(from.threadId).find((m) => m.tool?.name === "Messaged @Helper")?.tool,
+    ).toMatchObject({ ok: true, status: "completed" });
   });
 
   it("interrupt/fail discards the queue and drops the source chip", () => {
@@ -139,7 +143,7 @@ describe("delegate_bot queue + visibility", () => {
     expect(_pendingCount(from.threadId)).toBe(0);
     expect(ran).toEqual([]);
     const dropped = bots.messagesFor(from.threadId).find((m) => m.id === chip!.id);
-    expect(dropped?.tool?.ok).toBe(false);
+    expect(dropped?.tool).toMatchObject({ ok: false, status: "cancelled" });
     expect(
       bots.messagesFor(from.threadId).some((m) => m.tool?.ok === false && m.tool.name.includes("dropped")),
     ).toBe(true);
