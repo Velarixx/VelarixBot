@@ -111,10 +111,11 @@ describe("groupSidebarBotsByProject", () => {
       { ...writerB, pinned: true, hidden: false },
       { id: "hidden-work", name: "Hidden Work", title: "Writer", sectionId: "sec-work", hidden: true, pinned: false },
     ];
-    const filtered = filterSidebarBots(listed, "a");
+    const filtered = filterSidebarBots(listed, "alp");
     const groups = groupSidebarBotsByProject(filtered, [work]);
     expect(groups[0]?.bots.map((b) => b.id)).toEqual(["a"]);
     expect(filtered.every((b) => !b.hidden)).toBe(true);
+    expect(filterSidebarBots(listed, "").map((b) => b.id)).toEqual(["b", "a"]);
   });
 });
 
