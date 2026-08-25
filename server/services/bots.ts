@@ -91,6 +91,7 @@ export function toPublicBot(bot: BotRecord, messages: Message[] = []): PublicBot
   if (bot.workflowWaitingFor !== undefined) pub.workflowWaitingFor = bot.workflowWaitingFor;
   if (bot.workflowStopReason !== undefined) pub.workflowStopReason = bot.workflowStopReason;
   if (bot.workflowAutonomyHops !== undefined) pub.workflowAutonomyHops = bot.workflowAutonomyHops;
+  pub.sectionId = typeof bot.sectionId === "string" && bot.sectionId.trim() ? bot.sectionId.trim() : null;
   return pub;
 }
 
@@ -410,6 +411,16 @@ export function createDesktopGlobalBotsService(opts: BotsServiceOptions): BotsSe
       }
       if (Object.prototype.hasOwnProperty.call(patch, "fullAutonomy") && patch.fullAutonomy !== true) {
         delete b.fullAutonomy;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "sectionId")) {
+        if (patch.sectionId == null || (typeof patch.sectionId === "string" && !patch.sectionId.trim())) {
+          delete next.sectionId;
+          delete b.sectionId;
+        } else if (typeof patch.sectionId !== "string") {
+          invalid("sectionId");
+        } else {
+          next.sectionId = patch.sectionId.trim();
+        }
       }
       // a write that matched no row must not report success — the caller
       // would broadcast/answer with a record the store does not hold. The

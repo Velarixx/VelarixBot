@@ -58,12 +58,17 @@ describe("conversation-first sidebar hierarchy", () => {
 });
 
 describe("project grouping in the agent list", () => {
-  it("groups the filtered list by the existing title association", () => {
-    expect(sidebar).toContain("groupSidebarBotsByProject(visibleBots)");
+  it("groups the filtered list by first-class sectionId, not Title", () => {
+    expect(sidebar).toContain("groupSidebarBotsByProject(visibleBots, sections)");
+    expect(sidebar).toContain("visibleSidebarSectionGroups(");
     expect(sidebar).toContain("group.label");
     expect(sidebar).toContain("group.agentCount");
     expect(sidebar).toContain("group.runningCount");
     expect(sidebar).toContain('group.key || "unassigned"');
+    expect(sidebar).toContain("Move to");
+    expect(sidebar).toContain("New section…");
+    expect(sidebar).toContain("onMove");
+    expect(sidebar).not.toContain("patch: { title");
   });
 
   it("keeps collapse state on the header and agents mounted for accessibility", () => {
@@ -71,9 +76,10 @@ describe("project grouping in the agent list", () => {
     expect(sidebar).toContain("aria-controls={panelId}");
     expect(sidebar).toContain("hidden={!expanded}");
     expect(sidebar).toContain('!expanded && "hidden"');
-    expect(sidebar).toContain("toggleProjectGroupCollapsed(keys, group.key)");
+    expect(sidebar).toContain("toggleProjectGroupCollapsed(collapsedProjects, group.key)");
     expect(sidebar).toContain("isProjectGroupExpanded(collapsedProjects, group.key)");
     expect(sidebar).toContain("<BotListItem key={b.id} bot={b} onMenu={setMenu} />");
+    expect(sidebar).toContain('"/api/sidebar-sections/collapsed"');
   });
 
   it("keeps per-agent status and controls inside each grouped section", () => {
@@ -87,5 +93,14 @@ describe("project grouping in the agent list", () => {
     expect(sidebar).toContain("stateTone[bot.state ?? \"IDLE\"]");
     expect(sidebar).toContain('dispatch({ type: "updateBot", botId: bot.id, patch: { pinned: !bot.pinned } })');
     expect(sidebar).toContain('dispatch({ type: "deleteBot", botId: bot.id })');
+    expect(sidebar).toContain('dispatch({ type: "updateBot", botId, patch: { sectionId } })');
+  });
+
+  it("keeps A⇄B DMs under Direct messages and out of sections", () => {
+    const sections = sidebar.indexOf("projectGroups.map");
+    const dms = sidebar.indexOf("Direct messages");
+    expect(sections).toBeGreaterThan(-1);
+    expect(dms).toBeGreaterThan(sections);
+    expect(sidebar).toContain("g.dm &&");
   });
 });

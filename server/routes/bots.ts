@@ -25,6 +25,7 @@ import type { TurnsService } from "../services/turns.ts";
 import { acceptSuggestion, isSuggestionAccept, isSuggestionCard } from "../suggestions.ts";
 import { deleteSkill, getRecordingSession, getSkill, listTeachSessions, loadSkills, saveSkill } from "../teach.ts";
 import type { GenerateAvatarImages } from "../avatar-image.ts";
+import { getSidebarSection } from "../sidebar-sections.ts";
 import { DEFAULT_MESSAGE_PAGE, json, parsePageSize, readBody, sendBytes, type RouteHandler } from "./context.ts";
 
 export function createBotsRoutes(deps: {
@@ -307,10 +308,20 @@ export function createBotsRoutes(deps: {
     if (m && method === "PATCH") {
       const body = await readBody(req);
       const patch: Record<string, unknown> = {};
-      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "mascotPinned", "iconShape", "avatarNonce", "avatarImageHash", "pinned", "hidden", "requireApproval", "alwaysAllow", "fullAutonomy", "enabledApps", "enabledSkills", "skillId", "threadParticipants", "bitwardenSecretIds", "bitwardenProjectIds"] as const) {
+      for (const key of ["name", "title", "description", "notifications", "notifyEvents", "modelSelection", "unread", "computer", "color", "mascotExpression", "mascotPinned", "iconShape", "avatarNonce", "avatarImageHash", "pinned", "hidden", "requireApproval", "alwaysAllow", "fullAutonomy", "enabledApps", "enabledSkills", "skillId", "threadParticipants", "bitwardenSecretIds", "bitwardenProjectIds", "sectionId"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (body.avatarImageHash === null) patch.avatarImageHash = null;
+      if (Object.prototype.hasOwnProperty.call(patch, "sectionId")) {
+        if (patch.sectionId == null || patch.sectionId === "") {
+          patch.sectionId = null;
+        } else if (typeof patch.sectionId !== "string" || !getSidebarSection(patch.sectionId)) {
+          json(res, 400, { error: "unknown sidebar section" });
+          return true;
+        } else {
+          patch.sectionId = patch.sectionId.trim();
+        }
+      }
       if (patch.enabledApps !== undefined) patch.enabledApps = parseAllowedToolkits(patch.enabledApps);
       if (patch.bitwardenSecretIds !== undefined) patch.bitwardenSecretIds = parseBitwardenIdList(patch.bitwardenSecretIds);
       if (patch.bitwardenProjectIds !== undefined) patch.bitwardenProjectIds = parseBitwardenIdList(patch.bitwardenProjectIds);
