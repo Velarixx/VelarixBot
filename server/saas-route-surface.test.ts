@@ -49,7 +49,7 @@ interface DeniedRoute {
 // rather than whole files, so implementation-only edits do not churn it. A
 // failure requires reviewing deniedRoutes + the approved SaaS routes before
 // accepting the new digest; otherwise a production route cannot land silently.
-const PRODUCTION_ROUTE_INVENTORY_SHA256 = "f20029b9fa4715e0c969cb627f947f17beddcbf8b02e3f8b2e5a6ca8b5872555";
+const PRODUCTION_ROUTE_INVENTORY_SHA256 = "f363e61e3ce71c616fdba3cf32fac50e8b73ecbdcdfd80daa76a6b134f679854";
 
 function productionRouteTokens(): string[] {
   const routesDirectory = new URL("./routes/", import.meta.url);
@@ -181,6 +181,12 @@ function deniedRoutes(botId: string): DeniedRoute[] {
     route("unmounted workspace management", "POST", "/api/workspaces"),
     route("unmounted workspace management", "GET", `/api/bots/${botId}/workspace`),
     route("unmounted workspace management", "DELETE", `/api/bots/${botId}/workspace`),
+
+    route("sidebar sections", "GET", "/api/sidebar-sections"),
+    route("sidebar sections", "POST", "/api/sidebar-sections"),
+    route("sidebar sections", "PATCH", "/api/sidebar-sections/section-probe"),
+    route("sidebar sections", "DELETE", "/api/sidebar-sections/section-probe"),
+    route("sidebar sections", "PUT", "/api/sidebar-sections/collapsed"),
   ];
 }
 

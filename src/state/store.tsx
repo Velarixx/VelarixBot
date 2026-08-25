@@ -146,6 +146,8 @@ export interface Bot {
   workflowAutonomyHops?: number;
   pinned?: boolean;
   hidden?: boolean;
+  /** First-class Conversations section. Missing/null = Unassigned. */
+  sectionId?: string | null;
   messages: Message[];
 }
 
@@ -370,6 +372,7 @@ type Action =
           | "avatarImageHash"
           | "pinned"
           | "hidden"
+          | "sectionId"
           | "requireApproval"
           | "alwaysAllow"
           | "fullAutonomy"

@@ -6,6 +6,8 @@ import {
   ClipboardCopy,
   Copy,
   EyeOff,
+  FolderInput,
+  FolderPlus,
   Pencil,
   Pin,
   PinOff,
@@ -17,7 +19,7 @@ import {
   CalendarClock,
   BookOpen,
 } from "lucide-react";
-import { useStore, formatTime, type Bot, type Group } from "@/state/store";
+import { api, useStore, formatTime, type Bot, type Group } from "@/state/store";
 import { BotFace } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
@@ -26,7 +28,12 @@ import {
   filterSidebarBots,
   groupSidebarBotsByProject,
   isProjectGroupExpanded,
+  moveToDestinations,
+  normalizeSectionName,
+  projectKeyForBot,
   toggleProjectGroupCollapsed,
+  visibleSidebarSectionGroups,
+  type SidebarSection,
 } from "@/lib/sidebar";
 
 const isElectron = navigator.userAgent.includes("Electron");
@@ -49,7 +56,36 @@ interface MenuState {
   y: number;
 }
 
-function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) {
+interface SectionMenuState {
+  sectionId: string;
+  x: number;
+  y: number;
+}
+
+function promptSectionName(existing: SidebarSection[], opts?: { initial?: string; exceptId?: string }): string | null {
+  const raw = window.prompt(opts?.initial ? "Rename section" : "Section name", opts?.initial ?? "");
+  if (raw == null) return null;
+  const parsed = normalizeSectionName(raw, existing, opts?.exceptId ? { exceptId: opts.exceptId } : undefined);
+  if (!parsed.ok) {
+    window.alert(parsed.error);
+    return null;
+  }
+  return parsed.name;
+}
+
+function BotContextMenu({
+  menu,
+  sections,
+  onClose,
+  onMove,
+  onNewSection,
+}: {
+  menu: MenuState;
+  sections: SidebarSection[];
+  onClose: () => void;
+  onMove: (botId: string, sectionId: string | null) => void;
+  onNewSection: (botId: string) => void;
+}) {
   const { state, dispatch } = useStore();
   const bot = state.bots.find((b) => b.id === menu.botId);
 
@@ -70,7 +106,9 @@ function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => voi
 
   if (!bot) return null;
   // keep the menu on-screen near the click
-  const top = Math.min(menu.y, window.innerHeight - 340);
+  const destinations = moveToDestinations(sections);
+  const currentKey = projectKeyForBot(bot);
+  const top = Math.min(menu.y, window.innerHeight - 420);
   const left = Math.min(menu.x, window.innerWidth - 240);
 
   const item = (
@@ -123,6 +161,20 @@ function BotContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => voi
           dispatch({ type: "duplicateBot", botId: bot.id }),
         ),
         divider("d2"),
+        <div key="move-label" className="flex items-center gap-3 px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
+          <FolderInput size={14} />
+          Move to
+        </div>,
+        ...destinations.map((dest) =>
+          item(
+            <span className="w-4" />,
+            dest.label,
+            dest.key === currentKey ? undefined : () => onMove(bot.id, dest.key || null),
+            dest.key === currentKey ? { disabled: true, hint: "Already in this section" } : undefined,
+          ),
+        ),
+        item(<FolderPlus size={16} className="text-ink-secondary" />, "New section…", () => onNewSection(bot.id)),
+        divider("d2b"),
         item(<ClipboardCopy size={16} className="text-ink-secondary" />, "Copy conversation ID", () => {
           void navigator.clipboard?.writeText(bot.threadId);
         }),
@@ -222,14 +274,148 @@ function BotListItem({ bot, onMenu }: { bot: Bot; onMenu: (menu: MenuState) => v
   );
 }
 
+function SectionContextMenu({
+  menu,
+  sections,
+  onClose,
+  onRename,
+  onDelete,
+}: {
+  menu: SectionMenuState;
+  sections: SidebarSection[];
+  onClose: () => void;
+  onRename: (sectionId: string) => void;
+  onDelete: (sectionId: string) => void;
+}) {
+  const section = sections.find((row) => row.id === menu.sectionId);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest("[data-section-menu]")) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("blur", onClose);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("blur", onClose);
+    };
+  }, [onClose]);
+  if (!section) return null;
+  const top = Math.min(menu.y, window.innerHeight - 140);
+  const left = Math.min(menu.x, window.innerWidth - 200);
+  return (
+    <div
+      data-section-menu
+      style={{ top, left }}
+      className="fixed z-40 w-[200px] overflow-hidden rounded-xl border border-hairline/50 bg-card py-1.5 shadow-2xl shadow-black/60"
+    >
+      <button
+        onClick={() => {
+          onRename(section.id);
+          onClose();
+        }}
+        className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
+      >
+        <Pencil size={16} className="text-ink-secondary" />
+        Rename
+      </button>
+      <button
+        onClick={() => {
+          onDelete(section.id);
+          onClose();
+        }}
+        className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-danger hover:bg-raised/70"
+      >
+        <Trash2 size={16} />
+        Delete
+      </button>
+    </div>
+  );
+}
+
 export function Sidebar() {
   const { state, dispatch } = useStore();
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [sectionMenu, setSectionMenu] = useState<SectionMenuState | null>(null);
   const [query, setQuery] = useState("");
+  const [sections, setSections] = useState<SidebarSection[]>([]);
   const [collapsedProjects, setCollapsedProjects] = useState<string[]>([]);
 
+  useEffect(() => {
+    api("/api/sidebar-sections")
+      .then((body: { sections?: SidebarSection[]; collapsed?: string[] }) => {
+        setSections(Array.isArray(body.sections) ? body.sections : []);
+        setCollapsedProjects(Array.isArray(body.collapsed) ? body.collapsed : []);
+      })
+      .catch(() => {});
+  }, []);
+
+  const persistCollapsed = (keys: string[]) => {
+    setCollapsedProjects(keys);
+    api("/api/sidebar-sections/collapsed", { method: "PUT", body: JSON.stringify({ collapsed: keys }) }).catch(() => {});
+  };
+
+  const applySections = (body: { sections?: SidebarSection[]; collapsed?: string[] }) => {
+    if (Array.isArray(body.sections)) setSections(body.sections);
+    if (Array.isArray(body.collapsed)) setCollapsedProjects(body.collapsed);
+  };
+
+  const createSection = async (name: string): Promise<SidebarSection | null> => {
+    try {
+      const body = await api("/api/sidebar-sections", { method: "POST", body: JSON.stringify({ name }) });
+      applySections(body);
+      return body.section ?? null;
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Could not create section");
+      return null;
+    }
+  };
+
+  const renameSection = async (sectionId: string) => {
+    const current = sections.find((row) => row.id === sectionId);
+    if (!current) return;
+    const name = promptSectionName(sections, { initial: current.name, exceptId: sectionId });
+    if (!name || name === current.name) return;
+    try {
+      applySections(await api(`/api/sidebar-sections/${sectionId}`, { method: "PATCH", body: JSON.stringify({ name }) }));
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Could not rename section");
+    }
+  };
+
+  const deleteSection = async (sectionId: string) => {
+    const current = sections.find((row) => row.id === sectionId);
+    if (!current) return;
+    if (!window.confirm(`Delete section “${current.name}”? Agents in it become Unassigned. Bots are not deleted.`)) return;
+    try {
+      const members = state.bots.filter((bot) => projectKeyForBot(bot) === sectionId);
+      applySections(await api(`/api/sidebar-sections/${sectionId}`, { method: "DELETE" }));
+      for (const bot of members) {
+        dispatch({ type: "botPatched", bot: { id: bot.id, sectionId: null } });
+      }
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Could not delete section");
+    }
+  };
+
+  const moveBot = (botId: string, sectionId: string | null) => {
+    const bot = state.bots.find((row) => row.id === botId);
+    if (!bot) return;
+    if (projectKeyForBot(bot) === (sectionId ?? "")) return;
+    dispatch({ type: "updateBot", botId, patch: { sectionId } });
+  };
+
+  const moveBotToNewSection = async (botId: string) => {
+    const name = promptSectionName(sections);
+    if (!name) return;
+    const section = await createSection(name);
+    if (section) moveBot(botId, section.id);
+  };
+
   const visibleBots = filterSidebarBots(state.bots, query);
-  const projectGroups = groupSidebarBotsByProject(visibleBots);
+  const projectGroups = visibleSidebarSectionGroups(groupSidebarBotsByProject(visibleBots, sections), query);
 
   return (
     <aside
@@ -277,12 +463,26 @@ export function Sidebar() {
 
       {/* Bot list + A ⇄ B DMs */}
       <section aria-labelledby="sidebar-conversations-heading" className="flex-1 overflow-y-auto px-2">
-        <h2
-          id="sidebar-conversations-heading"
-          className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary"
-        >
-          Conversations
-        </h2>
+        <div className="flex items-center justify-between gap-2 px-3 pb-1">
+          <h2
+            id="sidebar-conversations-heading"
+            className="text-[11px] font-semibold uppercase tracking-wide text-ink-secondary"
+          >
+            Conversations
+          </h2>
+          <button
+            type="button"
+            aria-label="New section"
+            title="New section"
+            onClick={async () => {
+              const name = promptSectionName(sections);
+              if (name) await createSection(name);
+            }}
+            className="rounded-md p-0.5 text-ink-secondary hover:bg-raised hover:text-ink"
+          >
+            <FolderPlus size={14} />
+          </button>
+        </div>
         <div className="flex flex-col gap-1">
           {projectGroups.map((group) => {
             const expanded = isProjectGroupExpanded(collapsedProjects, group.key);
@@ -293,7 +493,12 @@ export function Sidebar() {
                   type="button"
                   aria-expanded={expanded}
                   aria-controls={panelId}
-                  onClick={() => setCollapsedProjects((keys) => toggleProjectGroupCollapsed(keys, group.key))}
+                  onClick={() => persistCollapsed(toggleProjectGroupCollapsed(collapsedProjects, group.key))}
+                  onContextMenu={(e) => {
+                    if (!group.key) return;
+                    e.preventDefault();
+                    setSectionMenu({ sectionId: group.key, x: e.clientX, y: e.clientY });
+                  }}
                   className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left hover:bg-raised/50"
                 >
                   {expanded ? (
@@ -400,7 +605,30 @@ export function Sidebar() {
         </div>
       </nav>
 
-      {menu && <BotContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      {menu && (
+        <BotContextMenu
+          menu={menu}
+          sections={sections}
+          onClose={() => setMenu(null)}
+          onMove={moveBot}
+          onNewSection={(botId) => {
+            void moveBotToNewSection(botId);
+          }}
+        />
+      )}
+      {sectionMenu && (
+        <SectionContextMenu
+          menu={sectionMenu}
+          sections={sections}
+          onClose={() => setSectionMenu(null)}
+          onRename={(sectionId) => {
+            void renameSection(sectionId);
+          }}
+          onDelete={(sectionId) => {
+            void deleteSection(sectionId);
+          }}
+        />
+      )}
     </aside>
   );
 }

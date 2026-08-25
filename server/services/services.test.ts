@@ -60,6 +60,7 @@ describe("bots service", () => {
     expect(pub.enabledApps).toEqual(["gmail"]);
     expect(pub.bitwardenSecretIds).toEqual(["sec-1"]);
     expect(pub.alwaysAllow).toBe(true);
+    expect(pub.sectionId).toBeNull();
     expect(pub.messages.length).toBeGreaterThan(0);
     expect(bots.bot(bot.id)?.resumeCursors).toEqual({ claude: "sess-must-not-leak" });
     const listed = bots.publicBots();

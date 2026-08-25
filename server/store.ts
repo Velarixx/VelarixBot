@@ -147,6 +147,9 @@ export interface BotRecord {
   workflowStopReason?: string;
   /** Autonomous continue hops in the current user-started wave. */
   workflowAutonomyHops?: number;
+  /** First-class Conversations section. Missing/null = Unassigned.
+   * Title is a personality field and is never used as a section key. */
+  sectionId?: string | null;
 }
 /** Explicit GitHub Events API allow-list. No wildcard, no implied *. */
 export const GITHUB_LISTENER_EVENTS = [
@@ -295,6 +298,7 @@ export function normalizeBot(v: unknown, opts: { recoverInterrupted?: boolean } 
     ...(typeof b.workflowAutonomyHops === "number" && Number.isFinite(b.workflowAutonomyHops) && b.workflowAutonomyHops > 0
       ? { workflowAutonomyHops: Math.floor(b.workflowAutonomyHops) }
       : {}),
+    ...(typeof b.sectionId === "string" && b.sectionId.trim() ? { sectionId: b.sectionId.trim() } : {}),
   };
 }
 

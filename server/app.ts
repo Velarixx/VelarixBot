@@ -40,6 +40,7 @@ import { createRoutinesRoutes } from "./routes/routines.ts";
 import { createSaasBotCatalogRoutes } from "./routes/saas-bot-catalog.ts";
 import { createSaasDesktopAccessRoutes } from "./routes/saas-desktop-access.ts";
 import { createSessionRoutes } from "./routes/session.ts";
+import { createSidebarSectionsRoutes } from "./routes/sidebar-sections.ts";
 import { createLaneRoutes } from "./routes/lanes.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
 import { createBotsService, projectPublicBotFrame, type BotsService } from "./services/bots.ts";
@@ -442,6 +443,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     createEventsRoutes({ hub, bots, groups, tasks: repos.agentTasks }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
+    createSidebarSectionsRoutes({ bots, broadcast }),
     createBotsRoutes({
       bots,
       turns,

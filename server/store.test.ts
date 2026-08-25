@@ -92,6 +92,13 @@ describe("bot record normalization", () => {
     expect(normalizeBot({ ...baseBot, workflowStatus: "jogging" } as unknown as Partial<BotRecord>)?.workflowStatus).toBeUndefined();
   });
 
+  it("keeps a trimmed sectionId and never derives one from Title", () => {
+    expect(normalizeBot({ ...baseBot, title: "Writer", sectionId: "  sec-work  " })?.sectionId).toBe("sec-work");
+    expect(normalizeBot({ ...baseBot, title: "Writer" })?.sectionId).toBeUndefined();
+    expect(normalizeBot({ ...baseBot, title: "Writer", sectionId: "   " })?.sectionId).toBeUndefined();
+    expect(normalizeBot({ ...baseBot, title: "Writer", sectionId: null })?.sectionId).toBeUndefined();
+  });
+
   it("flips a crashed RUNNING record only when recovery is asked for", () => {
     const raw = { ...baseBot, busy: true, state: "RUNNING" };
     expect(normalizeBot(raw)).toMatchObject({ busy: true, state: "RUNNING" });

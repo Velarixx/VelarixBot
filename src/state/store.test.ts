@@ -333,4 +333,20 @@ describe("lead workflow + assigned tasks", () => {
     state = reducer(state, { type: "updateBot", botId: "lead", patch: { fullAutonomy: true } });
     expect(state.bots[0]?.fullAutonomy).toBe(true);
   });
+
+  it("Move to patches sectionId only and a title patch does not move the bot", () => {
+    let state = reducer(initialState, {
+      type: "hydrate",
+      bots: [bot({ id: "lead", title: "Writer", sectionId: null })],
+    });
+    state = reducer(state, { type: "updateBot", botId: "lead", patch: { sectionId: "sec-work" } });
+    expect(state.bots[0]?.sectionId).toBe("sec-work");
+    expect(state.bots[0]?.title).toBe("Writer");
+    state = reducer(state, { type: "updateBot", botId: "lead", patch: { title: "Chief of Staff" } });
+    expect(state.bots[0]?.title).toBe("Chief of Staff");
+    expect(state.bots[0]?.sectionId).toBe("sec-work");
+    state = reducer(state, { type: "botPatched", bot: { id: "lead", sectionId: null } });
+    expect(state.bots[0]?.sectionId).toBeNull();
+    expect(state.bots[0]?.title).toBe("Chief of Staff");
+  });
 });
