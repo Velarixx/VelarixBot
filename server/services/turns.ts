@@ -59,6 +59,7 @@ import {
 import { suggestionCardsFor, suggestionItemsFromRepeatedWorkflows } from "../suggestions.ts";
 import {
   agentTasks,
+  assigneeTurnTaskPatch,
   openTasksForSource,
   patchAgentTask,
 } from "../agent-tasks.ts";
@@ -312,14 +313,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     delegatedByThread.delete(peer.threadId);
     const reply = (outcome.text ?? "").trim();
     if (ctx.taskId) {
-      broadcastTask(
-        patchAgentTask(
-          ctx.taskId,
-          outcome.ok
-            ? { state: "completed", result: reply || undefined }
-            : { state: "blocked", blocker: outcome.detail || reply || "blocked" },
-        ),
-      );
+      broadcastTask(patchAgentTask(ctx.taskId, assigneeTurnTaskPatch({ ...outcome, text: reply })));
     }
     const lead = store.botByThread(ctx.sourceThreadId) ?? store.bot(ctx.sourceBotId);
     if (!lead) return;

@@ -16,7 +16,7 @@ import {
   _pendingCount,
   _resetPending,
 } from "./delegations.ts";
-import { configureAgentTasks } from "./agent-tasks.ts";
+import { agentTasks, configureAgentTasks } from "./agent-tasks.ts";
 import { createRepositories, type Repositories } from "./repositories/index.ts";
 import { createBotsService, type BotsService } from "./services/bots.ts";
 import { createGroupsService, type GroupsService } from "./services/groups.ts";
@@ -154,6 +154,8 @@ describe("delegate_bot queue + visibility", () => {
     expect(
       bots.messagesFor(from.threadId).some((m) => m.tool?.ok === false && m.tool.name.includes("dropped")),
     ).toBe(true);
+    expect(agentTasks().list()).toHaveLength(1);
+    expect(agentTasks().list()[0]?.state).toBe("cancelled");
   });
 
   it("a simulated restart drops the in-memory queue (nothing persisted)", () => {

@@ -6,7 +6,7 @@
 // the queue and drops the source chip. In-memory only — a restart drops
 // the queue (do not persist).
 import { completedNote, failedNote } from "./activity-status.ts";
-import { createAgentTask, patchAgentTask } from "./agent-tasks.ts";
+import { agentTasks, createAgentTask, patchAgentTask } from "./agent-tasks.ts";
 import { newId } from "./contracts.ts";
 import { getOrCreateChannel, mirrorExchange, type CommsBus } from "./comms-visibility.ts";
 import type { BotRecord, GroupRecord } from "./store.ts";
@@ -75,6 +75,11 @@ export function queueDelegation(
     reason: item.reason,
     assignmentMessageId: assignment.id,
   });
+  for (const row of agentTasks().listByAssignee(target.id)) {
+    if (row.sourceThreadId === sourceThreadId && row.state === "superseded") {
+      bus.broadcast({ kind: "task", task: row });
+    }
+  }
   const assigned = bus.store.patchMessage(target.threadId, assignment.id, {
     task: { id: task.id },
     report: { kind: "handoff", fromBotId: from.id, taskId: task.id },
@@ -129,13 +134,10 @@ export function discardDelegations(bus: CommsBus, threadId: string): void {
   if (!list?.length) return;
   pendingDelegations.delete(threadId);
   for (const item of list) {
-    if (item.taskId) {
-      const task = patchAgentTask(item.taskId, {
-        state: "blocked",
-        blocker: "The source turn did not finish",
-      });
-      if (task) bus.broadcast({ kind: "task", task });
-    }
+      if (item.taskId) {
+        const task = patchAgentTask(item.taskId, { state: "cancelled" });
+        if (task) bus.broadcast({ kind: "task", task });
+      }
     if (!item.chipMessageId) continue;
     const existing = bus.store.messagesFor(threadId).find((m) => m.id === item.chipMessageId);
     const name = existing?.tool?.name ?? "Delegated to @";
