@@ -15,5 +15,10 @@ describe("lead chat workflow + task panel", () => {
     expect(chat).toContain("AgentReportView");
     expect(chat).toContain("TaskPanelView");
     expect(chat).toContain("tasksForBot");
+    expect(chat).toContain("botId={bot.id}");
+    expect(chat).toContain("<OptionCard");
+    expect(chat).toContain("<Composer bot={bot} />");
+    expect(chat.indexOf("<OptionCard")).toBeLessThan(chat.indexOf("<TaskPanelView"));
+    expect(chat.indexOf("<TaskPanelView")).toBeLessThan(chat.indexOf("<Composer bot={bot} />"));
   });
 });

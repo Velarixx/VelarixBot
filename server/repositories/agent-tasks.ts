@@ -1,6 +1,7 @@
 // Assigned-task rows for lead→agent delegation (#120). JSON in `data`
-// so we can add fields without another migration; indexed columns are
-// the query keys (assignee, source thread).
+// so we can add fields and archive states (cancelled/superseded/stale in
+// #144) without another migration; indexed columns are the query keys
+// (assignee, source thread). Rows are never deleted for queue hygiene.
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { normalizeAgentTask, type AgentTask, type AgentTasksStore } from "../agent-tasks.ts";
 

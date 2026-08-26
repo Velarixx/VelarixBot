@@ -367,6 +367,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       )}
 
       <TaskPanelView
+        botId={bot.id}
         tasks={assigned}
         selectedTaskId={state.selectedTaskId}
         onSelectTask={(id) => dispatch({ type: "selectTask", id })}
