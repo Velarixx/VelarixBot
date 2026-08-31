@@ -67,6 +67,22 @@ describe("AgentReportView", () => {
     expect(handoff).toContain("Chief");
   });
 
+  it("sealed or reconciled progress does not retain animate-spin while delivery is pending or permanently failed", () => {
+    for (const status of ["pending", "delivery_failed"] as const) {
+      const markup = renderToStaticMarkup(
+        createElement(AgentReportView, {
+          message: report({
+            kind: "activity",
+            text: undefined,
+            tool: { name: "@Helper started" },
+            report: { kind: "progress", fromBotId: "helper", taskId: "task-1", status },
+          }),
+        }),
+      );
+      expect(markup).not.toContain("animate-spin");
+    }
+  });
+
   it("does not keep thinking for terminal, pending, failed, or delivery_failed progress", () => {
     for (const status of ["terminal", "pending", "failed", "delivery_failed"] as const) {
       const markup = renderToStaticMarkup(

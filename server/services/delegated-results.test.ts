@@ -8,6 +8,7 @@ import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { createRepositories, type Repositories } from "../repositories/index.ts";
 import type { RunBoundIdentity } from "../repositories/agent-task-runs.ts";
+import type { Message } from "../store.ts";
 import { createDelegatedResultsService } from "./delegated-results.ts";
 
 describe("delegated results service", () => {
@@ -74,6 +75,35 @@ describe("delegated results service", () => {
 
   function noteSendTurn(): void {
     sendTurnCalls += 1;
+  }
+
+  function progressOnLead(): Message {
+    const message = repos.messages.forThread("t-lead").find((row) => row.report?.kind === "progress");
+    expect(message).toBeTruthy();
+    return message!;
+  }
+
+  function expectProgressNotThinking(status: "pending" | "terminal" | "failed" | "delivery_failed"): void {
+    const message = progressOnLead();
+    expect(message.report?.status).toBe(status);
+    const thinking =
+      message.report?.kind === "progress" &&
+      message.report.status !== "pending" &&
+      message.report.status !== "terminal" &&
+      message.report.status !== "failed" &&
+      message.report.status !== "delivery_failed";
+    expect(thinking).toBe(false);
+  }
+
+  function seedLeadProgress(taskId: string): void {
+    repos.messages.append("t-lead", { role: "user", kind: "text", text: "go" });
+    repos.messages.append("t-lead", {
+      role: "bot",
+      kind: "activity",
+      tool: { name: "@helper started" },
+      from: { botId: "helper", name: "Helper" },
+      report: { kind: "progress", fromBotId: "helper", taskId },
+    });
   }
 
   it("stores the sealed result and outbox before any delivery attempt", () => {
@@ -279,6 +309,44 @@ describe("delegated results service", () => {
     if (retried.ok) expect(["pending", "delivered", "claimed"]).toContain(retried.delivery.deliveryState);
     const live = results.retryFailed("missing");
     expect(live).toEqual({ ok: false, status: 404, error: "delivery not found", code: "not_found" });
+    expect(sendTurnCalls).toBe(0);
+  });
+
+  it("stamps sealed and reconciled progress so pending or permanently failed delivery cannot keep thinking", () => {
+    const { results, identity, task, run } = boundRun({ roomThreadId: "missing-room" });
+    seedLeadProgress(task.id);
+    expect(progressOnLead().report?.status).toBeUndefined();
+
+    results.finalize({
+      identity,
+      result: { text: "three audits done", outcome: "completed" },
+      now,
+    });
+    expectProgressNotThinking("pending");
+    expect(repos.messages.forThread("t-lead").some((m) => m.report?.kind === "completion")).toBe(false);
+
+    const first = results.pumpDue(now);
+    expect(first.delivered).toBe(1);
+    expect(first.failed).toBe(1);
+    expectProgressNotThinking("pending");
+
+    const room = repos.agentTaskRuns.listDeliveriesForRun(run.id).find((row) => row.destinationKind === "room")!;
+    const claimed = repos.agentTaskRuns.claim({ now: now + 60_000, owner: "test", deliveryId: room.id })!;
+    repos.agentTaskRuns.failDelivery({
+      deliveryId: room.id,
+      token: claimed.token,
+      failureCode: "auth",
+      now: now + 60_000,
+    });
+    const unstamped = progressOnLead();
+    repos.messages.patch("t-lead", unstamped.id, {
+      report: { kind: "progress", fromBotId: "helper", taskId: task.id },
+    });
+    expect(progressOnLead().report?.status).toBeUndefined();
+
+    const reopened = createDelegatedResultsService({ repos, now: () => now + 60_000 });
+    reopened.reconcileOnBoot(now + 60_000);
+    expectProgressNotThinking("delivery_failed");
     expect(sendTurnCalls).toBe(0);
   });
 });

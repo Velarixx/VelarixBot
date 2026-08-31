@@ -455,7 +455,13 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // route order preserves the pre-refactor dispatch: internal comms first
   // (their own token), then the launch-token gate, then the public surface
   const desktopRoutes: RouteHandler[] = [
-    createEventsRoutes({ hub, bots, groups, tasks: repos.agentTasks }),
+    createEventsRoutes({
+      hub,
+      bots,
+      groups,
+      tasks: repos.agentTasks,
+      beforeSnapshot: () => delegatedResults.stampSealedProgress(),
+    }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
     createSidebarSectionsRoutes({ bots, broadcast }),

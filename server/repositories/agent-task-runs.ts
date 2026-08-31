@@ -328,6 +328,7 @@ export interface AgentTaskRunsRepository {
   getRunningForThread(workerThreadId: string): AgentTaskRun | null;
   getPendingForThread(workerThreadId: string): AgentTaskRun | null;
   listNonterminal(): AgentTaskRun[];
+  listSealed(): AgentTaskRun[];
   listByTask(taskId: string): AgentTaskRun[];
   bindRunning(input: {
     identity: RunBoundIdentity;
@@ -393,6 +394,9 @@ export function createAgentTaskRunsRepository(db: SqliteDatabase): AgentTaskRuns
   );
   const selectNonterminal = db.prepare<RunRow>(
     `SELECT ${RUN_COLUMNS} FROM agent_task_runs WHERE execution_state IN ('pending', 'running') ORDER BY created_at, id`,
+  );
+  const selectSealed = db.prepare<RunRow>(
+    `SELECT ${RUN_COLUMNS} FROM agent_task_runs WHERE execution_state IN ('completed', 'failed', 'interrupted', 'partial') ORDER BY created_at, id`,
   );
   const selectByTask = db.prepare<RunRow>(
     `SELECT ${RUN_COLUMNS} FROM agent_task_runs WHERE task_id = ? ORDER BY created_at, id`,
@@ -831,6 +835,9 @@ export function createAgentTaskRunsRepository(db: SqliteDatabase): AgentTaskRuns
     },
     listNonterminal() {
       return selectNonterminal.all().map(toRun);
+    },
+    listSealed() {
+      return selectSealed.all().map(toRun);
     },
     listByTask(taskId) {
       return selectByTask.all(taskId).map(toRun);

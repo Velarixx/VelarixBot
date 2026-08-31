@@ -22,8 +22,10 @@ export function createEventsRoutes(deps: {
   bots: BotsService;
   groups?: GroupsService;
   tasks?: { list(): AgentTask[] };
+  /** Stamp sealed delegated progress from the ledger before hydrate. */
+  beforeSnapshot?: () => void;
 }): RouteHandler {
-  const { hub, bots, groups, tasks } = deps;
+  const { hub, bots, groups, tasks, beforeSnapshot } = deps;
   return ({ req, res, url, path, method }) => {
     if (method !== "GET") return false;
     if (path === "/api/events") {
@@ -38,6 +40,7 @@ export function createEventsRoutes(deps: {
         json(res, 400, { error: "messages must be a non-negative whole number" });
         return true;
       }
+      beforeSnapshot?.();
       const cursor = hub.cursor();
       json(res, 200, {
         ...cursor,
