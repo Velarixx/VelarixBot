@@ -5,6 +5,7 @@
 // Stream. The shapes and names are kept so the two codebases stay mutually
 // readable.
 
+import { createHash } from "node:crypto";
 import type {
   ChannelDeliveryReceipt,
   ChannelInboundMessage,
@@ -264,3 +265,101 @@ export type AnyProviderDriver = ProviderDriver<any>;
 let eventCounter = 0;
 export const newEventId = () => `ev-${Date.now().toString(36)}-${(eventCounter++).toString(36)}`;
 export const newId = () => crypto.randomUUID();
+
+// ── P0 durable delegated-result ledger (#150) ───────────────────────────
+// Typed terminal / delivery failures. Consumers must not parse error prose.
+// `attempts_exhausted` is internal to the delivery machine and legal only
+// at the attempt limit.
+
+export const RUN_FAILURE_CODES = [
+  "interrupted",
+  "cancelled",
+  "provider_error",
+  "auth",
+  "config",
+  "quota",
+] as const;
+export type RunFailureCode = (typeof RUN_FAILURE_CODES)[number];
+
+export const TRANSIENT_DELIVERY_FAILURE_CODES = ["destination_unavailable", "io_error", "conflict_retry"] as const;
+export type TransientDeliveryFailureCode = (typeof TRANSIENT_DELIVERY_FAILURE_CODES)[number];
+
+export const PERMANENT_DELIVERY_FAILURE_CODES = [
+  "auth",
+  "config",
+  "quota",
+  "payload_mismatch",
+  "identity_mismatch",
+] as const;
+export type PermanentDeliveryFailureCode = (typeof PERMANENT_DELIVERY_FAILURE_CODES)[number];
+
+export const INTERNAL_DELIVERY_FAILURE_CODES = ["attempts_exhausted"] as const;
+
+export const DELIVERY_FAILURE_CODES = [
+  ...TRANSIENT_DELIVERY_FAILURE_CODES,
+  ...PERMANENT_DELIVERY_FAILURE_CODES,
+  ...INTERNAL_DELIVERY_FAILURE_CODES,
+] as const;
+export type DeliveryFailureCode = (typeof DELIVERY_FAILURE_CODES)[number];
+
+export const TERMINAL_FAILURE_CODES = [...new Set([...RUN_FAILURE_CODES, ...DELIVERY_FAILURE_CODES])] as const;
+export type TerminalFailureCode = (typeof TERMINAL_FAILURE_CODES)[number];
+
+export function isRunFailureCode(value: unknown): value is RunFailureCode {
+  return typeof value === "string" && (RUN_FAILURE_CODES as readonly string[]).includes(value);
+}
+
+export function isDeliveryFailureCode(value: unknown): value is DeliveryFailureCode {
+  return typeof value === "string" && (DELIVERY_FAILURE_CODES as readonly string[]).includes(value);
+}
+
+export function isTransientDeliveryFailure(code: string): code is TransientDeliveryFailureCode {
+  return (TRANSIENT_DELIVERY_FAILURE_CODES as readonly string[]).includes(code);
+}
+
+export function isPermanentDeliveryFailure(code: string): code is PermanentDeliveryFailureCode {
+  return (PERMANENT_DELIVERY_FAILURE_CODES as readonly string[]).includes(code);
+}
+
+/** Centralized legacy task-projection mapping. Do not parse provider prose. */
+export function mapRunOutcomeToTaskPatch(input: {
+  outcome: "completed" | "failed" | "interrupted" | "partial";
+  text?: string;
+  failureCode?: RunFailureCode | null;
+}): { state: "completed" | "blocked" | "cancelled" | "stale"; result?: string; blocker?: string } {
+  const text = (input.text ?? "").trim();
+  if (input.outcome === "completed") {
+    return text ? { state: "completed", result: text } : { state: "stale" };
+  }
+  if (input.outcome === "interrupted" || input.failureCode === "interrupted" || input.failureCode === "cancelled") {
+    return text ? { state: "cancelled", result: text } : { state: "cancelled" };
+  }
+  if (input.outcome === "partial") {
+    return text ? { state: "cancelled", result: text } : { state: "cancelled" };
+  }
+  if (text || input.failureCode) return { state: "blocked", blocker: input.failureCode ?? text };
+  return { state: "stale" };
+}
+
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortCanonical(value));
+}
+
+function sortCanonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortCanonical);
+  if (value && typeof value === "object") {
+    const src = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(src).sort()) out[key] = sortCanonical(src[key]);
+    return out;
+  }
+  return value;
+}
+
+export function sha256Canonical(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+}
+
+export function deterministicDeliveryMessageId(runId: string, destinationKind: "parent" | "room"): string {
+  return `dtr:${runId}:${destinationKind}`;
+}

@@ -64,7 +64,13 @@ export interface Message {
   at: number;
   from?: { botId: string; name: string; color?: MausColor };
   comm?: { groupId: string; withBotId: string; withName: string; withColor?: MausColor };
-  report?: { kind: "progress" | "blocker" | "completion" | "handoff"; fromBotId: string; taskId?: string };
+  report?: {
+    kind: "progress" | "blocker" | "completion" | "handoff";
+    fromBotId: string;
+    taskId?: string;
+    status?: "pending" | "terminal" | "failed" | "delivery_failed";
+    failureCode?: string;
+  };
   task?: { id: string };
 }
 

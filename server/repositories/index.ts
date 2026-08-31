@@ -5,6 +5,7 @@ import type { AgentTasksStore } from "../agent-tasks.ts";
 import { collectAvatarHashes } from "../avatar-image.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { createAgentTasksRepository } from "./agent-tasks.ts";
+import { createAgentTaskRunsRepository, type AgentTaskRunsRepository } from "./agent-task-runs.ts";
 import { createBotsRepository, type BotsRepository } from "./bots.ts";
 import { createComputerBindingsRepository, type ComputerBindingsRepository } from "./computer-bindings.ts";
 import { createDesktopAccessGrantsRepository, type DesktopAccessGrantsRepository } from "./desktop-access-grants.ts";
@@ -44,6 +45,7 @@ export interface Repositories {
   snapshots: SnapshotsRepository;
   memoryRows: MemoryRowsStore;
   agentTasks: AgentTasksStore;
+  agentTaskRuns: AgentTaskRunsRepository;
   telegramConversations: TelegramConversationsRepository;
   discordConversations: DiscordConversationsRepository;
   lanes: LaneIdempotencyRepository;
@@ -69,6 +71,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
   const snapshots = createSnapshotsRepository(db);
   const memoryRows = createMemoryRowsRepository(db);
   const agentTasks = createAgentTasksRepository(db);
+  const agentTaskRuns = createAgentTaskRunsRepository(db);
   const telegramConversations = createTelegramConversationsRepository(db);
   const discordConversations = createDiscordConversationsRepository(db);
   const lanes = createLaneIdempotencyRepository(db);
@@ -104,6 +107,7 @@ export function createRepositories(db: SqliteDatabase): Repositories {
     snapshots,
     memoryRows,
     agentTasks,
+    agentTaskRuns,
     telegramConversations,
     discordConversations,
     lanes,

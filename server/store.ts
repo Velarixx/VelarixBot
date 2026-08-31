@@ -61,10 +61,15 @@ export interface MessageComm {
 }
 export const MESSAGE_REPORT_KINDS = ["progress", "blocker", "completion", "handoff"] as const;
 export type MessageReportKind = (typeof MESSAGE_REPORT_KINDS)[number];
+export const MESSAGE_REPORT_STATUSES = ["pending", "terminal", "failed", "delivery_failed"] as const;
+export type MessageReportStatus = (typeof MESSAGE_REPORT_STATUSES)[number];
 export interface MessageReport {
   kind: MessageReportKind;
   fromBotId: string;
   taskId?: string;
+  /** Additive #150: truthful settlement so stale progress cannot keep spinning. */
+  status?: MessageReportStatus;
+  failureCode?: string;
 }
 export interface Message {
   id: string; role: "bot" | "user"; kind: "text" | "options" | "activity" | "screen"; text?: string;

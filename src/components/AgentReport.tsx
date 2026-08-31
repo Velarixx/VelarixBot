@@ -1,6 +1,7 @@
 import { Check, CircleAlert, Flag, Loader2 } from "lucide-react";
 import type { Message } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { reportShowsThinking } from "@/lib/report-status";
 import { ChatMarkdown } from "./ChatMarkdown";
 
 const REPORT_LABEL: Record<NonNullable<Message["report"]>["kind"], string> = {
@@ -10,9 +11,15 @@ const REPORT_LABEL: Record<NonNullable<Message["report"]>["kind"], string> = {
   handoff: "Handoff",
 };
 
-function ReportIcon({ kind }: { kind: NonNullable<Message["report"]>["kind"] }) {
-  if (kind === "progress") return <Loader2 size={13} className="animate-spin" />;
-  if (kind === "blocker") return <CircleAlert size={13} />;
+function ReportIcon({
+  kind,
+  status,
+}: {
+  kind: NonNullable<Message["report"]>["kind"];
+  status?: NonNullable<Message["report"]>["status"];
+}) {
+  if (reportShowsThinking({ kind, status })) return <Loader2 size={13} className="animate-spin" />;
+  if (kind === "blocker" || status === "failed" || status === "delivery_failed") return <CircleAlert size={13} />;
   if (kind === "handoff") return <Flag size={13} />;
   return <Check size={13} className="text-success" />;
 }
@@ -43,7 +50,7 @@ export function AgentReportView({
       >
         <div className="mb-1 flex min-w-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
           <span aria-label={label} title={label}>
-            <ReportIcon kind={report.kind} />
+            <ReportIcon kind={report.kind} status={report.status} />
           </span>
           <span>{label}</span>
           {name && (

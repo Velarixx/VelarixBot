@@ -34,6 +34,10 @@ export interface AgentTask {
   assignmentMessageId?: string;
   createdAt: number;
   updatedAt: number;
+  /** Additive #150 projection: delivery of the sealed run result. */
+  deliveryState?: "result_stored" | "delivery_pending" | "delivered" | "delivery_failed";
+  runOutcome?: "completed" | "failed" | "interrupted" | "partial";
+  failureCode?: string;
 }
 
 export function isAgentTaskState(value: unknown): value is AgentTaskState {
@@ -95,6 +99,19 @@ export function normalizeAgentTask(value: unknown): AgentTask | null {
       : {}),
     createdAt: Number.isFinite(row.createdAt) ? Number(row.createdAt) : Date.now(),
     updatedAt: Number.isFinite(row.updatedAt) ? Number(row.updatedAt) : Date.now(),
+    ...(row.deliveryState === "result_stored" ||
+    row.deliveryState === "delivery_pending" ||
+    row.deliveryState === "delivered" ||
+    row.deliveryState === "delivery_failed"
+      ? { deliveryState: row.deliveryState }
+      : {}),
+    ...(row.runOutcome === "completed" ||
+    row.runOutcome === "failed" ||
+    row.runOutcome === "interrupted" ||
+    row.runOutcome === "partial"
+      ? { runOutcome: row.runOutcome }
+      : {}),
+    ...(typeof row.failureCode === "string" && row.failureCode ? { failureCode: row.failureCode } : {}),
   };
 }
 

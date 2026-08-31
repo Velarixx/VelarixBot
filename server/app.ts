@@ -43,6 +43,7 @@ import { createSessionRoutes } from "./routes/session.ts";
 import { createSidebarSectionsRoutes } from "./routes/sidebar-sections.ts";
 import { createLaneRoutes } from "./routes/lanes.ts";
 import { createTurnsRoutes } from "./routes/turns.ts";
+import { createDelegatedResultsRoutes } from "./routes/delegated-results.ts";
 import { createBotsService, projectPublicBotFrame, type BotsService } from "./services/bots.ts";
 import { createChannelsService, type ChannelsService } from "./services/channels.ts";
 import { createGroupsService, type GroupsService } from "./services/groups.ts";
@@ -62,6 +63,7 @@ import { createSecurityAuditService } from "./services/security-audit.ts";
 import { createTeachService, type TeachService } from "./services/teach.ts";
 import { createLaneScheduler, splitLaneTurnOpts, type LaneScheduler, type LaneTurnOpts, type SchedulerLane } from "./services/lanes.ts";
 import { createLineageService, type LineageService } from "./services/lineage.ts";
+import { createDelegatedResultsService, type DelegatedResultsService } from "./services/delegated-results.ts";
 import { createTurnsService, type TurnsService } from "./services/turns.ts";
 import { createUsageService, type UsageService } from "./services/usage.ts";
 import type { ModelSelection } from "./contracts.ts";
@@ -129,6 +131,7 @@ export interface Application {
     lanes: LaneScheduler;
     lineage: LineageService;
     usage: UsageService;
+    delegatedResults: DelegatedResultsService;
   };
 }
 
@@ -282,6 +285,17 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   const lineage = createLineageService({ store: repos.lineage, now: () => clock.now() });
   const usage = createUsageService({ store: repos.usage, now: () => clock.now() });
 
+  const delegatedResults = createDelegatedResultsService({
+    repos,
+    now: () => clock.now(),
+    broadcast,
+    lookupBot: (id) => {
+      const bot = bots.bot(id);
+      return bot ? { id: bot.id, name: bot.name, color: bot.color, threadId: bot.threadId } : null;
+    },
+  });
+  delegatedResults.reconcileOnBoot(clock.now());
+
   let routinesRef: RoutinesService | null = null;
   const turns = createTurnsService({
     cfg,
@@ -303,6 +317,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     lanes: () => lanesRef,
     lineage,
     usage,
+    delegatedResults,
   });
 
   const lanes = createLaneScheduler({
@@ -440,7 +455,13 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   // route order preserves the pre-refactor dispatch: internal comms first
   // (their own token), then the launch-token gate, then the public surface
   const desktopRoutes: RouteHandler[] = [
-    createEventsRoutes({ hub, bots, groups, tasks: repos.agentTasks }),
+    createEventsRoutes({
+      hub,
+      bots,
+      groups,
+      tasks: repos.agentTasks,
+      beforeSnapshot: () => delegatedResults.stampSealedProgress(),
+    }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
     createSidebarSectionsRoutes({ bots, broadcast }),
@@ -456,6 +477,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       generateAvatarImages: input.generateAvatarImages ?? defaultAvatarImageGenerator(),
     }),
     createTurnsRoutes({ turns, lanes, lineage }),
+    createDelegatedResultsRoutes({ delegatedResults }),
     createLaneRoutes({ lanes }),
     createHealthRoutes({ staticServing: Boolean(staticDir), stamp }),
     createDiagnosticsRoutes({ diagnostics, lineage, usage }),
@@ -567,8 +589,9 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     tick(now = clock.now()) {
       routines.tick(now);
       proactive.tick(now);
+      delegatedResults.tick(now);
     },
     hub,
-    services: { bots, groups, turns, routines, teach, proactive, telegram, discord, channels, lanes, lineage, usage },
+    services: { bots, groups, turns, routines, teach, proactive, telegram, discord, channels, lanes, lineage, usage, delegatedResults },
   };
 }

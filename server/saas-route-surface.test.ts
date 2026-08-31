@@ -49,7 +49,7 @@ interface DeniedRoute {
 // rather than whole files, so implementation-only edits do not churn it. A
 // failure requires reviewing deniedRoutes + the approved SaaS routes before
 // accepting the new digest; otherwise a production route cannot land silently.
-const PRODUCTION_ROUTE_INVENTORY_SHA256 = "f363e61e3ce71c616fdba3cf32fac50e8b73ecbdcdfd80daa76a6b134f679854";
+const PRODUCTION_ROUTE_INVENTORY_SHA256 = "370cd5891c83ba8a35b286db89817167963b09c5176c35eabf204671782f373d";
 
 function productionRouteTokens(): string[] {
   const routesDirectory = new URL("./routes/", import.meta.url);
@@ -136,6 +136,7 @@ function deniedRoutes(botId: string): DeniedRoute[] {
     route("turns", "POST", `/api/bots/${botId}/messages`),
     route("turns", "POST", `/api/bots/${botId}/respond`),
     route("turns", "POST", `/api/bots/${botId}/interrupt`),
+    route("delegated results", "POST", "/api/agent-task-deliveries/delivery-probe/retry"),
 
     route("lanes", "GET", "/api/lanes"),
     route("lanes", "POST", "/api/lanes/cancel"),
