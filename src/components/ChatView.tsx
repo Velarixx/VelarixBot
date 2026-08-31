@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown, Loader2, Monitor, Square } from "lucide-react";
-import { useStore, formatTime, type Bot, type Message } from "@/state/store";
+import { api, useStore, formatTime, type Bot, type Message } from "@/state/store";
 import { BotFace } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { ChatMarkdown } from "./ChatMarkdown";
@@ -13,7 +13,7 @@ import { TaskPanelView } from "./TaskPanel";
 import { UserAttachments } from "./UserAttachments";
 import { cn } from "@/lib/cn";
 import { splitAttachedFiles } from "@/lib/chat-message";
-import { tasksForBot } from "@/lib/agent-task";
+import { tasksForBot, userActionTaskPatch, type AgentTask } from "@/lib/agent-task";
 import { formatCompactTokens, formatUsageCost, stateLabel, type BotState } from "@/lib/product";
 import { workflowLabel, type WorkflowStatus } from "@/lib/workflow";
 
@@ -371,6 +371,14 @@ export function ChatView({ bot }: { bot: Bot }) {
         tasks={assigned}
         selectedTaskId={state.selectedTaskId}
         onSelectTask={(id) => dispatch({ type: "selectTask", id })}
+        onTaskAction={(id, action) => {
+          const patch = userActionTaskPatch(action);
+          api(`/api/agent-tasks/${id}`, { method: "PATCH", body: JSON.stringify(patch) })
+            .then((body: { task?: AgentTask }) => {
+              if (body.task) dispatch({ type: "taskUpsert", task: body.task });
+            })
+            .catch(() => {});
+        }}
       />
 
       <Composer bot={bot} />

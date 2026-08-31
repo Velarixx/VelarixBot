@@ -1,9 +1,11 @@
 // Assigned tasks created when a lead delegates work (#120).
-// Queue hygiene (#144): the active list is pending/active/blocked; completed,
-// cancelled, superseded, and stale stay in history. SQLite-backed (configured
-// at boot); in-memory fallback for unit tests that do not wire the repository.
-// Not a second transcript — reports and assignment messages still live on the
-// existing messages table.
+// Queue hygiene (#144 / #148): the active list is pending/active, plus
+// blocked only when a structured blocker is present (text + owner + next
+// action + updatedAt) and not past BLOCKED_STALE_AFTER_MS. Completed,
+// cancelled, superseded, and stale stay in history. SQLite-backed
+// (configured at boot); in-memory fallback for unit tests that do not
+// wire the repository. Not a second transcript — reports and assignment
+// messages still live on the existing messages table.
 import { newId } from "./contracts.ts";
 
 export const AGENT_TASK_STATES = [
@@ -20,6 +22,11 @@ export type AgentTaskState = (typeof AGENT_TASK_STATES)[number];
 export const ACTIVE_QUEUE_STATES = ["pending", "active", "blocked"] as const;
 export const ARCHIVED_TASK_STATES = ["completed", "cancelled", "superseded", "stale"] as const;
 
+/** Blocked rows whose updatedAt is older than this (ms) leave the active
+ * queue as stale. Evaluated at list/read, patch, create, and snapshot —
+ * not a timer poller. Pin this export in tests; do not duplicate. */
+export const BLOCKED_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
 export interface AgentTask {
   id: string;
   assigneeBotId: string;
@@ -31,14 +38,23 @@ export interface AgentTask {
   state: AgentTaskState;
   result?: string;
   blocker?: string;
+  blockerOwner?: string;
+  nextAction?: string;
   assignmentMessageId?: string;
   createdAt: number;
   updatedAt: number;
+  /** Additive #151 projection: sealed run this row is bound to. */
+  runId?: string;
   /** Additive #150 projection: delivery of the sealed run result. */
   deliveryState?: "result_stored" | "delivery_pending" | "delivered" | "delivery_failed";
   runOutcome?: "completed" | "failed" | "interrupted" | "partial";
   failureCode?: string;
 }
+
+export type ActiveQueueTask = Pick<
+  AgentTask,
+  "state" | "blocker" | "blockerOwner" | "nextAction" | "updatedAt"
+>;
 
 export function isAgentTaskState(value: unknown): value is AgentTaskState {
   return typeof value === "string" && (AGENT_TASK_STATES as readonly string[]).includes(value);
@@ -48,13 +64,32 @@ export function normalizeAssignment(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
-export function isActiveQueueTask(task: Pick<AgentTask, "state" | "blocker">): boolean {
-  if (task.state === "pending" || task.state === "active") return true;
-  return task.state === "blocked" && Boolean(task.blocker?.trim());
+function trimmed(value: string | undefined): string {
+  return (value ?? "").trim();
 }
 
-export function isArchivedTask(task: Pick<AgentTask, "state" | "blocker">): boolean {
-  return !isActiveQueueTask(task);
+/** Blocked stays active only when all four fields are present. */
+export function hasStructuredBlocker(task: ActiveQueueTask): boolean {
+  return Boolean(
+    trimmed(task.blocker) &&
+      trimmed(task.blockerOwner) &&
+      trimmed(task.nextAction) &&
+      Number.isFinite(task.updatedAt),
+  );
+}
+
+export function isBlockedPastStaleness(task: Pick<AgentTask, "state" | "updatedAt">, now: number): boolean {
+  return task.state === "blocked" && Number.isFinite(task.updatedAt) && now - task.updatedAt > BLOCKED_STALE_AFTER_MS;
+}
+
+export function isActiveQueueTask(task: ActiveQueueTask, now = Date.now()): boolean {
+  if (task.state === "pending" || task.state === "active") return true;
+  if (task.state !== "blocked") return false;
+  return hasStructuredBlocker(task) && !isBlockedPastStaleness(task, now);
+}
+
+export function isArchivedTask(task: ActiveQueueTask, now = Date.now()): boolean {
+  return !isActiveQueueTask(task, now);
 }
 
 export interface AgentTasksStore {
@@ -67,7 +102,18 @@ export interface AgentTasksStore {
   deleteForBot(botId: string): number;
 }
 
-function coerceTaskState(state: AgentTaskState, blocker?: string): { state: AgentTaskState; blocker?: string } {
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function coerceTaskState(
+  state: AgentTaskState,
+  blocker?: string,
+): { state: AgentTaskState; blocker?: string } {
+  // Ledger projection (#151) may write blocked + text without owner/next.
+  // Those rows stay blocked in storage; isActiveQueueTask / reconcile treat
+  // them as stale for the active queue. Only empty blocker text is coerced
+  // here so finalize CAS keeps mapping failed → blocked.
   if (state === "blocked" && !blocker?.trim()) return { state: "stale" };
   return blocker?.trim() ? { state, blocker } : { state };
 }
@@ -94,11 +140,14 @@ export function normalizeAgentTask(value: unknown): AgentTask | null {
     state: coerced.state,
     ...(typeof row.result === "string" && row.result ? { result: row.result } : {}),
     ...(coerced.blocker ? { blocker: coerced.blocker } : {}),
+    ...(optionalString(row.blockerOwner) ? { blockerOwner: optionalString(row.blockerOwner) } : {}),
+    ...(optionalString(row.nextAction) ? { nextAction: optionalString(row.nextAction) } : {}),
     ...(typeof row.assignmentMessageId === "string" && row.assignmentMessageId
       ? { assignmentMessageId: row.assignmentMessageId }
       : {}),
     createdAt: Number.isFinite(row.createdAt) ? Number(row.createdAt) : Date.now(),
     updatedAt: Number.isFinite(row.updatedAt) ? Number(row.updatedAt) : Date.now(),
+    ...(optionalString(row.runId) ? { runId: optionalString(row.runId) } : {}),
     ...(row.deliveryState === "result_stored" ||
     row.deliveryState === "delivery_pending" ||
     row.deliveryState === "delivered" ||
@@ -166,17 +215,55 @@ export function agentTasks(): AgentTasksStore {
   return store;
 }
 
-function openFromSameSource(input: {
-  assigneeBotId: string;
-  fromBotId: string;
-  sourceThreadId: string;
-}): AgentTask[] {
+function shouldPersistStale(task: AgentTask, now: number): boolean {
+  if (task.state !== "blocked") return false;
+  return !hasStructuredBlocker(task) || isBlockedPastStaleness(task, now);
+}
+
+/** Persist blocked-without-structure and blocked-past-threshold as stale.
+ * Called from list/read wrappers, patch, create, and snapshot. No poller. */
+export function reconcileStaleBlocked(now = Date.now()): AgentTask[] {
+  const changed: AgentTask[] = [];
+  for (const task of store.list()) {
+    if (!shouldPersistStale(task, now)) continue;
+    const next = store.update(task.id, { state: "stale" });
+    if (next) changed.push(next);
+  }
+  return changed;
+}
+
+export function getAgentTask(id: string, now = Date.now()): AgentTask | null {
+  const task = store.get(id);
+  if (!task) return null;
+  if (!shouldPersistStale(task, now)) return task;
+  return store.update(task.id, { state: "stale" }) ?? task;
+}
+
+export function listAgentTasks(now = Date.now()): AgentTask[] {
+  reconcileStaleBlocked(now);
+  return store.list();
+}
+
+function openFromSameSource(
+  input: {
+    assigneeBotId: string;
+    fromBotId: string;
+    sourceThreadId: string;
+  },
+  now: number,
+): AgentTask[] {
   return store.listByAssignee(input.assigneeBotId).filter(
     (task) =>
       task.fromBotId === input.fromBotId &&
       task.sourceThreadId === input.sourceThreadId &&
-      isActiveQueueTask(task),
+      isActiveQueueTask(task, now),
   );
+}
+
+function openWithRunId(runId: string, now: number): AgentTask[] {
+  const id = runId.trim();
+  if (!id) return [];
+  return store.list().filter((task) => task.runId === id && isActiveQueueTask(task, now));
 }
 
 export function createAgentTask(input: {
@@ -187,22 +274,34 @@ export function createAgentTask(input: {
   assignment: string;
   reason?: string;
   assignmentMessageId?: string;
+  runId?: string;
   now?: number;
 }): AgentTask {
   const now = input.now ?? Date.now();
+  reconcileStaleBlocked(now);
   const normalized = normalizeAssignment(input.assignment);
-  const open = openFromSameSource(input);
+  const runId = optionalString(input.runId);
+  const open = openFromSameSource(input, now);
   const duplicate = open.find((task) => normalizeAssignment(task.assignment) === normalized);
   if (duplicate) {
     return (
       store.update(duplicate.id, {
         updatedAt: now,
         ...(input.assignmentMessageId ? { assignmentMessageId: input.assignmentMessageId } : {}),
+        ...(runId ? { runId } : {}),
       }) ?? duplicate
     );
   }
+  const superseded = new Set<string>();
   for (const previous of open) {
     store.update(previous.id, { state: "superseded", updatedAt: now });
+    superseded.add(previous.id);
+  }
+  if (runId) {
+    for (const previous of openWithRunId(runId, now)) {
+      if (superseded.has(previous.id)) continue;
+      store.update(previous.id, { state: "superseded", updatedAt: now });
+    }
   }
   const task: AgentTask = {
     id: newId(),
@@ -214,28 +313,49 @@ export function createAgentTask(input: {
     ...(input.reason ? { reason: input.reason } : {}),
     state: "pending",
     ...(input.assignmentMessageId ? { assignmentMessageId: input.assignmentMessageId } : {}),
+    ...(runId ? { runId } : {}),
     createdAt: now,
     updatedAt: now,
   };
   return store.insert(task);
 }
 
-export function patchAgentTask(
-  id: string,
-  patch: Partial<Pick<AgentTask, "state" | "result" | "blocker" | "reason" | "assignmentMessageId">>,
-  now = Date.now(),
-): AgentTask | null {
+export type AgentTaskPatch = Partial<
+  Pick<
+    AgentTask,
+    | "state"
+    | "result"
+    | "blocker"
+    | "blockerOwner"
+    | "nextAction"
+    | "reason"
+    | "assignmentMessageId"
+    | "runId"
+  >
+>;
+
+export function patchAgentTask(id: string, patch: AgentTaskPatch, now = Date.now()): AgentTask | null {
+  reconcileStaleBlocked(now);
+  const existing = store.get(id);
+  if (!existing) return null;
+  const merged = { ...existing, ...patch, updatedAt: now };
+  if (merged.state === "blocked" && !hasStructuredBlocker(merged)) {
+    return store.update(id, { ...patch, state: "stale", updatedAt: now });
+  }
   return store.update(id, { ...patch, updatedAt: now });
 }
 
-/** Mark an assignee turn that finished: result → completed, cancel → cancelled,
- * blocker text → blocked, otherwise stale. Applied at that transition — not a
+/** Mark an assignee turn that finished: ok+result → completed, cancel →
+ * cancelled, else with detail → blocked only when owner + next action can
+ * be filled, otherwise stale. Applied at that transition — not a
  * wall-clock poller. */
 export function assigneeTurnTaskPatch(outcome: {
   ok: boolean;
   text?: string;
   detail?: string;
-}): Partial<Pick<AgentTask, "state" | "result" | "blocker">> {
+  blockerOwner?: string;
+  nextAction?: string;
+}): AgentTaskPatch {
   const result = (outcome.text ?? "").trim();
   const detail = (outcome.detail ?? "").trim();
   if (isCancelledAssigneeOutcome(detail) || isCancelledAssigneeOutcome(result)) {
@@ -244,7 +364,12 @@ export function assigneeTurnTaskPatch(outcome: {
   if (outcome.ok) {
     return result ? { state: "completed", result } : { state: "stale" };
   }
-  if (detail || result) return { state: "blocked", blocker: detail || result };
+  const blocker = detail || result;
+  const blockerOwner = trimmed(outcome.blockerOwner);
+  const nextAction = trimmed(outcome.nextAction);
+  if (blocker && blockerOwner && nextAction) {
+    return { state: "blocked", blocker, blockerOwner, nextAction };
+  }
   return { state: "stale" };
 }
 
@@ -252,22 +377,25 @@ function isCancelledAssigneeOutcome(value: string): boolean {
   return /^(interrupted|cancelled|canceled)$/i.test(value);
 }
 
-export function openTasksForSource(sourceThreadId: string): AgentTask[] {
-  return store.listBySourceThread(sourceThreadId).filter((task) => task.state === "pending" || task.state === "active");
+export function openTasksForSource(sourceThreadId: string, now = Date.now()): AgentTask[] {
+  return store
+    .listBySourceThread(sourceThreadId)
+    .filter((task) => task.state === "pending" || task.state === "active")
+    .filter((task) => isActiveQueueTask(task, now));
 }
 
-export function taskCounts(tasks: readonly Pick<AgentTask, "state" | "blocker">[]): {
+export function taskCounts(tasks: readonly ActiveQueueTask[], now = Date.now()): {
   assigned: number;
   active: number;
 } {
-  const active = tasks.filter(isActiveQueueTask).length;
+  const active = tasks.filter((task) => isActiveQueueTask(task, now)).length;
   return { assigned: active, active };
 }
 
-export function activeQueueTasks<T extends Pick<AgentTask, "state" | "blocker">>(tasks: readonly T[]): T[] {
-  return tasks.filter(isActiveQueueTask);
+export function activeQueueTasks<T extends ActiveQueueTask>(tasks: readonly T[], now = Date.now()): T[] {
+  return tasks.filter((task) => isActiveQueueTask(task, now));
 }
 
-export function archivedTasks<T extends Pick<AgentTask, "state" | "blocker">>(tasks: readonly T[]): T[] {
-  return tasks.filter(isArchivedTask);
+export function archivedTasks<T extends ActiveQueueTask>(tasks: readonly T[], now = Date.now()): T[] {
+  return tasks.filter((task) => isArchivedTask(task, now));
 }

@@ -26,6 +26,12 @@ function task(over: Partial<AgentTask> & Pick<AgentTask, "id" | "state">): Agent
   };
 }
 
+const structuredBlocked = {
+  blocker: "needs a password",
+  blockerOwner: "user",
+  nextAction: "Enter the vault password",
+};
+
 const needsInputMessage: Message = {
   id: "message-1",
   role: "bot",
@@ -48,10 +54,11 @@ describe("TaskPanelView", () => {
   it("lists only the active queue and shows an active header count", () => {
     const markup = renderToStaticMarkup(
       createElement(TaskPanelView, {
+        now: 1,
         tasks: [
           task({ id: "1", state: "pending" }),
           task({ id: "2", state: "active", assignment: "write the brief" }),
-          task({ id: "3", state: "blocked", blocker: "needs a password" }),
+          task({ id: "3", state: "blocked", ...structuredBlocked }),
           task({ id: "4", state: "completed" }),
           task({ id: "5", state: "cancelled" }),
           task({ id: "6", state: "superseded" }),
@@ -90,13 +97,57 @@ describe("TaskPanelView", () => {
 
     const blocked = renderToStaticMarkup(
       createElement(TaskPanelView, {
-        tasks: [task({ id: "stuck", state: "blocked", blocker: "needs a password" })],
+        now: 1,
+        tasks: [task({ id: "stuck", state: "blocked", ...structuredBlocked })],
         selectedTaskId: "stuck",
       }),
     );
     expect(blocked).toContain("Latest blocker");
     expect(blocked).toContain("needs a password");
+    expect(blocked).toContain("Owner / dependency: user");
+    expect(blocked).toContain("Next action: Enter the vault password");
+    expect(blocked).toContain("Updated");
     expect(blocked).toContain("1 assigned / 1 active");
+  });
+
+  it("keeps unstructured blocked and terminal rows in history, not the active count", () => {
+    const markup = renderToStaticMarkup(
+      createElement(TaskPanelView, {
+        now: 1,
+        tasks: [
+          task({ id: "text-only", state: "blocked", blocker: "needs a password" }),
+          task({ id: "done", state: "completed", result: "here is the research" }),
+        ],
+        historyOpen: true,
+        selectedTaskId: "text-only",
+      }),
+    );
+    expect(markup).toContain("0 assigned / 0 active");
+    expect(markup).toContain("History");
+    expect(markup).toContain("Blocked");
+    expect(markup).toContain("Completed");
+  });
+
+  it("exposes cancel, dismiss, and obsolete on an active task without rewriting hide", () => {
+    const markup = renderToStaticMarkup(
+      createElement(TaskPanelView, {
+        tasks: [task({ id: "1", state: "pending" })],
+        selectedTaskId: "1",
+        onTaskAction: () => {},
+      }),
+    );
+    expect(markup).toContain("Cancel");
+    expect(markup).toContain("Dismiss / archive");
+    expect(markup).toContain("Mark obsolete");
+    const hidden = renderToStaticMarkup(
+      createElement(TaskPanelView, {
+        tasks: [task({ id: "1", state: "pending" })],
+        visibility: "hidden",
+        onTaskAction: () => {},
+      }),
+    );
+    expect(hidden).toContain("Restore assigned tasks");
+    expect(hidden).not.toContain("Cancel");
   });
 
   it("projects delivery status without rewriting hide or collapse", () => {

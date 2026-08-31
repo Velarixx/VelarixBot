@@ -59,6 +59,7 @@ import {
 import { suggestionCardsFor, suggestionItemsFromRepeatedWorkflows } from "../suggestions.ts";
 import {
   agentTasks,
+  assigneeTurnTaskPatch,
   openTasksForSource,
   patchAgentTask,
 } from "../agent-tasks.ts";
@@ -412,7 +413,12 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const lead = store.botByThread(ctx.sourceThreadId) ?? store.bot(ctx.sourceBotId);
     if (!lead) return;
     if (ctx.taskId && !sealed) {
-      broadcastTask(patchAgentTask(ctx.taskId, outcome.ok ? { state: "completed", result: (outcome.text ?? "").trim() } : { state: "blocked", blocker: outcome.detail }));
+      broadcastTask(patchAgentTask(ctx.taskId, assigneeTurnTaskPatch(outcome)));
+    } else if (ctx.taskId && outcome.ok) {
+      const task = agentTasks().get(ctx.taskId);
+      if (task && (task.state === "blocked" || task.state === "pending" || task.state === "active")) {
+        broadcastTask(patchAgentTask(ctx.taskId, assigneeTurnTaskPatch(outcome)));
+      } else if (task) broadcastTask(task);
     } else if (ctx.taskId) {
       const task = agentTasks().get(ctx.taskId);
       if (task) broadcastTask(task);
@@ -1148,7 +1154,17 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (permission && !credential) {
           setWorkflow(bot.id, { workflowStatus: "blocked", workflowStopReason: AUTONOMY_STOP.approval });
           if (peerCtx?.taskId) {
-            broadcastTask(patchAgentTask(peerCtx.taskId, { state: "blocked", blocker: event.summary || "Approval needed" }));
+            broadcastTask(
+              patchAgentTask(
+                peerCtx.taskId,
+                assigneeTurnTaskPatch({
+                  ok: false,
+                  detail: event.summary || "Approval needed",
+                  blockerOwner: "user",
+                  nextAction: "Allow or deny the pending approval",
+                }),
+              ),
+            );
           }
           if (peerCtx) {
             const lead = store.botByThread(peerCtx.sourceThreadId) ?? store.bot(peerCtx.sourceBotId);
@@ -1280,7 +1296,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
             let unsub: (() => void) | undefined;
             if (target && source) {
               if (taskId) {
-                delegatedResults.createPending({
+                const run = delegatedResults.createPending({
                   taskId,
                   workerBotId: target.id,
                   workerThreadId: target.threadId,
@@ -1290,6 +1306,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
                   roomThreadId: channel?.threadId ?? null,
                   now: now(),
                 });
+                patchAgentTask(taskId, { runId: run.id }, now());
               }
               delegatedByThread.set(target.threadId, {
                 sourceBotId: source.id,

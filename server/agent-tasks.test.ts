@@ -4,15 +4,19 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  BLOCKED_STALE_AFTER_MS,
   agentTasks,
   archivedTasks,
   assigneeTurnTaskPatch,
   configureAgentTasks,
   createAgentTask,
   createMemoryAgentTasksStore,
+  getAgentTask,
   isActiveQueueTask,
+  listAgentTasks,
   normalizeAgentTask,
   patchAgentTask,
+  reconcileStaleBlocked,
   taskCounts,
 } from "./agent-tasks.ts";
 import { DATA_DIR } from "./config.ts";
@@ -32,6 +36,13 @@ function seed(over: Partial<Parameters<typeof createAgentTask>[0]> = {}) {
     ...over,
   });
 }
+
+const structuredBlocker = {
+  state: "blocked" as const,
+  blocker: "needs a password",
+  blockerOwner: "user",
+  nextAction: "Enter the vault password",
+};
 
 describe("normalizeAgentTask", () => {
   it("drops unrecognizable rows and keeps active plus archive states", () => {
@@ -66,7 +77,7 @@ describe("normalizeAgentTask", () => {
     }
   });
 
-  it("treats blocked without blocker text as stale", () => {
+  it("treats blocked without blocker text as stale and keeps ledger blocked+text", () => {
     expect(
       normalizeAgentTask({
         id: "t-empty",
@@ -80,6 +91,20 @@ describe("normalizeAgentTask", () => {
         updatedAt: 10,
       })?.state,
     ).toBe("stale");
+    expect(
+      normalizeAgentTask({
+        id: "t-text",
+        assigneeBotId: "helper",
+        fromBotId: "chief",
+        fromName: "Chief",
+        sourceThreadId: "lead-thread",
+        assignment: "research this",
+        state: "blocked",
+        blocker: "quota",
+        createdAt: 10,
+        updatedAt: 10,
+      })?.state,
+    ).toBe("blocked");
   });
 });
 
@@ -97,7 +122,7 @@ describe("assigned-task queue hygiene", () => {
     const second = seed({ assignment: "  research   this  ", assignmentMessageId: "m2", now: 20 });
     expect(second.id).toBe(first.id);
     expect(agentTasks().list()).toHaveLength(1);
-    expect(agentTasks().list().filter(isActiveQueueTask)).toHaveLength(1);
+    expect(agentTasks().list().filter((task) => isActiveQueueTask(task, 20))).toHaveLength(1);
     expect(second.updatedAt).toBe(20);
     expect(second.assignmentMessageId).toBe("m2");
     expect(second.state).toBe("pending");
@@ -109,16 +134,33 @@ describe("assigned-task queue hygiene", () => {
     expect(next.id).not.toBe(first.id);
     expect(next.state).toBe("pending");
     expect(agentTasks().get(first.id)?.state).toBe("superseded");
-    const active = agentTasks().list().filter(isActiveQueueTask);
+    const active = agentTasks().list().filter((task) => isActiveQueueTask(task, 20));
     expect(active).toHaveLength(1);
     expect(active[0]?.id).toBe(next.id);
-    expect(taskCounts(agentTasks().list())).toEqual({ assigned: 1, active: 1 });
+    expect(taskCounts(agentTasks().list(), 20)).toEqual({ assigned: 1, active: 1 });
+  });
+
+  it("supersedes open tasks that share a run id from a different source", () => {
+    const first = seed({ assignment: "research this", runId: "run-151", now: 10 });
+    const follow = seed({
+      assignment: "report the result",
+      sourceThreadId: "other-thread",
+      fromBotId: "other",
+      fromName: "Other",
+      runId: "run-151",
+      now: 20,
+    });
+    expect(follow.id).not.toBe(first.id);
+    expect(agentTasks().get(first.id)?.state).toBe("superseded");
+    expect(follow.state).toBe("pending");
+    expect(follow.runId).toBe("run-151");
+    expect(agentTasks().list().filter((task) => isActiveQueueTask(task, 20))).toHaveLength(1);
   });
 
   it("lets different sources keep their own active task on the same assignee", () => {
     seed({ sourceThreadId: "lead-a", assignment: "research this" });
     seed({ sourceThreadId: "lead-b", fromBotId: "other", fromName: "Other", assignment: "research this" });
-    expect(agentTasks().list().filter(isActiveQueueTask)).toHaveLength(2);
+    expect(agentTasks().list().filter((task) => isActiveQueueTask(task))).toHaveLength(2);
   });
 
   it("moves completed, cancelled, and stale out of the active queue into history", () => {
@@ -129,34 +171,93 @@ describe("assigned-task queue hygiene", () => {
     expect(patchAgentTask(cancelled.id, { state: "cancelled" })?.state).toBe("cancelled");
     expect(patchAgentTask(stale.id, { state: "stale" })?.state).toBe("stale");
     const listed = agentTasks().list();
-    expect(listed.filter(isActiveQueueTask)).toEqual([]);
+    expect(listed.filter((task) => isActiveQueueTask(task))).toEqual([]);
     expect(archivedTasks(listed).map((task) => task.state).sort()).toEqual(["cancelled", "completed", "stale"]);
     expect(taskCounts(listed)).toEqual({ assigned: 0, active: 0 });
   });
 
-  it("keeps blocked-with-blocker active and turns blocked-without-blocker into stale", () => {
+  it("keeps structured blocked active and turns unstructured blocked into stale", () => {
     const blocked = seed({ assignment: "needs a password" });
     const empty = seed({ assignment: "no blocker", sourceThreadId: "other", fromBotId: "lead-2" });
-    expect(patchAgentTask(blocked.id, { state: "blocked", blocker: "needs a password" })?.state).toBe("blocked");
+    const textOnly = seed({ assignment: "text only", sourceThreadId: "third", fromBotId: "lead-3" });
+    expect(patchAgentTask(blocked.id, structuredBlocker)?.state).toBe("blocked");
     expect(isActiveQueueTask(agentTasks().get(blocked.id)!)).toBe(true);
     expect(patchAgentTask(empty.id, { state: "blocked" })?.state).toBe("stale");
     expect(isActiveQueueTask(agentTasks().get(empty.id)!)).toBe(false);
+    expect(patchAgentTask(textOnly.id, { state: "blocked", blocker: "needs a password" })?.state).toBe("stale");
+    expect(isActiveQueueTask(agentTasks().get(textOnly.id)!)).toBe(false);
     expect(archivedTasks(agentTasks().list()).some((task) => task.id === empty.id)).toBe(true);
     expect(taskCounts(agentTasks().list())).toEqual({ assigned: 1, active: 1 });
   });
 
-  it("marks an assignee turn without result or blocker as stale at that transition", () => {
+  it("marks an assignee turn without a structured blocker as stale at that transition", () => {
     expect(assigneeTurnTaskPatch({ ok: true, text: "here is the research" })).toEqual({
       state: "completed",
       result: "here is the research",
     });
-    expect(assigneeTurnTaskPatch({ ok: false, detail: "needs a password" })).toEqual({
+    expect(assigneeTurnTaskPatch({ ok: false, detail: "needs a password" })).toEqual({ state: "stale" });
+    expect(
+      assigneeTurnTaskPatch({
+        ok: false,
+        detail: "needs a password",
+        blockerOwner: "user",
+        nextAction: "Enter the vault password",
+      }),
+    ).toEqual({
       state: "blocked",
       blocker: "needs a password",
+      blockerOwner: "user",
+      nextAction: "Enter the vault password",
     });
     expect(assigneeTurnTaskPatch({ ok: false, detail: "interrupted" })).toEqual({ state: "cancelled" });
     expect(assigneeTurnTaskPatch({ ok: true })).toEqual({ state: "stale" });
     expect(assigneeTurnTaskPatch({ ok: false })).toEqual({ state: "stale" });
+  });
+
+  it("cancels, dismisses, and marks obsolete without deleting the row", () => {
+    const cancel = seed({ assignment: "one", now: 10 });
+    const dismiss = seed({ assignment: "two", sourceThreadId: "t2", fromBotId: "lead-2", now: 10 });
+    const obsolete = seed({ assignment: "three", sourceThreadId: "t3", fromBotId: "lead-3", now: 10 });
+    expect(patchAgentTask(cancel.id, { state: "cancelled", reason: "Cancelled" }, 20)?.state).toBe("cancelled");
+    expect(patchAgentTask(dismiss.id, { state: "stale", reason: "Dismissed" }, 20)?.state).toBe("stale");
+    expect(patchAgentTask(obsolete.id, { state: "stale", reason: "Obsolete" }, 20)?.state).toBe("stale");
+    expect(agentTasks().list()).toHaveLength(3);
+    expect(agentTasks().get(cancel.id)).toMatchObject({ state: "cancelled", reason: "Cancelled", assignment: "one" });
+    expect(agentTasks().get(dismiss.id)).toMatchObject({ state: "stale", reason: "Dismissed" });
+    expect(agentTasks().get(obsolete.id)).toMatchObject({ state: "stale", reason: "Obsolete" });
+    expect(taskCounts(agentTasks().list(), 20)).toEqual({ assigned: 0, active: 0 });
+    expect(archivedTasks(agentTasks().list(), 20).map((task) => task.reason).sort()).toEqual([
+      "Cancelled",
+      "Dismissed",
+      "Obsolete",
+    ]);
+  });
+
+  it("pins BLOCKED_STALE_AFTER_MS and times out structured blocked at injected now", () => {
+    expect(BLOCKED_STALE_AFTER_MS).toBe(24 * 60 * 60 * 1000);
+    const clientSrc = readFileSync(join(HERE, "../src/lib/agent-task.ts"), "utf8");
+    expect(clientSrc).toContain("export const BLOCKED_STALE_AFTER_MS = 24 * 60 * 60 * 1000");
+    const created = seed({ assignment: "waiting", now: 1_000 });
+    expect(patchAgentTask(created.id, structuredBlocker, 1_000)?.state).toBe("blocked");
+    expect(isActiveQueueTask(agentTasks().get(created.id)!, 1_000 + BLOCKED_STALE_AFTER_MS)).toBe(true);
+    expect(isActiveQueueTask(agentTasks().get(created.id)!, 1_000 + BLOCKED_STALE_AFTER_MS + 1)).toBe(false);
+    const changed = reconcileStaleBlocked(1_000 + BLOCKED_STALE_AFTER_MS + 1);
+    expect(changed).toHaveLength(1);
+    expect(agentTasks().get(created.id)?.state).toBe("stale");
+    expect(isActiveQueueTask(agentTasks().get(created.id)!, 1_000 + BLOCKED_STALE_AFTER_MS + 1)).toBe(false);
+    expect(archivedTasks(agentTasks().list(), 1_000 + BLOCKED_STALE_AFTER_MS + 1).map((task) => task.id)).toEqual([
+      created.id,
+    ]);
+  });
+
+  it("evaluates stale blocked on list and read at injected now", () => {
+    const created = seed({ assignment: "waiting", now: 5 });
+    agentTasks().update(created.id, { ...structuredBlocker, updatedAt: 5 });
+    expect(agentTasks().get(created.id)?.state).toBe("blocked");
+    expect(getAgentTask(created.id, 5 + BLOCKED_STALE_AFTER_MS + 1)?.state).toBe("stale");
+    const again = seed({ assignment: "other", sourceThreadId: "t2", fromBotId: "lead-2", now: 6 });
+    agentTasks().update(again.id, { state: "blocked", blocker: "quota", updatedAt: 6 });
+    expect(listAgentTasks(6).find((task) => task.id === again.id)?.state).toBe("stale");
   });
 
   it("does not implement stale with a timer", () => {
@@ -224,7 +325,7 @@ describe("agent task persist / reload", () => {
     expect(agentTasks().get(superseded.id)?.state).toBe("superseded");
     expect(agentTasks().get(stale.id)?.state).toBe("stale");
     expect(agentTasks().list()).toHaveLength(3);
-    expect(agentTasks().list().filter(isActiveQueueTask)).toHaveLength(0);
+    expect(agentTasks().list().filter((task) => isActiveQueueTask(task))).toHaveLength(0);
   });
 
   it("memory fallback is isolated when the store is reset", () => {
