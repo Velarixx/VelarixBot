@@ -99,6 +99,33 @@ describe("TaskPanelView", () => {
     expect(blocked).toContain("1 assigned / 1 active");
   });
 
+  it("projects delivery status without rewriting hide or collapse", () => {
+    const markup = renderToStaticMarkup(
+      createElement(TaskPanelView, {
+        tasks: [
+          task({
+            id: "1",
+            state: "completed",
+            deliveryState: "delivered",
+            result: "here is the research",
+          }),
+        ],
+        historyOpen: true,
+        selectedTaskId: "1",
+      }),
+    );
+    expect(markup).toContain("delivered");
+    expect(markup).toContain("History");
+    const hidden = renderToStaticMarkup(
+      createElement(TaskPanelView, {
+        tasks: [task({ id: "1", state: "pending", deliveryState: "delivery_pending" })],
+        visibility: "hidden",
+      }),
+    );
+    expect(hidden).toContain("Restore assigned tasks");
+    expect(hidden).not.toContain("delivery pending");
+  });
+
   it("collapses the list while keeping the header and count", () => {
     const markup = renderToStaticMarkup(
       createElement(TaskPanelView, {

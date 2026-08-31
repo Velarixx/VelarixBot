@@ -29,6 +29,9 @@ export interface AgentTask {
   blocker?: string;
   createdAt: number;
   updatedAt: number;
+  deliveryState?: "result_stored" | "delivery_pending" | "delivered" | "delivery_failed";
+  runOutcome?: "completed" | "failed" | "interrupted" | "partial";
+  failureCode?: string;
 }
 
 export const AGENT_TASK_STATE_LABEL: Record<AgentTaskState, string> = {

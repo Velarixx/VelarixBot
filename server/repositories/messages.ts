@@ -6,7 +6,41 @@
 import { deleteBlob, putBlobBase64, readBlob, readBlobBase64 } from "../db/blobs.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { normalizeMessage, type Message } from "../store.ts";
-import { newId } from "../contracts.ts";
+import { createHash } from "node:crypto";
+import { canonicalJson, newId, sha256Canonical } from "../contracts.ts";
+
+function pngFingerprint(png: string | undefined): string | null {
+  if (typeof png !== "string" || !png) return null;
+  return createHash("sha256").update(Buffer.from(png, "base64")).digest("hex");
+}
+
+export function canonicalMessagePayload(
+  message: Pick<Message, "role" | "kind" | "text" | "report" | "from" | "comm" | "task" | "tool" | "png">,
+): string {
+  return canonicalJson({
+    comm: message.comm ?? null,
+    from: message.from ?? null,
+    kind: message.kind,
+    pngHash: pngFingerprint(message.png),
+    report: message.report ?? null,
+    role: message.role,
+    task: message.task ?? null,
+    text: message.text ?? null,
+    tool: message.tool ?? null,
+  });
+}
+
+export function messagePayloadHash(
+  message: Pick<Message, "role" | "kind" | "text" | "report" | "from" | "comm" | "task" | "tool" | "png">,
+): string {
+  return sha256Canonical(JSON.parse(canonicalMessagePayload(message)));
+}
+
+export type PutFixedResult =
+  | { status: "inserted"; message: Message }
+  | { status: "verified"; message: Message }
+  | { status: "missing_thread" }
+  | { status: "conflict"; code: "payload_mismatch" | "thread_mismatch" };
 
 interface MessageRow {
   id: string;
@@ -62,9 +96,13 @@ export interface MessagesRepository {
    * `before` id is not in this thread — callers must 404, not wrap. */
   pageForThread(threadId: string, opts: { limit: number; before?: string | null; slim?: boolean }): MessagePage | null;
   find(threadId: string, id: string): Message | null;
+  findById(id: string): { threadId: string; message: Message } | null;
   /** Raw screenshot bytes for one message, or null when it has none. */
   readImage(threadId: string, id: string): { bytes: Buffer; mime: string } | null;
   append(threadId: string, message: Omit<Message, "id" | "at"> & { at?: number; id?: string }): Message;
+  /** Idempotent fixed-ID put. Verifies identical existing thread and payload.
+   * Does not create a missing destination thread. */
+  putFixed(threadId: string, id: string, message: Omit<Message, "id" | "at"> & { at?: number }): PutFixedResult;
   patch(threadId: string, id: string, patch: Partial<Message>): Message | null;
   /** All-or-nothing: the thread row, its messages, and its event-log rows
    * go in ONE transaction; a failure anywhere leaves everything intact. */
@@ -113,6 +151,10 @@ export function createMessagesRepository(
   const selectOne = db.prepare<MessageRow>(
     "SELECT id, thread_id, at, png_hash, data FROM messages WHERE thread_id = ? AND id = ?",
   );
+  const selectById = db.prepare<MessageRow>(
+    "SELECT id, thread_id, at, png_hash, data FROM messages WHERE id = ?",
+  );
+  const selectThreadExists = db.prepare<{ id: string }>("SELECT id FROM threads WHERE id = ?");
   const selectSeq = db.prepare<{ seq: number }>("SELECT seq FROM messages WHERE thread_id = ? AND id = ?");
   const selectNewest = db.prepare<MessageRow>(
     "SELECT id, thread_id, at, png_hash, data, seq FROM messages WHERE thread_id = ? ORDER BY seq DESC LIMIT ?",
@@ -189,6 +231,32 @@ export function createMessagesRepository(
   function find(threadId: string, id: string): Message | null {
     const row = selectOne.get(threadId, id);
     return row ? rowToMessage(row) : null;
+  }
+
+  function findById(id: string): { threadId: string; message: Message } | null {
+    const row = selectById.get(id);
+    if (!row) return null;
+    const message = rowToMessage(row);
+    if (!message) return null;
+    return { threadId: row.thread_id, message };
+  }
+
+  function putFixed(threadId: string, id: string, message: Omit<Message, "id" | "at"> & { at?: number }): PutFixedResult {
+    if (!selectThreadExists.get(threadId)) return { status: "missing_thread" };
+    const existing = selectById.get(id);
+    if (existing) {
+      if (existing.thread_id !== threadId) return { status: "conflict", code: "thread_mismatch" };
+      const current = rowToMessage(existing);
+      if (!current) return { status: "conflict", code: "payload_mismatch" };
+      if (canonicalMessagePayload(current) !== canonicalMessagePayload(message)) {
+        return { status: "conflict", code: "payload_mismatch" };
+      }
+      return { status: "verified", message: current };
+    }
+    const full: Message = { ...message, id, at: message.at ?? Date.now() };
+    const { data, pngHash } = toRow(full);
+    appendTx(threadId, full, pngHash, data);
+    return { status: "inserted", message: full };
   }
 
   function readImageForMessage(threadId: string, id: string): { bytes: Buffer; mime: string } | null {
@@ -292,6 +360,12 @@ export function createMessagesRepository(
     },
     find(threadId, id) {
       return find(threadId, id);
+    },
+    findById(id) {
+      return findById(id);
+    },
+    putFixed(threadId, id, message) {
+      return putFixed(threadId, id, message);
     },
     readImage(threadId, id) {
       return readImageForMessage(threadId, id);

@@ -353,4 +353,57 @@ describe("messages repository", () => {
     expect(existsSync(join(blobsDir(), avatarHash))).toBe(false);
     expect(existsSync(join(blobsDir(), shotHash))).toBe(false);
   });
+
+  it("putFixed inserts, verifies identical replay, and fails closed on conflicts", () => {
+    const messages = createMessagesRepository(db);
+    messages.append("t-fixed", { role: "user", kind: "text", text: "seed" });
+    const payload = { role: "bot" as const, kind: "text" as const, text: "sealed result" };
+    const first = messages.putFixed("t-fixed", "dtr:run-1:parent", payload);
+    expect(first.status).toBe("inserted");
+    const replay = messages.putFixed("t-fixed", "dtr:run-1:parent", payload);
+    expect(replay.status).toBe("verified");
+    expect(messages.putFixed("missing-thread", "dtr:run-1:other", payload)).toEqual({ status: "missing_thread" });
+    expect(messages.putFixed("t-fixed", "dtr:run-1:parent", { ...payload, text: "tampered" })).toEqual({
+      status: "conflict",
+      code: "payload_mismatch",
+    });
+    messages.append("t-other", { role: "user", kind: "text", text: "other" });
+    expect(messages.putFixed("t-other", "dtr:run-1:parent", payload)).toEqual({
+      status: "conflict",
+      code: "thread_mismatch",
+    });
+  });
+
+  it("putFixed screenshot replay keeps the blob and conflict does not replace it", () => {
+    const messages = createMessagesRepository(db);
+    messages.append("t-shot", { role: "user", kind: "text", text: "seed" });
+    const first = messages.putFixed("t-shot", "dtr:shot:parent", {
+      role: "bot",
+      kind: "screen",
+      png: PNG_BASE64,
+      mime: "image/png",
+    });
+    expect(first.status).toBe("inserted");
+    const hash = createHash("sha256").update(Buffer.from(PNG_BASE64, "base64")).digest("hex");
+    expect(existsSync(join(blobsDir(), hash))).toBe(true);
+    expect(
+      messages.putFixed("t-shot", "dtr:shot:parent", {
+        role: "bot",
+        kind: "screen",
+        png: PNG_BASE64,
+        mime: "image/png",
+      }).status,
+    ).toBe("verified");
+    const other = Buffer.from("different-bytes").toString("base64");
+    expect(
+      messages.putFixed("t-shot", "dtr:shot:parent", {
+        role: "bot",
+        kind: "screen",
+        png: other,
+        mime: "image/png",
+      }),
+    ).toEqual({ status: "conflict", code: "payload_mismatch" });
+    expect(messages.find("t-shot", "dtr:shot:parent")?.png).toBe(PNG_BASE64);
+    expect(existsSync(join(blobsDir(), hash))).toBe(true);
+  });
 });

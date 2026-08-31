@@ -59,10 +59,10 @@ import {
 import { suggestionCardsFor, suggestionItemsFromRepeatedWorkflows } from "../suggestions.ts";
 import {
   agentTasks,
-  assigneeTurnTaskPatch,
   openTasksForSource,
   patchAgentTask,
 } from "../agent-tasks.ts";
+import { classifyAssigneeFailure, createDelegatedResultsService, type DelegatedResultsService } from "./delegated-results.ts";
 import { agentsCommsPrompt } from "../chief-of-staff.ts";
 import { bindCommsStore, mirrorReply } from "../comms-visibility.ts";
 import { discardDelegations, drainDelegations } from "../delegations.ts";
@@ -145,6 +145,8 @@ export interface TurnsServiceDeps {
   lineage?: LineageService;
   /** P7: local per-provider usage totals for routed inference. */
   usage?: UsageService;
+  /** P0 #150: durable delegated-result ledger. Optional so existing turn tests stay unchanged. */
+  delegatedResults?: DelegatedResultsService;
 }
 
 export interface TurnsService {
@@ -181,6 +183,17 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
   const groups = deps.groups ?? createGroupsService({ repos });
   const commsBus = { store: bindCommsStore(bots, groups), broadcast };
   const now = deps.now ?? (() => Date.now());
+  const delegatedResults =
+    deps.delegatedResults ??
+    createDelegatedResultsService({
+      repos,
+      now,
+      broadcast,
+      lookupBot: (id) => {
+        const bot = store.bot(id);
+        return bot ? { id: bot.id, name: bot.name, color: bot.color, threadId: bot.threadId } : null;
+      },
+    });
   configureUnattended({
     now,
     isBusy: (id) => store.bot(id)?.busy === true,
@@ -241,14 +254,98 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     sourceThreadId: string;
     taskId?: string;
     channelId?: string;
+    runId?: string;
   } | null {
-    const live = delegatedByThread.get(bot.threadId);
-    if (live) return live;
-    const active = agentTasks()
-      .listByAssignee(bot.id)
-      .find((task) => task.state === "active" || task.state === "pending");
-    if (!active) return null;
-    return { sourceBotId: active.fromBotId, sourceThreadId: active.sourceThreadId, taskId: active.id };
+    const run = delegatedResults.getRunningForThread(bot.threadId) ?? delegatedResults.getPendingForThread(bot.threadId);
+    if (run) {
+      const live = delegatedByThread.get(bot.threadId);
+      return {
+        sourceBotId: run.sourceBotId,
+        sourceThreadId: run.sourceThreadId,
+        taskId: run.taskId,
+        channelId: live?.channelId,
+        runId: run.id,
+      };
+    }
+    return delegatedByThread.get(bot.threadId) ?? null;
+  }
+
+  function bindDelegatedRun(
+    bot: { id: string; threadId: string; modelSelection: { instanceId: string; model: string } },
+    turnId: string,
+    startedAt: number,
+  ): void {
+    const pending = delegatedResults.getPendingForThread(bot.threadId);
+    if (!pending) return;
+    const identity = delegatedResults.identityOf(pending);
+    try {
+      delegatedResults.bindRunning({
+        identity,
+        turnId,
+        providerInstanceId: bot.modelSelection.instanceId,
+        providerModel: bot.modelSelection.model,
+        startedAt,
+      });
+    } catch {
+      delegatedResults.bindRunning({
+        identity,
+        turnId: `${pending.id}:${turnId}`,
+        providerInstanceId: bot.modelSelection.instanceId,
+        providerModel: bot.modelSelection.model,
+        startedAt,
+      });
+    }
+  }
+
+  function progressTextFor(run: NonNullable<ReturnType<DelegatedResultsService["get"]>>): string {
+    if (!run.progressJson) return "";
+    try {
+      const parsed = JSON.parse(run.progressJson) as { text?: unknown };
+      return typeof parsed.text === "string" ? parsed.text : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function finalizeBoundRun(
+    peer: { id: string; threadId: string; name: string; color?: MausColor; modelSelection?: { instanceId: string; model: string } },
+    outcome: { ok: boolean; text?: string; detail?: string },
+  ): boolean {
+    let run = delegatedResults.getRunningForThread(peer.threadId);
+    if (!run) {
+      const pending = delegatedResults.getPendingForThread(peer.threadId);
+      if (!pending) return false;
+      const bot = store.bot(peer.id);
+      const startedAt = now();
+      try {
+        run = delegatedResults.bindRunning({
+          identity: delegatedResults.identityOf(pending),
+          turnId: `seal:${pending.id}`,
+          providerInstanceId: bot?.modelSelection.instanceId ?? "unknown",
+          providerModel: bot?.modelSelection.model ?? "unknown",
+          startedAt,
+        });
+      } catch {
+        return false;
+      }
+    }
+    const classified = outcome.ok
+      ? { outcome: "completed" as const, failureCode: undefined }
+      : classifyAssigneeFailure(outcome.detail);
+    const text = (outcome.text ?? "").trim() || progressTextFor(run);
+    delegatedResults.finalize({
+      identity: delegatedResults.identityOf(run),
+      result: {
+        text,
+        outcome: classified.outcome,
+        ...(classified.failureCode ? { failureCode: classified.failureCode } : {}),
+      },
+      now: now(),
+      workerName: peer.name,
+      workerColor: peer.color,
+    });
+    delegatedResults.pumpDue(now());
+    return true;
   }
 
   function waitingFromOpenTasks(sourceThreadId: string): WorkflowWaitingFor[] {
@@ -311,42 +408,16 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const ctx = delegatedContext(peer);
     if (!ctx) return;
     delegatedByThread.delete(peer.threadId);
-    const reply = (outcome.text ?? "").trim();
-    if (ctx.taskId) {
-      broadcastTask(patchAgentTask(ctx.taskId, assigneeTurnTaskPatch({ ...outcome, text: reply })));
-    }
+    const sealed = finalizeBoundRun(peer, outcome);
     const lead = store.botByThread(ctx.sourceThreadId) ?? store.bot(ctx.sourceBotId);
     if (!lead) return;
-    const channel = ctx.channelId ? groups.get(ctx.channelId) : groups.dmGroup(lead.id, peer.id);
-    const comm = channel
-      ? { groupId: channel.id, withBotId: peer.id, withName: peer.name, withColor: peer.color }
-      : undefined;
-    if (outcome.ok) {
-      upsertLeadReport(
-        lead.threadId,
-        { kind: "completion", fromBotId: peer.id, taskId: ctx.taskId },
-        {
-          role: "bot",
-          kind: "text",
-          text: reply || `@${peer.name} finished`,
-          from: { botId: peer.id, name: peer.name, color: peer.color },
-          comm,
-          task: ctx.taskId ? { id: ctx.taskId } : undefined,
-        },
-      );
-    } else {
-      upsertLeadReport(
-        lead.threadId,
-        { kind: "blocker", fromBotId: peer.id, taskId: ctx.taskId },
-        {
-          role: "bot",
-          kind: "text",
-          text: outcome.detail || reply || `@${peer.name} is blocked`,
-          from: { botId: peer.id, name: peer.name, color: peer.color },
-          comm,
-          task: ctx.taskId ? { id: ctx.taskId } : undefined,
-        },
-      );
+    if (ctx.taskId && !sealed) {
+      broadcastTask(patchAgentTask(ctx.taskId, outcome.ok ? { state: "completed", result: (outcome.text ?? "").trim() } : { state: "blocked", blocker: outcome.detail }));
+    } else if (ctx.taskId) {
+      const task = agentTasks().get(ctx.taskId);
+      if (task) broadcastTask(task);
+    }
+    if (!outcome.ok) {
       setWorkflow(lead.id, {
         workflowStatus: "blocked",
         workflowWaitingFor: removeWaitingFor(lead.workflowWaitingFor, peer.id),
@@ -979,6 +1050,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       case "turn.started":
         if (event.turnId) turnUsage.delete(event.turnId);
         lastRuntimeMessage.delete(event.threadId);
+        if (event.turnId) bindDelegatedRun(bot, event.turnId, now());
         bots.patchBot(bot.id, { busy: true, state: "RUNNING", stateDetail: undefined, stateCode: undefined });
         proactive.noteState(bot.id, "RUNNING");
         broadcastBot(bot.id);
@@ -990,6 +1062,16 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         if (event.itemType === "assistant_text") {
           const reply = parseResponseOptions(event.text);
           if (reply.text) pushMessage({ role: "bot", kind: "text", text: reply.text });
+          const run = delegatedResults.getRunningForThread(event.threadId);
+          if (run && reply.text) {
+            const prior = progressTextFor(run);
+            const next = prior ? `${prior}\n${reply.text}` : reply.text;
+            try {
+              delegatedResults.recordProgress({ identity: delegatedResults.identityOf(run), text: next, now: now() });
+            } catch {
+              /* late or duplicate progress is ignored */
+            }
+          }
           if (event.turnId && shouldAttachResponseOptions(event.provider) && reply.options.length >= 2) {
             responseOptionsByTurn.set(event.turnId, reply.options);
           }
@@ -1122,6 +1204,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         const blocked = userFacingBlock({ runtimeMessage: event.message, stopReason: isSpawnFailure(undefined, event.message) ? "spawn_error" : undefined });
         pushMessage({ role: "bot", kind: "activity", tool: { name: `error: ${blocked.stateDetail.slice(0, 160)}`, ok: false } });
         maybeAppendSetupCard(event.threadId, blocked);
+        settleDelegatedPeer(bot, { ok: false, detail: blocked.stateDetail });
         bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: blocked.stateDetail, stateCode: blocked.stateCode });
         proactive.noteState(bot.id, "BLOCKED");
         notifyIdle(bot.id);
@@ -1130,7 +1213,6 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           workflowStatus: "blocked",
           workflowStopReason: AUTONOMY_STOP.blocked(blocked.stateDetail),
         });
-        settleDelegatedPeer(bot, { ok: false, detail: blocked.stateDetail });
         broadcastBot(bot.id);
         break;
       }
@@ -1169,6 +1251,19 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
               runtimeMessage,
             });
         if (blocked) maybeAppendSetupCard(event.threadId, blocked);
+        const settledAsPeer = (() => {
+          const asPeer = delegatedContext(bot);
+          if (!asPeer || asPeer.sourceThreadId === bot.threadId) return false;
+          const lastText = [...store.messagesFor(event.threadId)]
+            .reverse()
+            .find((row) => row.kind === "text" && row.role === "bot" && !row.report)?.text;
+          settleDelegatedPeer(bot, {
+            ok: event.ok,
+            text: lastText,
+            detail: event.ok ? undefined : (blocked?.stateDetail ?? event.stopReason ?? undefined),
+          });
+          return true;
+        })();
         bots.patchBot(bot.id, {
           busy: false,
           unread: true,
@@ -1184,6 +1279,18 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
             const source = store.botByThread(sourceThreadId);
             let unsub: (() => void) | undefined;
             if (target && source) {
+              if (taskId) {
+                delegatedResults.createPending({
+                  taskId,
+                  workerBotId: target.id,
+                  workerThreadId: target.threadId,
+                  sourceBotId: source.id,
+                  sourceThreadId,
+                  parentThreadId: source.threadId,
+                  roomThreadId: channel?.threadId ?? null,
+                  now: now(),
+                });
+              }
               delegatedByThread.set(target.threadId, {
                 sourceBotId: source.id,
                 sourceThreadId,
@@ -1236,16 +1343,8 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           discardDelegations(commsBus, event.threadId);
         }
         {
-          const asPeer = delegatedContext(bot);
-          const lastText = [...store.messagesFor(event.threadId)]
-            .reverse()
-            .find((row) => row.kind === "text" && row.role === "bot" && !row.report)?.text;
-          if (asPeer && asPeer.sourceThreadId !== bot.threadId) {
-            settleDelegatedPeer(bot, {
-              ok: event.ok,
-              text: lastText,
-              detail: event.ok ? undefined : (blocked?.stateDetail ?? event.stopReason ?? undefined),
-            });
+          if (settledAsPeer) {
+            /* finalized before worker-ready / lane release */
           } else if (event.ok) {
             const waiting = waitingFromOpenTasks(bot.threadId);
             if (waiting.length) {
@@ -1615,7 +1714,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           });
         }
 
-        await instance.adapter.sendTurn({
+        const started = await instance.adapter.sendTurn({
           threadId: bot.threadId,
           text,
           model: bot.modelSelection.model,
@@ -1656,6 +1755,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           integrations,
           requireApproval: bot.requireApproval === true || isUnattended(bot.id),
         });
+        bindDelegatedRun(bot, started.turnId, now());
         if (integrations.computer) startScreenPoller(bot.id);
       } catch (e) {
         // covers the lease-wait timeout ("computer busy — in use by <bot>")
@@ -1674,6 +1774,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         });
         broadcast({ kind: "message", threadId: bot.threadId, message: failure });
         maybeAppendSetupCard(bot.threadId, blocked);
+        settleDelegatedPeer(bot, { ok: false, detail: blocked.stateDetail });
         bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: blocked.stateDetail, stateCode: blocked.stateCode });
         proactive.noteState(bot.id, "BLOCKED");
         notifyIdle(bot.id);
@@ -1682,7 +1783,6 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           workflowStatus: "blocked",
           workflowStopReason: AUTONOMY_STOP.blocked(blocked.stateDetail),
         });
-        settleDelegatedPeer(bot, { ok: false, detail: blocked.stateDetail });
         broadcastBot(bot.id);
       }
     })();
@@ -1768,6 +1868,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         releaseComputerLease(botId);
         settleRunningActivities(bot.threadId, "cancelled");
         await instance?.adapter.interruptTurn(bot.threadId);
+    settleDelegatedPeer(bot, { ok: false, detail: "interrupted" });
         bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
     proactive.noteState(bot.id, "BLOCKED");
     notifyIdle(bot.id);
@@ -1776,7 +1877,6 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       workflowStatus: "paused",
       workflowStopReason: AUTONOMY_STOP.paused,
     });
-    settleDelegatedPeer(bot, { ok: false, detail: "interrupted" });
     broadcastBot(bot.id);
     return { ok: true };
   }

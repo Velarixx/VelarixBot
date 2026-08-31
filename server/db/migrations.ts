@@ -897,6 +897,394 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // P0 #150: authoritative run/outbox ledger for task-backed delegate_bot
+    // worker runs. Security invariants are baked into this single additive
+    // migration. v1–22 are byte-untouched. There is no down migration.
+    version: 23,
+    name: "agent-task-result-ledger",
+    up(db) {
+      db.exec(`
+        CREATE TABLE agent_task_runs (
+          id TEXT PRIMARY KEY NOT NULL
+            CHECK(typeof(id) = 'text' AND length(id) BETWEEN 1 AND 128),
+          task_id TEXT NOT NULL
+            CHECK(typeof(task_id) = 'text' AND length(task_id) BETWEEN 1 AND 128),
+          worker_bot_id TEXT NOT NULL
+            CHECK(typeof(worker_bot_id) = 'text' AND length(worker_bot_id) BETWEEN 1 AND 128),
+          worker_thread_id TEXT NOT NULL
+            CHECK(typeof(worker_thread_id) = 'text' AND length(worker_thread_id) BETWEEN 1 AND 128),
+          source_bot_id TEXT NOT NULL
+            CHECK(typeof(source_bot_id) = 'text' AND length(source_bot_id) BETWEEN 1 AND 128),
+          source_thread_id TEXT NOT NULL
+            CHECK(typeof(source_thread_id) = 'text' AND length(source_thread_id) BETWEEN 1 AND 128),
+          parent_thread_id TEXT NOT NULL
+            CHECK(typeof(parent_thread_id) = 'text' AND length(parent_thread_id) BETWEEN 1 AND 128),
+          room_thread_id TEXT
+            CHECK(room_thread_id IS NULL OR (typeof(room_thread_id) = 'text' AND length(room_thread_id) BETWEEN 1 AND 128)),
+          attempt INTEGER NOT NULL
+            CHECK(typeof(attempt) = 'integer' AND attempt >= 1),
+          execution_state TEXT NOT NULL
+            CHECK(execution_state IN ('pending', 'running', 'completed', 'failed', 'interrupted', 'partial')),
+          turn_id TEXT
+            CHECK(turn_id IS NULL OR (typeof(turn_id) = 'text' AND length(turn_id) BETWEEN 1 AND 256)),
+          provider_instance_id TEXT
+            CHECK(provider_instance_id IS NULL OR (typeof(provider_instance_id) = 'text' AND length(provider_instance_id) BETWEEN 1 AND 128)),
+          provider_model TEXT
+            CHECK(provider_model IS NULL OR (typeof(provider_model) = 'text' AND length(provider_model) BETWEEN 1 AND 256)),
+          started_at INTEGER
+            CHECK(started_at IS NULL OR (typeof(started_at) = 'integer' AND started_at BETWEEN 0 AND 9007199254740991)),
+          created_at INTEGER NOT NULL
+            CHECK(typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 9007199254740991),
+          updated_at INTEGER NOT NULL
+            CHECK(typeof(updated_at) = 'integer' AND updated_at BETWEEN created_at AND 9007199254740991),
+          last_progress_at INTEGER
+            CHECK(last_progress_at IS NULL OR (typeof(last_progress_at) = 'integer' AND last_progress_at BETWEEN created_at AND 9007199254740991)),
+          progress_seq INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(progress_seq) = 'integer' AND progress_seq >= 0),
+          progress_json TEXT
+            CHECK(progress_json IS NULL OR (typeof(progress_json) = 'text' AND length(progress_json) > 0)),
+          result_json TEXT
+            CHECK(result_json IS NULL OR (typeof(result_json) = 'text' AND length(result_json) > 0)),
+          result_hash TEXT
+            CHECK(result_hash IS NULL OR (typeof(result_hash) = 'text' AND length(result_hash) = 64 AND result_hash NOT GLOB '*[^0-9a-f]*')),
+          terminal_outcome TEXT
+            CHECK(terminal_outcome IS NULL OR terminal_outcome IN ('completed', 'failed', 'interrupted', 'partial')),
+          failure_code TEXT
+            CHECK(failure_code IS NULL OR failure_code IN ('interrupted', 'cancelled', 'provider_error', 'auth', 'config', 'quota')),
+          CHECK(
+            (execution_state = 'pending'
+              AND turn_id IS NULL
+              AND provider_instance_id IS NULL
+              AND provider_model IS NULL
+              AND started_at IS NULL
+              AND result_json IS NULL
+              AND result_hash IS NULL
+              AND terminal_outcome IS NULL
+              AND failure_code IS NULL)
+            OR
+            (execution_state = 'running'
+              AND turn_id IS NOT NULL
+              AND provider_instance_id IS NOT NULL
+              AND provider_model IS NOT NULL
+              AND started_at IS NOT NULL
+              AND result_json IS NULL
+              AND result_hash IS NULL
+              AND terminal_outcome IS NULL)
+            OR
+            (execution_state IN ('completed', 'failed', 'interrupted', 'partial')
+              AND turn_id IS NOT NULL
+              AND provider_instance_id IS NOT NULL
+              AND provider_model IS NOT NULL
+              AND started_at IS NOT NULL
+              AND terminal_outcome = execution_state
+              AND result_json IS NOT NULL
+              AND result_hash IS NOT NULL)
+          )
+        );
+        CREATE UNIQUE INDEX agent_task_runs_one_running_thread
+          ON agent_task_runs(worker_thread_id)
+          WHERE execution_state = 'running';
+        CREATE UNIQUE INDEX agent_task_runs_provider_turn
+          ON agent_task_runs(provider_instance_id, turn_id)
+          WHERE execution_state <> 'pending' AND turn_id IS NOT NULL;
+        CREATE INDEX agent_task_runs_source_state
+          ON agent_task_runs(source_thread_id, execution_state);
+        CREATE INDEX agent_task_runs_worker_state
+          ON agent_task_runs(worker_bot_id, execution_state);
+        CREATE INDEX agent_task_runs_task
+          ON agent_task_runs(task_id, created_at);
+
+        CREATE TRIGGER agent_task_runs_insert_pending_only
+          BEFORE INSERT ON agent_task_runs
+          WHEN NEW.execution_state <> 'pending'
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_runs insert must be pending');
+          END;
+        CREATE TRIGGER agent_task_runs_no_replace
+          BEFORE INSERT ON agent_task_runs
+          WHEN EXISTS(
+            SELECT 1 FROM agent_task_runs existing
+            WHERE existing.id = NEW.id
+               OR (
+                 NEW.turn_id IS NOT NULL
+                 AND NEW.execution_state <> 'pending'
+                 AND existing.provider_instance_id IS NEW.provider_instance_id
+                 AND existing.turn_id IS NEW.turn_id
+                 AND existing.execution_state <> 'pending'
+               )
+               OR (
+                 NEW.execution_state = 'running'
+                 AND existing.worker_thread_id = NEW.worker_thread_id
+                 AND existing.execution_state = 'running'
+               )
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_runs cannot be replaced');
+          END;
+        CREATE TRIGGER agent_task_runs_no_delete
+          BEFORE DELETE ON agent_task_runs
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_runs cannot be deleted');
+          END;
+        CREATE TRIGGER agent_task_runs_identity_immutable
+          BEFORE UPDATE OF id, task_id, worker_bot_id, worker_thread_id, source_bot_id,
+            source_thread_id, parent_thread_id, room_thread_id, attempt ON agent_task_runs
+          WHEN NEW.id IS NOT OLD.id
+            OR NEW.task_id IS NOT OLD.task_id
+            OR NEW.worker_bot_id IS NOT OLD.worker_bot_id
+            OR NEW.worker_thread_id IS NOT OLD.worker_thread_id
+            OR NEW.source_bot_id IS NOT OLD.source_bot_id
+            OR NEW.source_thread_id IS NOT OLD.source_thread_id
+            OR NEW.parent_thread_id IS NOT OLD.parent_thread_id
+            OR NEW.room_thread_id IS NOT OLD.room_thread_id
+            OR NEW.attempt IS NOT OLD.attempt
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_runs identity is immutable');
+          END;
+        CREATE TRIGGER agent_task_runs_legal_transition
+          BEFORE UPDATE OF execution_state ON agent_task_runs
+          WHEN NOT (
+            (OLD.execution_state = 'pending' AND NEW.execution_state = 'running')
+            OR (OLD.execution_state = 'running' AND NEW.execution_state IN ('completed', 'failed', 'interrupted', 'partial'))
+            OR (OLD.execution_state = NEW.execution_state)
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_runs illegal state transition');
+          END;
+        CREATE TRIGGER agent_task_runs_terminal_immutable
+          BEFORE UPDATE ON agent_task_runs
+          WHEN OLD.execution_state IN ('completed', 'failed', 'interrupted', 'partial')
+            AND (
+              NEW.execution_state IS NOT OLD.execution_state
+              OR NEW.terminal_outcome IS NOT OLD.terminal_outcome
+              OR NEW.result_json IS NOT OLD.result_json
+              OR NEW.result_hash IS NOT OLD.result_hash
+              OR NEW.failure_code IS NOT OLD.failure_code
+              OR NEW.turn_id IS NOT OLD.turn_id
+              OR NEW.provider_instance_id IS NOT OLD.provider_instance_id
+              OR NEW.provider_model IS NOT OLD.provider_model
+              OR NEW.started_at IS NOT OLD.started_at
+            )
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_runs terminal receipt is immutable');
+          END;
+        CREATE TRIGGER agent_task_runs_progress_monotonic
+          BEFORE UPDATE OF progress_seq ON agent_task_runs
+          WHEN NEW.progress_seq < OLD.progress_seq
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_runs progress_seq is monotonic');
+          END;
+        CREATE TRIGGER agent_task_runs_timestamps_monotonic
+          BEFORE UPDATE OF updated_at, last_progress_at ON agent_task_runs
+          WHEN NEW.updated_at < OLD.updated_at
+            OR (NEW.last_progress_at IS NOT NULL AND OLD.last_progress_at IS NOT NULL AND NEW.last_progress_at < OLD.last_progress_at)
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_runs timestamps are monotonic');
+          END;
+
+        CREATE TABLE agent_task_deliveries (
+          id TEXT PRIMARY KEY NOT NULL
+            CHECK(typeof(id) = 'text' AND length(id) BETWEEN 1 AND 128),
+          run_id TEXT NOT NULL
+            REFERENCES agent_task_runs(id)
+            CHECK(typeof(run_id) = 'text' AND length(run_id) BETWEEN 1 AND 128),
+          destination_kind TEXT NOT NULL
+            CHECK(destination_kind IN ('parent', 'room')),
+          destination_thread_id TEXT NOT NULL
+            CHECK(typeof(destination_thread_id) = 'text' AND length(destination_thread_id) BETWEEN 1 AND 128),
+          message_id TEXT NOT NULL
+            CHECK(typeof(message_id) = 'text' AND length(message_id) BETWEEN 1 AND 256),
+          payload_json TEXT NOT NULL
+            CHECK(typeof(payload_json) = 'text' AND length(payload_json) > 0),
+          payload_hash TEXT NOT NULL
+            CHECK(typeof(payload_hash) = 'text' AND length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'),
+          delivery_state TEXT NOT NULL
+            CHECK(delivery_state IN ('pending', 'claimed', 'delivered', 'failed', 'rejected')),
+          attempts INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(attempts) = 'integer' AND attempts >= 0),
+          max_attempts INTEGER NOT NULL DEFAULT 5
+            CHECK(typeof(max_attempts) = 'integer' AND max_attempts BETWEEN 1 AND 32),
+          retry_at INTEGER
+            CHECK(retry_at IS NULL OR (typeof(retry_at) = 'integer' AND retry_at BETWEEN 0 AND 9007199254740991)),
+          claim_token TEXT
+            CHECK(claim_token IS NULL OR (typeof(claim_token) = 'text' AND length(claim_token) BETWEEN 16 AND 128)),
+          claim_owner TEXT
+            CHECK(claim_owner IS NULL OR (typeof(claim_owner) = 'text' AND length(claim_owner) BETWEEN 1 AND 128)),
+          claim_lease_expires_at INTEGER
+            CHECK(claim_lease_expires_at IS NULL OR (typeof(claim_lease_expires_at) = 'integer' AND claim_lease_expires_at BETWEEN 0 AND 9007199254740991)),
+          claim_generation INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(claim_generation) = 'integer' AND claim_generation >= 0),
+          failure_code TEXT
+            CHECK(failure_code IS NULL OR failure_code IN (
+              'destination_unavailable', 'io_error', 'conflict_retry',
+              'auth', 'config', 'quota', 'payload_mismatch', 'identity_mismatch',
+              'attempts_exhausted'
+            )),
+          delivered_at INTEGER
+            CHECK(delivered_at IS NULL OR (typeof(delivered_at) = 'integer' AND delivered_at BETWEEN 0 AND 9007199254740991)),
+          published_at INTEGER
+            CHECK(published_at IS NULL OR (typeof(published_at) = 'integer' AND published_at BETWEEN 0 AND 9007199254740991)),
+          created_at INTEGER NOT NULL
+            CHECK(typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND 9007199254740991),
+          updated_at INTEGER NOT NULL
+            CHECK(typeof(updated_at) = 'integer' AND updated_at BETWEEN created_at AND 9007199254740991),
+          UNIQUE(run_id, destination_kind),
+          UNIQUE(message_id),
+          CHECK(
+            (delivery_state = 'pending' AND delivered_at IS NULL)
+            OR (delivery_state = 'claimed' AND claim_token IS NOT NULL AND claim_owner IS NOT NULL AND claim_lease_expires_at IS NOT NULL AND delivered_at IS NULL)
+            OR (delivery_state = 'delivered' AND delivered_at IS NOT NULL AND claim_token IS NOT NULL)
+            OR (delivery_state IN ('failed', 'rejected') AND delivered_at IS NULL)
+          )
+        );
+        CREATE INDEX agent_task_deliveries_claimable
+          ON agent_task_deliveries(delivery_state, retry_at, claim_lease_expires_at);
+        CREATE INDEX agent_task_deliveries_run
+          ON agent_task_deliveries(run_id, destination_kind);
+
+        CREATE TRIGGER agent_task_deliveries_insert_pending_only
+          BEFORE INSERT ON agent_task_deliveries
+          WHEN NEW.delivery_state <> 'pending'
+            OR NEW.delivered_at IS NOT NULL
+            OR NEW.claim_token IS NOT NULL
+            OR NEW.published_at IS NOT NULL
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_deliveries insert must be pending');
+          END;
+        CREATE TRIGGER agent_task_deliveries_no_replace
+          BEFORE INSERT ON agent_task_deliveries
+          WHEN EXISTS(
+            SELECT 1 FROM agent_task_deliveries existing
+            WHERE existing.id = NEW.id
+               OR (existing.run_id = NEW.run_id AND existing.destination_kind = NEW.destination_kind)
+               OR existing.message_id = NEW.message_id
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_deliveries cannot be replaced');
+          END;
+        CREATE TRIGGER agent_task_deliveries_no_delete
+          BEFORE DELETE ON agent_task_deliveries
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_deliveries cannot be deleted');
+          END;
+        CREATE TRIGGER agent_task_deliveries_identity_immutable
+          BEFORE UPDATE OF id, run_id, destination_kind, destination_thread_id, message_id, payload_json, payload_hash
+            ON agent_task_deliveries
+          WHEN NEW.id IS NOT OLD.id
+            OR NEW.run_id IS NOT OLD.run_id
+            OR NEW.destination_kind IS NOT OLD.destination_kind
+            OR NEW.destination_thread_id IS NOT OLD.destination_thread_id
+            OR NEW.message_id IS NOT OLD.message_id
+            OR NEW.payload_json IS NOT OLD.payload_json
+            OR NEW.payload_hash IS NOT OLD.payload_hash
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_deliveries identity is immutable');
+          END;
+        CREATE TRIGGER agent_task_deliveries_legal_transition
+          BEFORE UPDATE OF delivery_state ON agent_task_deliveries
+          WHEN NOT (
+            (OLD.delivery_state = 'pending' AND NEW.delivery_state IN ('claimed', 'failed', 'rejected'))
+            OR (OLD.delivery_state = 'claimed' AND NEW.delivery_state IN ('pending', 'claimed', 'delivered', 'failed', 'rejected'))
+            OR (OLD.delivery_state = 'failed' AND NEW.delivery_state = 'pending')
+            OR (OLD.delivery_state = NEW.delivery_state)
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_deliveries illegal state transition');
+          END;
+        CREATE TRIGGER agent_task_deliveries_terminal_immutable
+          BEFORE UPDATE ON agent_task_deliveries
+          WHEN OLD.delivery_state IN ('delivered', 'rejected')
+            AND (
+              NEW.delivery_state IS NOT OLD.delivery_state
+              OR NEW.failure_code IS NOT OLD.failure_code
+              OR NEW.delivered_at IS NOT OLD.delivered_at
+              OR NEW.payload_json IS NOT OLD.payload_json
+              OR NEW.payload_hash IS NOT OLD.payload_hash
+              OR NEW.message_id IS NOT OLD.message_id
+              OR NEW.destination_thread_id IS NOT OLD.destination_thread_id
+            )
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_deliveries terminal receipt is immutable');
+          END;
+        CREATE TRIGGER agent_task_deliveries_delivered_proves_message
+          BEFORE UPDATE ON agent_task_deliveries
+          WHEN NEW.delivery_state = 'delivered'
+            AND NOT EXISTS(
+              SELECT 1 FROM messages m
+              WHERE m.id = NEW.message_id AND m.thread_id = NEW.destination_thread_id
+            )
+          BEGIN
+            SELECT RAISE(ABORT, 'delivered receipt requires committed message');
+          END;
+        CREATE TRIGGER agent_task_deliveries_failed_exhausted
+          BEFORE UPDATE ON agent_task_deliveries
+          WHEN NEW.failure_code = 'attempts_exhausted'
+            AND NEW.attempts < NEW.max_attempts
+          BEGIN
+            SELECT RAISE(ABORT, 'attempts_exhausted is legal only at the limit');
+          END;
+        CREATE TRIGGER agent_task_deliveries_lease_bounds
+          BEFORE UPDATE ON agent_task_deliveries
+          WHEN NEW.delivery_state = 'claimed'
+            AND (
+              NEW.claim_lease_expires_at IS NULL
+              OR NEW.claim_lease_expires_at <= NEW.updated_at
+              OR NEW.claim_lease_expires_at - NEW.updated_at > 300000
+            )
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_deliveries lease is bounded');
+          END;
+        CREATE TRIGGER agent_task_deliveries_timestamps_monotonic
+          BEFORE UPDATE OF updated_at ON agent_task_deliveries
+          WHEN NEW.updated_at < OLD.updated_at
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_deliveries timestamps are monotonic');
+          END;
+
+        CREATE TABLE agent_task_delivery_claims (
+          delivery_id TEXT NOT NULL
+            REFERENCES agent_task_deliveries(id)
+            CHECK(typeof(delivery_id) = 'text' AND length(delivery_id) BETWEEN 1 AND 128),
+          generation INTEGER NOT NULL
+            CHECK(typeof(generation) = 'integer' AND generation >= 1),
+          token TEXT NOT NULL
+            CHECK(typeof(token) = 'text' AND length(token) BETWEEN 16 AND 128),
+          owner TEXT NOT NULL
+            CHECK(typeof(owner) = 'text' AND length(owner) BETWEEN 1 AND 128),
+          claimed_at INTEGER NOT NULL
+            CHECK(typeof(claimed_at) = 'integer' AND claimed_at BETWEEN 0 AND 9007199254740991),
+          lease_expires_at INTEGER NOT NULL
+            CHECK(typeof(lease_expires_at) = 'integer' AND lease_expires_at > claimed_at AND lease_expires_at - claimed_at <= 300000),
+          outcome TEXT
+            CHECK(outcome IS NULL OR outcome IN ('acked', 'reclaimed', 'expired')),
+          PRIMARY KEY (delivery_id, generation),
+          UNIQUE(token)
+        );
+        CREATE TRIGGER agent_task_delivery_claims_no_replace
+          BEFORE INSERT ON agent_task_delivery_claims
+          WHEN EXISTS(
+            SELECT 1 FROM agent_task_delivery_claims existing
+            WHERE (existing.delivery_id = NEW.delivery_id AND existing.generation = NEW.generation)
+               OR existing.token = NEW.token
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_delivery_claims cannot be replaced');
+          END;
+        CREATE TRIGGER agent_task_delivery_claims_no_delete
+          BEFORE DELETE ON agent_task_delivery_claims
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_delivery_claims cannot be deleted');
+          END;
+        CREATE TRIGGER agent_task_delivery_claims_no_update_identity
+          BEFORE UPDATE OF delivery_id, generation, token, owner, claimed_at, lease_expires_at
+            ON agent_task_delivery_claims
+          BEGIN
+            SELECT RAISE(ABORT, 'agent_task_delivery_claims identity is immutable');
+          END;
+      `);
+    },
+  },
 ];
 
 export interface MigrationRow {

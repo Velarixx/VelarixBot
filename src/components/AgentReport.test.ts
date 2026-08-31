@@ -66,4 +66,20 @@ describe("AgentReportView", () => {
     expect(handoff).toContain("Handoff");
     expect(handoff).toContain("Chief");
   });
+
+  it("does not keep thinking for terminal, pending, failed, or delivery_failed progress", () => {
+    for (const status of ["terminal", "pending", "failed", "delivery_failed"] as const) {
+      const markup = renderToStaticMarkup(
+        createElement(AgentReportView, {
+          message: report({
+            kind: "activity",
+            text: undefined,
+            tool: { name: "@Helper started" },
+            report: { kind: "progress", fromBotId: "helper", taskId: "task-1", status },
+          }),
+        }),
+      );
+      expect(markup).not.toContain("animate-spin");
+    }
+  });
 });

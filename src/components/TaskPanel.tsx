@@ -246,6 +246,11 @@ function TaskRow({
           {AGENT_TASK_STATE_LABEL[task.state]}
         </span>
         <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{task.assignment}</span>
+        {task.deliveryState && (
+          <span className="shrink-0 text-[10px] uppercase tracking-wide text-ink-secondary" data-testid="task-delivery-state">
+            {task.deliveryState.replaceAll("_", " ")}
+          </span>
+        )}
         <span className="shrink-0 text-[11px] text-ink-secondary">from @{task.fromName}</span>
       </button>
     </li>
