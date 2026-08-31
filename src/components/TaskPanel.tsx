@@ -5,9 +5,14 @@ import {
   isActiveQueueTask,
   taskCounts,
   type AgentTask,
+  type AgentTaskUserAction,
 } from "@/lib/agent-task";
 import { taskPanelPrefForBot, writeTaskPanelPref } from "@/lib/task-panel-prefs";
 import { cn } from "@/lib/cn";
+
+function formatUpdatedAt(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
 
 const stateTone: Record<AgentTask["state"], string> = {
   pending: "bg-raised text-ink-secondary",
@@ -24,15 +29,19 @@ export function TaskPanelView({
   botId,
   selectedTaskId,
   onSelectTask,
+  onTaskAction,
   visibility,
   historyOpen: historyOpenProp,
+  now,
 }: {
   tasks: AgentTask[];
   botId?: string;
   selectedTaskId?: string | null;
   onSelectTask?: (id: string | null) => void;
+  onTaskAction?: (id: string, action: AgentTaskUserAction) => void;
   visibility?: "open" | "collapsed" | "hidden";
   historyOpen?: boolean;
+  now?: number;
 }) {
   const stored = botId ? taskPanelPrefForBot(botId) : { collapsed: false, hidden: false };
   const [collapsed, setCollapsed] = useState(visibility === "collapsed" || stored.collapsed);
@@ -51,9 +60,12 @@ export function TaskPanelView({
     setHidden(pref.hidden);
   }, [botId, visibility]);
 
-  const active = tasks.filter(isActiveQueueTask);
-  const archived = botId ? archivedTasksForBot(tasks, botId) : tasks.filter((task) => !isActiveQueueTask(task));
-  const { assigned, active: activeCount } = taskCounts(tasks);
+  const clock = now ?? Date.now();
+  const active = tasks.filter((task) => isActiveQueueTask(task, clock));
+  const archived = botId
+    ? archivedTasksForBot(tasks, botId, clock)
+    : tasks.filter((task) => !isActiveQueueTask(task, clock));
+  const { assigned, active: activeCount } = taskCounts(tasks, clock);
   const open = tasks.find((task) => task.id === selectedTaskId) ?? null;
 
   if (!tasks.length) return null;
@@ -113,7 +125,7 @@ export function TaskPanelView({
             tasks={archived}
             selectedTaskId={selectedTaskId}
             onSelectTask={onSelectTask}
-            open={open && !isActiveQueueTask(open) ? open : null}
+            open={open && !isActiveQueueTask(open, clock) ? open : null}
           />
         )}
       </div>
@@ -177,10 +189,12 @@ export function TaskPanelView({
             tasks={archived}
             selectedTaskId={selectedTaskId}
             onSelectTask={onSelectTask}
-            open={open && !isActiveQueueTask(open) ? open : null}
+            open={open && !isActiveQueueTask(open, clock) ? open : null}
           />
         )}
-        {!collapsed && open && isActiveQueueTask(open) && <TaskDetail task={open} />}
+        {!collapsed && open && isActiveQueueTask(open, clock) && (
+          <TaskDetail task={open} onTaskAction={onTaskAction} />
+        )}
       </div>
     </section>
   );
@@ -257,7 +271,13 @@ function TaskRow({
   );
 }
 
-function TaskDetail({ task }: { task: AgentTask }) {
+function TaskDetail({
+  task,
+  onTaskAction,
+}: {
+  task: AgentTask;
+  onTaskAction?: (id: string, action: AgentTaskUserAction) => void;
+}) {
   return (
     <div className="rounded-xl border border-hairline/40 bg-card px-3 py-2.5 text-[13px] text-ink">
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
@@ -278,8 +298,48 @@ function TaskDetail({ task }: { task: AgentTask }) {
           <div className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-wide text-danger">
             Latest blocker
           </div>
-          <div className="whitespace-pre-wrap break-words text-danger">{task.blocker}</div>
+          <div className="whitespace-pre-wrap break-words text-danger" data-testid="task-blocker">
+            {task.blocker}
+          </div>
         </>
+      )}
+      {task.blockerOwner && (
+        <div className="mt-2 text-[12px] text-ink-secondary" data-testid="task-blocker-owner">
+          Owner / dependency: {task.blockerOwner}
+        </div>
+      )}
+      {task.nextAction && (
+        <div className="mt-1 text-[12px] text-ink-secondary" data-testid="task-next-action">
+          Next action: {task.nextAction}
+        </div>
+      )}
+      <div className="mt-2 text-[12px] text-ink-secondary" data-testid="task-updated-at">
+        Updated {formatUpdatedAt(task.updatedAt)}
+      </div>
+      {onTaskAction && (
+        <div className="mt-3 flex flex-wrap gap-2" data-testid="task-detail-actions">
+          <button
+            type="button"
+            className="rounded-lg border border-hairline/40 px-2 py-1 text-[12px] text-ink-secondary hover:text-ink"
+            onClick={() => onTaskAction(task.id, "cancel")}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rounded-lg border border-hairline/40 px-2 py-1 text-[12px] text-ink-secondary hover:text-ink"
+            onClick={() => onTaskAction(task.id, "dismiss")}
+          >
+            Dismiss / archive
+          </button>
+          <button
+            type="button"
+            className="rounded-lg border border-hairline/40 px-2 py-1 text-[12px] text-ink-secondary hover:text-ink"
+            onClick={() => onTaskAction(task.id, "obsolete")}
+          >
+            Mark obsolete
+          </button>
+        </div>
       )}
     </div>
   );

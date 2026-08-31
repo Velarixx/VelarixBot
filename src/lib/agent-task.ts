@@ -16,6 +16,9 @@ export type AgentTaskState = (typeof AGENT_TASK_STATES)[number];
 export const ACTIVE_QUEUE_STATES = ["pending", "active", "blocked"] as const;
 export const ARCHIVED_TASK_STATES = ["completed", "cancelled", "superseded", "stale"] as const;
 
+/** Must match server/agent-tasks.ts BLOCKED_STALE_AFTER_MS. Pin in tests. */
+export const BLOCKED_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
 export interface AgentTask {
   id: string;
   assigneeBotId: string;
@@ -27,12 +30,20 @@ export interface AgentTask {
   state: AgentTaskState;
   result?: string;
   blocker?: string;
+  blockerOwner?: string;
+  nextAction?: string;
   createdAt: number;
   updatedAt: number;
+  runId?: string;
   deliveryState?: "result_stored" | "delivery_pending" | "delivered" | "delivery_failed";
   runOutcome?: "completed" | "failed" | "interrupted" | "partial";
   failureCode?: string;
 }
+
+export type ActiveQueueTask = Pick<
+  AgentTask,
+  "state" | "blocker" | "blockerOwner" | "nextAction" | "updatedAt"
+>;
 
 export const AGENT_TASK_STATE_LABEL: Record<AgentTaskState, string> = {
   pending: "Pending",
@@ -48,20 +59,38 @@ export function isAgentTaskState(value: unknown): value is AgentTaskState {
   return typeof value === "string" && (AGENT_TASK_STATES as readonly string[]).includes(value);
 }
 
-export function isActiveQueueTask(task: Pick<AgentTask, "state" | "blocker">): boolean {
+function trimmed(value: string | undefined): string {
+  return (value ?? "").trim();
+}
+
+export function hasStructuredBlocker(task: ActiveQueueTask): boolean {
+  return Boolean(
+    trimmed(task.blocker) &&
+      trimmed(task.blockerOwner) &&
+      trimmed(task.nextAction) &&
+      Number.isFinite(task.updatedAt),
+  );
+}
+
+export function isBlockedPastStaleness(task: Pick<AgentTask, "state" | "updatedAt">, now: number): boolean {
+  return task.state === "blocked" && Number.isFinite(task.updatedAt) && now - task.updatedAt > BLOCKED_STALE_AFTER_MS;
+}
+
+export function isActiveQueueTask(task: ActiveQueueTask, now = Date.now()): boolean {
   if (task.state === "pending" || task.state === "active") return true;
-  return task.state === "blocked" && Boolean(task.blocker?.trim());
+  if (task.state !== "blocked") return false;
+  return hasStructuredBlocker(task) && !isBlockedPastStaleness(task, now);
 }
 
-export function isArchivedTask(task: Pick<AgentTask, "state" | "blocker">): boolean {
-  return !isActiveQueueTask(task);
+export function isArchivedTask(task: ActiveQueueTask, now = Date.now()): boolean {
+  return !isActiveQueueTask(task, now);
 }
 
-export function taskCounts(tasks: readonly Pick<AgentTask, "state" | "blocker">[]): {
+export function taskCounts(tasks: readonly ActiveQueueTask[], now = Date.now()): {
   assigned: number;
   active: number;
 } {
-  const active = tasks.filter(isActiveQueueTask).length;
+  const active = tasks.filter((task) => isActiveQueueTask(task, now)).length;
   return { assigned: active, active };
 }
 
@@ -69,10 +98,21 @@ export function tasksForBot(tasks: readonly AgentTask[], botId: string): AgentTa
   return tasks.filter((task) => task.assigneeBotId === botId).sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export function activeTasksForBot(tasks: readonly AgentTask[], botId: string): AgentTask[] {
-  return tasksForBot(tasks, botId).filter(isActiveQueueTask);
+export function activeTasksForBot(tasks: readonly AgentTask[], botId: string, now = Date.now()): AgentTask[] {
+  return tasksForBot(tasks, botId).filter((task) => isActiveQueueTask(task, now));
 }
 
-export function archivedTasksForBot(tasks: readonly AgentTask[], botId: string): AgentTask[] {
-  return tasksForBot(tasks, botId).filter(isArchivedTask);
+export function archivedTasksForBot(tasks: readonly AgentTask[], botId: string, now = Date.now()): AgentTask[] {
+  return tasksForBot(tasks, botId).filter((task) => isArchivedTask(task, now));
+}
+
+export type AgentTaskUserAction = "cancel" | "dismiss" | "obsolete";
+
+export function userActionTaskPatch(action: AgentTaskUserAction): {
+  state: "cancelled" | "stale";
+  reason: string;
+} {
+  if (action === "cancel") return { state: "cancelled", reason: "Cancelled" };
+  if (action === "dismiss") return { state: "stale", reason: "Dismissed" };
+  return { state: "stale", reason: "Obsolete" };
 }

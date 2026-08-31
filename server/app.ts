@@ -67,7 +67,8 @@ import { createDelegatedResultsService, type DelegatedResultsService } from "./s
 import { createTurnsService, type TurnsService } from "./services/turns.ts";
 import { createUsageService, type UsageService } from "./services/usage.ts";
 import type { ModelSelection } from "./contracts.ts";
-import { configureAgentTasks } from "./agent-tasks.ts";
+import { configureAgentTasks, reconcileStaleBlocked } from "./agent-tasks.ts";
+import { createAgentTaskRoutes } from "./routes/agent-tasks.ts";
 import { configureMemoryStore } from "./memory.ts";
 import { getSkill, skillPrompt } from "./teach.ts";
 
@@ -459,9 +460,18 @@ export async function createApplication(input: CreateApplicationInput): Promise<
       hub,
       bots,
       groups,
-      tasks: repos.agentTasks,
-      beforeSnapshot: () => delegatedResults.stampSealedProgress(),
+      tasks: {
+        list() {
+          reconcileStaleBlocked(clock.now());
+          return repos.agentTasks.list();
+        },
+      },
+      beforeSnapshot: () => {
+        delegatedResults.stampSealedProgress();
+        reconcileStaleBlocked(clock.now());
+      },
     }),
+    createAgentTaskRoutes({ broadcast, now: () => clock.now() }),
     createRoutinesRoutes({ routines }),
     createApprovalsRoutes({ bots }),
     createSidebarSectionsRoutes({ bots, broadcast }),

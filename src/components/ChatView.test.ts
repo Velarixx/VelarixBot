@@ -20,5 +20,8 @@ describe("lead chat workflow + task panel", () => {
     expect(chat).toContain("<Composer bot={bot} />");
     expect(chat.indexOf("<OptionCard")).toBeLessThan(chat.indexOf("<TaskPanelView"));
     expect(chat.indexOf("<TaskPanelView")).toBeLessThan(chat.indexOf("<Composer bot={bot} />"));
+    expect(chat).toContain("/api/agent-tasks/");
+    expect(chat).toContain("userActionTaskPatch");
+    expect(chat).not.toContain("kanban");
   });
 });
