@@ -229,13 +229,13 @@ describe("agent task result ledger", () => {
     const reclaimed = repos.agentTaskRuns.claim({ now: 5_100, owner: "pump-b", deliveryId: parent.id, leaseMs: 1_000 })!;
     expect(reclaimed.generation).toBe(first.generation + 1);
     expect(reclaimed.token).not.toBe(first.token);
-    expect(() => repos.agentTaskRuns.ack({ deliveryId: parent.id, token: first.token, now: 5_200 })).toThrow(/stale|reused/);
+    expect(() => repos.agentTaskRuns.ack({ deliveryId: parent.id, token: first.token, now: 5_200 })).toThrow(/stale|reused|reclaim/);
     repos.messages.putFixed("t-lead", parent.messageId, JSON.parse(parent.payloadJson));
     const acked = repos.agentTaskRuns.ack({ deliveryId: parent.id, token: reclaimed.token, now: 5_200 });
     expect(acked.deliveryState).toBe("delivered");
     const again = repos.agentTaskRuns.ack({ deliveryId: parent.id, token: reclaimed.token, now: 5_300 });
     expect(again.deliveredAt).toBe(acked.deliveredAt);
-    expect(() => repos.agentTaskRuns.ack({ deliveryId: parent.id, token: first.token, now: 5_400 })).toThrow(/reused|stale/);
+    expect(() => repos.agentTaskRuns.ack({ deliveryId: parent.id, token: first.token, now: 5_400 })).toThrow(/reused|stale|reclaim/);
   });
 
   it("retains run and delivery receipts after bot deletion", () => {

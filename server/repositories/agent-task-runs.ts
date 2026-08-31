@@ -613,11 +613,16 @@ export function createAgentTaskRunsRepository(db: SqliteDatabase): AgentTaskRuns
       if (!identityMatches(existing, input.identity)) {
         throw new LedgerError("identity_mismatch", "finalize identity does not match the run");
       }
+      const sealedEarly = sealedResultBytes(input.result);
+      const computedHash = sha256Canonical(sealedEarly);
+      if (input.assertedHash && input.assertedHash !== computedHash) {
+        throw new LedgerError("hash_mismatch", "caller-asserted hash does not match canonical bytes");
+      }
       if (existing.executionState !== "running") {
         if (
           existing.executionState === input.result.outcome &&
           existing.resultHash &&
-          existing.resultHash === sha256Canonical(sealedResultBytes(input.result))
+          existing.resultHash === computedHash
         ) {
           return {
             run: existing,
@@ -733,7 +738,7 @@ export function createAgentTaskRunsRepository(db: SqliteDatabase): AgentTaskRuns
     }): { delivery: AgentTaskDelivery; token: string; generation: number } | null => {
       const candidates = input.deliveryId
         ? [selectDelivery.get(input.deliveryId)].filter((row): row is DeliveryRow => Boolean(row))
-        : selectClaimable.all(input.now);
+        : selectClaimable.all(input.now, input.now);
       const row = candidates.find((candidate) => {
         if (candidate.delivery_state === "pending") {
           return candidate.retry_at === null || candidate.retry_at <= input.now;
