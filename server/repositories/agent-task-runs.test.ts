@@ -2,9 +2,15 @@
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createAgentTask, configureAgentTasks } from "../agent-tasks.ts";
+import {
+  archivedTasks,
+  createAgentTask,
+  configureAgentTasks,
+  isActiveQueueTask,
+  taskCounts,
+} from "../agent-tasks.ts";
 import { DATA_DIR } from "../config.ts";
-import { sha256Canonical } from "../contracts.ts";
+import { WorkerCompletionError, sha256Canonical } from "../contracts.ts";
 import { defaultDbPath, openDatabase } from "../db/database.ts";
 import { MIGRATIONS } from "../db/migrations.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
@@ -38,23 +44,24 @@ describe("agent task result ledger", () => {
     }
   });
 
-  function seedTask() {
+  function seedTask(assignment = "audit the repo") {
     return createAgentTask({
       assigneeBotId: "helper",
       fromBotId: "lead",
       fromName: "Lead",
       sourceThreadId: "t-lead",
-      assignment: "audit the repo",
+      assignment,
       now: 1_000,
     });
   }
 
-  function createBound(now = 2_000) {
-    const task = seedTask();
+  function createBound(now = 2_000, over: { workerThreadId?: string; assignment?: string } = {}) {
+    const task = seedTask(over.assignment);
+    const workerThreadId = over.workerThreadId ?? "t-helper";
     const run = repos.agentTaskRuns.createPending({
       taskId: task.id,
       workerBotId: "helper",
-      workerThreadId: "t-helper",
+      workerThreadId,
       sourceBotId: "lead",
       sourceThreadId: "t-lead",
       parentThreadId: "t-lead",
@@ -65,7 +72,7 @@ describe("agent task result ledger", () => {
       runId: run.id,
       taskId: task.id,
       workerBotId: "helper",
-      workerThreadId: "t-helper",
+      workerThreadId,
       sourceBotId: "lead",
       sourceThreadId: "t-lead",
       parentThreadId: "t-lead",
@@ -335,5 +342,159 @@ describe("agent task result ledger", () => {
     }
     expect(deliveryBackoffMs(1)).toBe(1_000);
     expect(deliveryBackoffMs(3)).toBe(4_000);
+  });
+
+  it("rejects a blocked worker completion missing a structured field and does not CAS-seal", () => {
+    const { run, identity, task } = createBound();
+    expect(() =>
+      repos.agentTaskRuns.finalize({
+        identity,
+        result: { outcome: "blocked", blocker: "needs a password", blockerOwner: "user" },
+        now: 3_000,
+      }),
+    ).toThrow(WorkerCompletionError);
+    expect(() =>
+      repos.agentTaskRuns.finalize({
+        identity,
+        result: {
+          outcome: "blocked",
+          text: "blockerOwner: user nextAction: Enter the vault password",
+        },
+        now: 3_000,
+      }),
+    ).toThrow(/blocker, blockerOwner, and nextAction/);
+    const live = repos.agentTaskRuns.get(run.id);
+    expect(live?.executionState).toBe("running");
+    expect(live?.resultHash).toBeNull();
+    expect(live?.terminalOutcome).toBeNull();
+    const projected = repos.agentTasks.get(task.id);
+    expect(projected?.state).toBe("pending");
+    expect(projected?.blockerOwner).toBeUndefined();
+    expect(projected?.nextAction).toBeUndefined();
+    expect(projected?.state).not.toBe("blocked");
+  });
+
+  it("seals a structured blocked completion onto runOutcome=failed and keeps it active", () => {
+    const { identity, task } = createBound();
+    const sealed = repos.agentTaskRuns.finalize({
+      identity,
+      result: {
+        outcome: "blocked",
+        blocker: "needs a password",
+        blockerOwner: "user",
+        nextAction: "Enter the vault password",
+      },
+      now: 3_000,
+    });
+    expect(sealed.run.executionState).toBe("failed");
+    expect(sealed.run.terminalOutcome).toBe("failed");
+    expect(String(sealed.run.terminalOutcome)).not.toBe("blocked");
+    expect(sealed.task?.state).toBe("blocked");
+    expect(sealed.task?.runOutcome).toBe("failed");
+    expect(sealed.task?.blocker).toBe("needs a password");
+    expect(sealed.task?.blockerOwner).toBe("user");
+    expect(sealed.task?.nextAction).toBe("Enter the vault password");
+    expect(sealed.task?.deliveryState).toBe("result_stored");
+    expect(isActiveQueueTask(sealed.task!, 3_000)).toBe(true);
+    expect(taskCounts([sealed.task!], 3_000)).toEqual({ assigned: 1, active: 1 });
+    expect(repos.agentTasks.get(task.id)).toMatchObject({
+      state: "blocked",
+      blocker: "needs a password",
+      blockerOwner: "user",
+      nextAction: "Enter the vault password",
+      runOutcome: "failed",
+    });
+    const replay = repos.agentTaskRuns.finalize({
+      identity,
+      result: {
+        outcome: "blocked",
+        blocker: "needs a password",
+        blockerOwner: "user",
+        nextAction: "Enter the vault password",
+      },
+      now: 4_000,
+    });
+    expect(replay.run.updatedAt).toBe(sealed.run.updatedAt);
+    expect(replay.run.resultJson).toBe(sealed.run.resultJson);
+    expect(replay.run.resultHash).toBe(sealed.run.resultHash);
+  });
+
+  it("rejects completed without a sealed result and leaves a completed result out of the active list", () => {
+    const empty = createBound();
+    expect(() =>
+      repos.agentTaskRuns.finalize({
+        identity: empty.identity,
+        result: { text: "", outcome: "completed" },
+        now: 3_000,
+      }),
+    ).toThrow(WorkerCompletionError);
+    expect(() =>
+      repos.agentTaskRuns.finalize({
+        identity: empty.identity,
+        result: { text: "   ", outcome: "completed" },
+        now: 3_000,
+      }),
+    ).toThrow(/non-empty sealed result/);
+    expect(repos.agentTaskRuns.get(empty.run.id)?.executionState).toBe("running");
+    expect(repos.agentTasks.get(empty.task.id)?.state).toBe("pending");
+
+    const done = createBound(2_000, { workerThreadId: "t-helper-done", assignment: "write the brief" });
+    const sealed = repos.agentTaskRuns.finalize({
+      identity: done.identity,
+      result: { text: "audit complete", outcome: "completed" },
+      now: 3_000,
+    });
+    expect(sealed.run.executionState).toBe("completed");
+    expect(sealed.task?.state).toBe("completed");
+    expect(sealed.task?.result).toBe("audit complete");
+    expect(sealed.task?.runOutcome).toBe("completed");
+    expect(isActiveQueueTask(sealed.task!, 3_000)).toBe(false);
+    expect(archivedTasks([sealed.task!], 3_000).map((row) => row.id)).toEqual([sealed.task!.id]);
+    expect(taskCounts([sealed.task!], 3_000)).toEqual({ assigned: 0, active: 0 });
+  });
+
+  it("fails closed on a conflicting second completion and does not rewrite the sealed receipt", () => {
+    const { identity } = createBound();
+    const first = repos.agentTaskRuns.finalize({
+      identity,
+      result: {
+        outcome: "blocked",
+        blocker: "needs a password",
+        blockerOwner: "user",
+        nextAction: "Enter the vault password",
+      },
+      now: 3_000,
+    });
+    const receipt = {
+      resultJson: first.run.resultJson,
+      resultHash: first.run.resultHash,
+      updatedAt: first.run.updatedAt,
+      terminalOutcome: first.run.terminalOutcome,
+    };
+    expect(() =>
+      repos.agentTaskRuns.finalize({
+        identity,
+        result: {
+          outcome: "blocked",
+          blocker: "needs a password",
+          blockerOwner: "user",
+          nextAction: "A different next action",
+        },
+        now: 4_000,
+      }),
+    ).toThrow(LedgerError);
+    expect(() =>
+      repos.agentTaskRuns.finalize({
+        identity,
+        result: { text: "audit complete", outcome: "completed" },
+        now: 4_000,
+      }),
+    ).toThrow(LedgerError);
+    const live = repos.agentTaskRuns.get(identity.runId);
+    expect(live?.resultJson).toBe(receipt.resultJson);
+    expect(live?.resultHash).toBe(receipt.resultHash);
+    expect(live?.updatedAt).toBe(receipt.updatedAt);
+    expect(live?.terminalOutcome).toBe(receipt.terminalOutcome);
+    expect(repos.agentTaskRuns.listDeliveriesForRun(identity.runId)).toHaveLength(first.deliveries.length);
   });
 });

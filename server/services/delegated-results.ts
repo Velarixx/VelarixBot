@@ -1,9 +1,11 @@
-// Durable task-backed delegate_bot result + outbox machine (#150 P0).
+// Durable task-backed delegate_bot result + outbox machine (#150 P0 / P1.1).
 // Delivery claims stored receipts only and never invokes startTurn / sendTurn
 // or enqueues a worker lane. Result durability precedes every delivery attempt.
+// Completion is not routed through the delivery pump.
 import {
   type DeliveryFailureCode,
   type RunFailureCode,
+  type WorkerCompletion,
 } from "../contracts.ts";
 import type { Message } from "../store.ts";
 import type { Repositories } from "../repositories/index.ts";
@@ -14,7 +16,6 @@ import {
   type AgentTaskRun,
   type RunBoundIdentity,
   type RunTerminalOutcome,
-  type SealedRunResult,
 } from "../repositories/agent-task-runs.ts";
 import type { PutFixedResult } from "../repositories/messages.ts";
 import type { AgentTask } from "../agent-tasks.ts";
@@ -48,7 +49,7 @@ export interface DelegatedResultsService {
   recordProgress(input: { identity: RunBoundIdentity; text: string; now: number }): AgentTaskRun;
   finalize(input: {
     identity: RunBoundIdentity;
-    result: SealedRunResult;
+    result: WorkerCompletion;
     assertedHash?: string;
     now: number;
     workerName?: string;
