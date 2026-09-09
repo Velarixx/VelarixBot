@@ -63,6 +63,8 @@ describe("user-session service control", () => {
     expect(xml).not.toMatch(/node/);
     expect(xml).not.toMatch(/server\/index\.js/);
     expect(xml).not.toMatch(/VELARIX_API_TOKEN|secret:\/\//);
+    expect(xml).not.toMatch(/KeepAlive/);
+    expect(xml).not.toMatch(/SuccessfulExit/);
     expect(launchAgentPlistPath("/Users/sam")).toBe(
       `/Users/sam/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist`,
     );
@@ -269,6 +271,8 @@ describe("user-session service control", () => {
     const install = readFileSync(join(root, "INTERNAL_INSTALL.md"), "utf8");
     expect(assertUserSessionLaunchAgent(plist)).toBe(true);
     expect(plist).toContain("LimitLoadToSessionType");
+    expect(plist).not.toMatch(/KeepAlive/);
+    expect(plist).not.toMatch(/SuccessfulExit/);
     expect(nsh).toMatch(/type=\s*userown/);
     expect(nsh).toContain("--harness-service");
     expect(nsh).toMatch(/sc\.exe" stop velarixbot-harness/);

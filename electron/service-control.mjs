@@ -62,11 +62,6 @@ export function renderLaunchAgentPlist({ exePath, label = LAUNCH_AGENT_LABEL } =
   <string>Aqua</string>
   <key>RunAtLoad</key>
   <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
   <key>ProcessType</key>
   <string>Interactive</string>
   <key>ProgramArguments</key>
@@ -91,6 +86,8 @@ export function assertUserSessionLaunchAgent(plistXml) {
     xml.includes("<key>LimitLoadToSessionType</key>") &&
     !xml.includes("LaunchDaemons") &&
     xml.includes(SERVICE_FLAG) &&
+    !xml.includes("<key>KeepAlive</key>") &&
+    !xml.includes("SuccessfulExit") &&
     !/node[^<]*server\/index\.js/.test(xml);
   return ok;
 }

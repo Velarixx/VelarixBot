@@ -12,7 +12,15 @@ import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { registerNotifyIpc } from "./notify.mjs";
 import { shouldQuitOnLastWindow } from "./background.mjs";
 import { createRestartPolicy } from "./server-supervisor.mjs";
-import { parseTrayEnabled, trayBadgeText, trayTooltip } from "./tray-settings.mjs";
+import { parseTrayEnabled, trayBadgeText, trayMenuSpec, trayTooltip } from "./tray-settings.mjs";
+import {
+  clearHarnessBootSuppress,
+  guiOpenDecision,
+  harnessServiceStartDecision,
+  isHarnessBootSuppressed,
+  startBackgroundDecision,
+  writeHarnessBootSuppress,
+} from "./harness-boot-suppress.mjs";
 import { readServiceAuth, removeServiceAuth, writeServiceAuth } from "./service-auth.mjs";
 import {
   CANDIDATE_PORTS,
@@ -41,7 +49,7 @@ import {
   runEnsureUserSessionHost,
   writeLaunchAgentPlist,
 } from "./service-control.mjs";
-import { shouldKillServerOnBeforeQuit } from "./service-quit.mjs";
+import { applyQuitAllPlan, quitAllAction, shouldKillServerOnBeforeQuit } from "./service-quit.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 127.0.0.1 explicitly — vite binds IPv4; a bare "localhost" here can
@@ -237,7 +245,22 @@ function stopLeftoverOccupant(pid) {
   applyOccupantStop(planOccupantStop({ pid, platform: process.platform }));
 }
 
+function homeDir() {
+  return process.env.HOME;
+}
+
+function applyQuitAll() {
+  const action = quitAllAction({ platform: process.platform, uid: sessionUid() });
+  applyQuitAllPlan(action, {
+    writeSuppress: () => writeHarnessBootSuppress({ home: homeDir() }),
+    applyStop: (plan) => applyServicePlan(plan),
+  });
+  isQuitting = true;
+  app.quit();
+}
+
 async function ensureUserSessionHost({ recycle = false } = {}) {
+  if (startBackgroundDecision().clearSuppress) clearHarnessBootSuppress({ home: homeDir() });
   const exe = process.execPath;
   const uid = sessionUid();
   const platform = process.platform;
@@ -281,6 +304,7 @@ async function preparePackagedGuiServer() {
 }
 
 function enableUserSessionService() {
+  if (startBackgroundDecision().clearSuppress) clearHarnessBootSuppress({ home: homeDir() });
   const exe = process.execPath;
   const uid = sessionUid();
   const install = planServiceInstall({ platform: process.platform, uid, exePath: exe });
@@ -293,6 +317,7 @@ function enableUserSessionService() {
 }
 
 function disableUserSessionService() {
+  writeHarnessBootSuppress({ home: homeDir() });
   const uid = sessionUid();
   applyServicePlan(planServiceStop({ running: true, platform: process.platform, uid }));
   if (process.platform === "darwin") removeLaunchAgentPlist();
@@ -453,7 +478,7 @@ function applyTrayBadge(count) {
   trayUnread = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
   if (!tray) return;
   try {
-    tray.setToolTip(trayTooltip(trayUnread));
+    tray.setToolTip(trayTooltip(trayUnread, { backgroundRunning: serviceEnabled !== false }));
     if (process.platform === "darwin") tray.setTitle(trayBadgeText(trayUnread));
   } catch {
     /* some platforms reject setTitle */
@@ -485,17 +510,23 @@ function createTray() {
   const icon = nativeImage.createFromPath(APP_ICON);
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
   tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "Show", click: () => showMainWindow() },
-      { type: "separator" },
-      {
-        label: "Quit",
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        },
-      },
-    ]),
+    Menu.buildFromTemplate(
+      trayMenuSpec({ backgroundRunning: serviceEnabled !== false }).map((item) => {
+        if (item.type === "separator") return { type: "separator" };
+        if (item.action === "show") return { label: item.label, click: () => showMainWindow() };
+        if (item.action === "quit-all") return { label: item.label, click: () => applyQuitAll() };
+        if (item.action === "gui-quit") {
+          return {
+            label: item.label,
+            click: () => {
+              isQuitting = true;
+              app.quit();
+            },
+          };
+        }
+        return { label: item.label, enabled: item.enabled !== false };
+      }),
+    ),
   );
   tray.on("click", () => showMainWindow());
   applyTrayBadge(trayUnread);
@@ -612,6 +643,13 @@ ipcMain.handle("tray:setUnread", (_event, count) => {
 app.whenReady().then(async () => {
   if (isDuplicateGui) return;
   if (isService) {
+    const boot = harnessServiceStartDecision({
+      suppressPresent: isHarnessBootSuppressed({ home: homeDir() }),
+    });
+    if (boot.action === "exit-suppressed") {
+      app.exit(boot.exitCode);
+      return;
+    }
     await runServiceHost();
     return;
   }
@@ -653,7 +691,9 @@ app.whenReady().then(async () => {
     }
     // First packaged launch (pref unset) enables the user-session service
     // so Quit leaves routines ticking and the next OS login starts it
-    // without opening the GUI.
+    // without opening the GUI. Opening the app clears an explicit-stop
+    // marker; RunAtLoad / --harness-service must not.
+    if (guiOpenDecision().clearSuppress) clearHarnessBootSuppress({ home: homeDir() });
     if (serviceEnabled && servicePref === null) savePrefs({ serviceEnabled: true });
     const attached = await preparePackagedGuiServer();
     serverReady = Boolean(attached);

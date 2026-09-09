@@ -8,11 +8,6 @@
   <string>Aqua</string>
   <key>RunAtLoad</key>
   <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
   <key>ProcessType</key>
   <string>Interactive</string>
   <key>ProgramArguments</key>
