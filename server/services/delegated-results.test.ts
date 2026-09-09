@@ -2,8 +2,9 @@
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createAgentTask, configureAgentTasks } from "../agent-tasks.ts";
+import { createAgentTask, configureAgentTasks, isActiveQueueTask, taskCounts } from "../agent-tasks.ts";
 import { DATA_DIR } from "../config.ts";
+import { WorkerCompletionError } from "../contracts.ts";
 import { defaultDbPath, openDatabase } from "../db/database.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { createRepositories, type Repositories } from "../repositories/index.ts";
@@ -348,5 +349,41 @@ describe("delegated results service", () => {
     reopened.reconcileOnBoot(now + 60_000);
     expectProgressNotThinking("delivery_failed");
     expect(sendTurnCalls).toBe(0);
+  });
+
+  it("accepts a structured blocked completion before CAS and never starts a worker on delivery retry", () => {
+    repos.messages.append("t-lead", { role: "user", kind: "text", text: "go" });
+    const { results, identity, task } = boundRun({ roomThreadId: null });
+    expect(() =>
+      results.finalize({
+        identity,
+        result: { outcome: "blocked", blocker: "needs a password" },
+        now,
+      }),
+    ).toThrow(WorkerCompletionError);
+    expect(results.get(identity.runId)?.executionState).toBe("running");
+    expect(repos.agentTasks.get(task.id)?.state).toBe("pending");
+
+    const sealed = results.finalize({
+      identity,
+      result: {
+        outcome: "blocked",
+        blocker: "needs a password",
+        blockerOwner: "user",
+        nextAction: "Enter the vault password",
+      },
+      now,
+    });
+    expect(sealed.run.terminalOutcome).toBe("failed");
+    expect(sealed.task?.state).toBe("blocked");
+    expect(sealed.task?.blockerOwner).toBe("user");
+    expect(sealed.task?.nextAction).toBe("Enter the vault password");
+    expect(isActiveQueueTask(sealed.task!, now)).toBe(true);
+    expect(taskCounts([sealed.task!], now)).toEqual({ assigned: 1, active: 1 });
+    expect(sendTurnCalls).toBe(0);
+    const pumped = results.pumpDue(now);
+    expect(pumped.delivered).toBe(1);
+    expect(sendTurnCalls).toBe(0);
+    expect(repos.messages.forThread("t-lead").some((m) => m.report?.kind === "blocker")).toBe(true);
   });
 });

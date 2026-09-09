@@ -321,12 +321,127 @@ export function isPermanentDeliveryFailure(code: string): code is PermanentDeliv
   return (PERMANENT_DELIVERY_FAILURE_CODES as readonly string[]).includes(code);
 }
 
+// ── P1.1 structured worker completion (#150) ───────────────────────────
+// Additive accept/reject gate for task-backed delegate_bot finalization.
+// WorkerCompletion.outcome includes `blocked`; that value is mapped onto
+// the existing run outcome (`failed`) so ledger terminal_outcome /
+// runOutcome cannot diverge. Do not parse provider prose into blocker
+// fields.
+
+export const WORKER_COMPLETION_OUTCOMES = [
+  "completed",
+  "blocked",
+  "failed",
+  "interrupted",
+  "partial",
+] as const;
+export type WorkerCompletionOutcome = (typeof WORKER_COMPLETION_OUTCOMES)[number];
+
+export type WorkerCompletionRejectCode = "empty_completed_result" | "incomplete_blocker";
+
+export interface WorkerCompletion {
+  outcome: WorkerCompletionOutcome;
+  text?: string;
+  failureCode?: RunFailureCode | null;
+  blocker?: string;
+  blockerOwner?: string;
+  nextAction?: string;
+}
+
+export interface AcceptedWorkerCompletion {
+  result: {
+    text: string;
+    outcome: "completed" | "failed" | "interrupted" | "partial";
+    failureCode?: RunFailureCode | null;
+  };
+  blocker?: string;
+  blockerOwner?: string;
+  nextAction?: string;
+}
+
+export class WorkerCompletionError extends Error {
+  readonly code: WorkerCompletionRejectCode;
+  constructor(code: WorkerCompletionRejectCode, message: string) {
+    super(message);
+    this.code = code;
+    this.name = "WorkerCompletionError";
+  }
+}
+
+function trimmedCompletionField(value?: string | null): string {
+  return (value ?? "").trim();
+}
+
+function structuredBlockerFields(input: {
+  blocker?: string;
+  blockerOwner?: string;
+  nextAction?: string;
+}): { blocker: string; blockerOwner: string; nextAction: string } | null {
+  const blocker = trimmedCompletionField(input.blocker);
+  const blockerOwner = trimmedCompletionField(input.blockerOwner);
+  const nextAction = trimmedCompletionField(input.nextAction);
+  if (!blocker || !blockerOwner || !nextAction) return null;
+  return { blocker, blockerOwner, nextAction };
+}
+
+/** Accept or reject a worker completion before any terminal CAS. */
+export function acceptWorkerCompletion(input: WorkerCompletion): AcceptedWorkerCompletion {
+  const text = trimmedCompletionField(input.text);
+  if (input.outcome === "completed") {
+    if (!text) {
+      throw new WorkerCompletionError(
+        "empty_completed_result",
+        "completed requires a non-empty sealed result",
+      );
+    }
+    return { result: { text, outcome: "completed", failureCode: input.failureCode ?? null } };
+  }
+  if (input.outcome === "blocked") {
+    const structured = structuredBlockerFields(input);
+    if (!structured) {
+      throw new WorkerCompletionError(
+        "incomplete_blocker",
+        "blocked requires blocker, blockerOwner, and nextAction",
+      );
+    }
+    return {
+      result: {
+        text: text || structured.blocker,
+        outcome: "failed",
+        failureCode: input.failureCode ?? "provider_error",
+      },
+      ...structured,
+    };
+  }
+  if (input.outcome === "failed" || input.outcome === "interrupted" || input.outcome === "partial") {
+    const structured = input.outcome === "failed" ? structuredBlockerFields(input) : null;
+    return {
+      result: {
+        text,
+        outcome: input.outcome,
+        failureCode: input.failureCode ?? null,
+      },
+      ...(structured ?? {}),
+    };
+  }
+  throw new WorkerCompletionError("incomplete_blocker", "unsupported worker completion outcome");
+}
+
 /** Centralized legacy task-projection mapping. Do not parse provider prose. */
 export function mapRunOutcomeToTaskPatch(input: {
   outcome: "completed" | "failed" | "interrupted" | "partial";
   text?: string;
   failureCode?: RunFailureCode | null;
-}): { state: "completed" | "blocked" | "cancelled" | "stale"; result?: string; blocker?: string } {
+  blocker?: string;
+  blockerOwner?: string;
+  nextAction?: string;
+}): {
+  state: "completed" | "blocked" | "cancelled" | "stale";
+  result?: string;
+  blocker?: string;
+  blockerOwner?: string;
+  nextAction?: string;
+} {
   const text = (input.text ?? "").trim();
   if (input.outcome === "completed") {
     return text ? { state: "completed", result: text } : { state: "stale" };
@@ -337,6 +452,8 @@ export function mapRunOutcomeToTaskPatch(input: {
   if (input.outcome === "partial") {
     return text ? { state: "cancelled", result: text } : { state: "cancelled" };
   }
+  const structured = structuredBlockerFields(input);
+  if (structured) return { state: "blocked", ...structured };
   if (text || input.failureCode) return { state: "blocked", blocker: input.failureCode ?? text };
   return { state: "stale" };
 }

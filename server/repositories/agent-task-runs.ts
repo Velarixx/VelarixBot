@@ -1,9 +1,11 @@
 // Authoritative SQLite ledger for task-backed delegate_bot worker runs
-// and their parent / optional-room destinations (#150 P0). All ledger
-// writes go through this repository. Receipts are never deleted.
+// and their parent / optional-room destinations (#150 P0 / P1.1). All
+// ledger writes go through this repository. Receipts are never deleted.
+// WorkerCompletion is accepted or rejected before the terminal CAS.
 import { randomBytes } from "node:crypto";
 
 import {
+  acceptWorkerCompletion,
   canonicalJson,
   deterministicDeliveryMessageId,
   isPermanentDeliveryFailure,
@@ -14,6 +16,7 @@ import {
   sha256Canonical,
   type DeliveryFailureCode,
   type RunFailureCode,
+  type WorkerCompletion,
 } from "../contracts.ts";
 import type { SqliteDatabase } from "../db/sqlite-native.ts";
 import { normalizeAgentTask, type AgentTask } from "../agent-tasks.ts";
@@ -127,6 +130,9 @@ export interface SealedRunResult {
   text: string;
   outcome: RunTerminalOutcome;
   failureCode?: RunFailureCode | null;
+  blocker?: string;
+  blockerOwner?: string;
+  nextAction?: string;
 }
 
 export type LedgerErrorCode =
@@ -310,10 +316,30 @@ function freshClaimToken(): string {
 }
 
 export function sealedResultBytes(result: SealedRunResult): unknown {
+  const blocker = (result.blocker ?? "").trim();
+  const blockerOwner = (result.blockerOwner ?? "").trim();
+  const nextAction = (result.nextAction ?? "").trim();
   return {
     failureCode: result.failureCode ?? null,
     outcome: result.outcome,
     text: result.text,
+    ...(blocker && blockerOwner && nextAction ? { blocker, blockerOwner, nextAction } : {}),
+  };
+}
+
+function sealedFromWorkerCompletion(completion: WorkerCompletion): SealedRunResult {
+  const accepted = acceptWorkerCompletion(completion);
+  return {
+    text: accepted.result.text,
+    outcome: accepted.result.outcome,
+    failureCode: accepted.result.failureCode,
+    ...(accepted.blocker && accepted.blockerOwner && accepted.nextAction
+      ? {
+          blocker: accepted.blocker,
+          blockerOwner: accepted.blockerOwner,
+          nextAction: accepted.nextAction,
+        }
+      : {}),
   };
 }
 
@@ -340,7 +366,7 @@ export interface AgentTaskRunsRepository {
   recordProgress(input: { identity: RunBoundIdentity; text: string; now: number }): AgentTaskRun;
   finalize(input: {
     identity: RunBoundIdentity;
-    result: SealedRunResult;
+    result: WorkerCompletion | SealedRunResult;
     assertedHash?: string;
     now: number;
     fromName?: string;
@@ -719,6 +745,9 @@ export function createAgentTaskRunsRepository(db: SqliteDatabase): AgentTaskRuns
         outcome: input.result.outcome,
         text: input.result.text,
         failureCode,
+        blocker: input.result.blocker,
+        blockerOwner: input.result.blockerOwner,
+        nextAction: input.result.nextAction,
       });
       const task = projectTask(
         existing.taskId,
@@ -882,7 +911,9 @@ export function createAgentTaskRunsRepository(db: SqliteDatabase): AgentTaskRuns
       return requireRun(existing.id);
     },
     finalize(input) {
-      return finalizeTx(input);
+      // Accept or reject the worker completion before the terminal CAS.
+      const result = sealedFromWorkerCompletion(input.result);
+      return finalizeTx({ ...input, result });
     },
     getDelivery(id) {
       const row = selectDelivery.get(id);
