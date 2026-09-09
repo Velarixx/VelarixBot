@@ -24,4 +24,16 @@ describe("lead chat workflow + task panel", () => {
     expect(chat).toContain("userActionTaskPatch");
     expect(chat).not.toContain("kanban");
   });
+
+  it("turns the Working-for pill into the run inspector without replacing chat controls", () => {
+    expect(chat).toContain("<RunInspector");
+    expect(chat).toContain("hasInspectableRun");
+    expect(chat).toContain("runStartedAt");
+    expect(chat).toContain("<Composer bot={bot} />");
+    expect(chat).toContain("Stop");
+    expect(chat.indexOf("<RunInspector")).toBeLessThan(chat.indexOf("<Composer bot={bot} />"));
+    expect(chat.indexOf("Stop")).toBeLessThan(chat.indexOf("<RunInspector"));
+    expect(chat).not.toContain("function WorkingTimer");
+    expect(chat).not.toMatch(/<span ref=\{ref\} className="text-\[12\.5px\] text-ink-secondary" \/>/);
+  });
 });
