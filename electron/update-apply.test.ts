@@ -18,9 +18,11 @@ import {
   appBundleName,
   applyUpdate,
   commandTouchesBundle,
+  electronFrameworksPath,
   executorsUnderBundle,
   helperLaunch,
   installedBundlePath,
+  isRunnableElectronNodeLayout,
   leftoverReplaceMessage,
   macAttachArgs,
   macClearQuarantineArgs,
@@ -123,9 +125,13 @@ describe("install-after-quit plan", () => {
     expect(staged.ok).toBe(true);
     expect(staged.copyInterpreter).toBe(true);
     expect(staged.copyFrom).toBe(EXE_MAC);
-    expect(staged.command).toBe(`${helperDir}/${HELPER_INTERPRETER_NAME}`);
+    expect(staged.command).toBe(`${helperDir}/MacOS/${HELPER_INTERPRETER_NAME}`);
     expect(staged.command).not.toBe(EXE_MAC);
     expect(commandTouchesBundle(staged.command, destPath)).toBe(false);
+    expect(staged.frameworksFrom).toBe(`${destPath}/Contents/Frameworks`);
+    expect(staged.frameworksTo).toBe(`${helperDir}/Frameworks`);
+    expect(staged.cwd).toBe(`${helperDir}/MacOS`);
+    expect(isRunnableElectronNodeLayout(staged)).toBe(true);
     expect(staged.scripts).toEqual(["update-helper.mjs", "update-apply.mjs", "harness-boot-suppress.mjs"]);
     expect(
       planHelperStaging({
@@ -183,9 +189,10 @@ describe("install-after-quit plan", () => {
       },
     });
     expect(launch.ok).toBe(true);
-    expect(launch.command).toBe(`${helperDir}/${HELPER_INTERPRETER_NAME}`);
+    expect(launch.command).toBe(`${helperDir}/MacOS/${HELPER_INTERPRETER_NAME}`);
     expect(launch.command).not.toBe(EXE_MAC);
     expect(commandTouchesBundle(launch.command, destPath)).toBe(false);
+    expect(launch.cwd).toBe(`${helperDir}/MacOS`);
     expect(launch.args).toEqual([`${helperDir}/update-helper.mjs`, `${helperDir}/update-plan.json`]);
     expect(launch.shell).toBe(false);
     expect(launch.detached).toBe(true);
@@ -211,6 +218,66 @@ describe("install-after-quit plan", () => {
     expect(launch.shell).toBe(false);
     expect(launch.detached).toBe(true);
     expect(JSON.stringify(launch)).not.toContain("secret-token");
+  });
+
+  it("requires a Frameworks sibling so ELECTRON_RUN_AS_NODE can start — a bare execPath copy fails", () => {
+    const destPath = "/Applications/VelarixBot.app";
+    const helperDir = "/tmp/velarixbot-updates";
+    expect(electronFrameworksPath(EXE_MAC)).toBe(`${destPath}/Contents/Frameworks`);
+    expect(
+      isRunnableElectronNodeLayout({
+        command: `${helperDir}/${HELPER_INTERPRETER_NAME}`,
+      }),
+    ).toBe(false);
+    expect(
+      isRunnableElectronNodeLayout({
+        command: `${helperDir}/${HELPER_INTERPRETER_NAME}`,
+        frameworksTo: `${helperDir}/Frameworks`,
+      }),
+    ).toBe(false);
+    expect(
+      isRunnableElectronNodeLayout({
+        command: EXE_MAC,
+        frameworksTo: `${destPath}/Contents/Frameworks`,
+      }),
+    ).toBe(true);
+
+    const staged = planHelperStaging({
+      platform: "darwin",
+      execPath: EXE_MAC,
+      destPath,
+      helperDir,
+    });
+    expect(isRunnableElectronNodeLayout(staged)).toBe(true);
+    expect(staged.frameworksFrom).toBe(`${destPath}/Contents/Frameworks`);
+    expect(staged.frameworksTo).toBe(`${helperDir}/Frameworks`);
+    expect(staged.cwd).toBe(`${helperDir}/MacOS`);
+    expect(commandTouchesBundle(staged.command, destPath)).toBe(false);
+    expect(commandTouchesBundle(staged.frameworksTo, destPath)).toBe(false);
+
+    const bare = helperLaunch({
+      command: `${helperDir}/${HELPER_INTERPRETER_NAME}`,
+      helperPath: `${helperDir}/update-helper.mjs`,
+      planPath: `${helperDir}/update-plan.json`,
+      destPath,
+      platform: "darwin",
+    });
+    expect(bare.ok).toBe(false);
+    expect(bare.message).toBe(HELPER_FAILED_MESSAGE);
+
+    const launch = helperLaunch({
+      command: staged.command,
+      helperPath: `${helperDir}/update-helper.mjs`,
+      planPath: `${helperDir}/update-plan.json`,
+      destPath,
+      platform: "darwin",
+      frameworksTo: staged.frameworksTo,
+      cwd: staged.cwd,
+    });
+    expect(launch.ok).toBe(true);
+    expect(launch.cwd).toBe(`${helperDir}/MacOS`);
+    expect(launch.env.ELECTRON_RUN_AS_NODE).toBe("1");
+    expect(isRunnableElectronNodeLayout({ command: launch.command, frameworksTo: staged.frameworksTo })).toBe(true);
   });
 });
 
@@ -615,7 +682,7 @@ describe("apply after the GUI pid exits", () => {
     const stagedHelper = {
       pid: 62000,
       ppid: 1,
-      command: `/tmp/velarixbot-updates/${HELPER_INTERPRETER_NAME} /tmp/velarixbot-updates/update-helper.mjs /tmp/plan.json`,
+      command: `/tmp/velarixbot-updates/MacOS/${HELPER_INTERPRETER_NAME} /tmp/velarixbot-updates/update-helper.mjs /tmp/plan.json`,
     };
     expect(executorsUnderBundle([stagedHelper, parsed[0], parsed[1]], bundle).map((row) => row.pid)).toEqual([
       52104, 53001,
@@ -656,11 +723,15 @@ describe("apply after the GUI pid exits", () => {
     expect(updaterSrc).toContain("planHelperStaging");
     expect(updaterSrc).toContain("copyInterpreter");
     expect(updaterSrc).toContain("chmodSync");
+    expect(updaterSrc).toContain("cpSync");
+    expect(updaterSrc).toContain("frameworksFrom");
+    expect(updaterSrc).toContain("frameworksTo");
     expect(updaterSrc).toContain("verifiedDownloadRecordPath");
     expect(updaterSrc).toContain("nextLaunchUpdaterState");
     expect(updaterSrc).toContain("UPDATE_INTERRUPTED_MESSAGE");
     expect(updaterSrc.indexOf("launchInstallHelper()")).toBeLessThan(updaterSrc.indexOf("app.quit()"));
     expect(updaterSrc).toMatch(/shell:\s*false/);
+    expect(updaterSrc).toContain("cwd: launch.cwd");
     expect(updaterSrc).not.toMatch(/codesign|notariz|Developer ID/i);
     expect(helperSrc).toMatch(/shell:\s*false/);
     expect(helperSrc).not.toMatch(/shell:\s*true/);
@@ -668,6 +739,8 @@ describe("apply after the GUI pid exits", () => {
     expect(applySrc).toContain("shell: false");
     expect(applySrc).not.toMatch(/shell:\s*true[^.]/);
     expect(applySrc).toContain("macClearQuarantineArgs");
+    expect(applySrc).toContain("isRunnableElectronNodeLayout");
+    expect(applySrc).toContain("electronFrameworksPath");
     expect(applySrc).not.toMatch(/codesign|notariz|Developer ID/i);
   });
 

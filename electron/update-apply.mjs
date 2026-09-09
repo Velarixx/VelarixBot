@@ -182,8 +182,28 @@ export function planInstallAfterQuit({
   };
 }
 
-/** Stage helper scripts + a runnable interpreter outside destPath.
- * Darwin copies execPath to helperDir so ditto cannot kill the helper.
+/** Contents/Frameworks next to Contents/MacOS/<exec>. Electron's stub
+ * resolves @executable_path/../Frameworks — a bare binary copy cannot start. */
+export function electronFrameworksPath(execPath) {
+  const macOSDir = posix.dirname(String(execPath ?? ""));
+  if (posix.basename(macOSDir) !== "MacOS") return null;
+  return posix.join(posix.dirname(macOSDir), "Frameworks");
+}
+
+/** True only for MacOS/<bin> with a Frameworks sibling. A bare execPath copy fails. */
+export function isRunnableElectronNodeLayout({ command, frameworksTo } = {}) {
+  const exe = String(command ?? "");
+  const frameworks = String(frameworksTo ?? "").replace(/\/+$/, "");
+  if (!exe || !frameworks) return false;
+  const macOSDir = posix.dirname(exe);
+  if (posix.basename(macOSDir) !== "MacOS") return false;
+  const root = posix.dirname(macOSDir);
+  return posix.join(root, "Frameworks") === frameworks && posix.basename(frameworks) === "Frameworks";
+}
+
+/** Stage helper scripts + a runnable ELECTRON_RUN_AS_NODE tree outside destPath.
+ * Darwin copies execPath into MacOS/ and Contents/Frameworks beside it so the
+ * stub can load Electron Framework. A bare execPath copy is not enough.
  * Windows keeps the existing NSIS path (no interpreter copy). */
 export function planHelperStaging({ platform, execPath, destPath, helperDir } = {}) {
   const scripts = ["update-helper.mjs", "update-apply.mjs", "harness-boot-suppress.mjs"];
@@ -196,8 +216,15 @@ export function planHelperStaging({ platform, execPath, destPath, helperDir } = 
   if (commandTouchesBundle(helperDir, destPath)) {
     return { ok: false, message: HELPER_FAILED_MESSAGE };
   }
-  const command = posix.join(helperDir, HELPER_INTERPRETER_NAME);
-  if (commandTouchesBundle(command, destPath)) {
+  const frameworksFrom = electronFrameworksPath(execPath);
+  if (!frameworksFrom) return { ok: false, message: HELPER_FAILED_MESSAGE };
+  const command = posix.join(helperDir, "MacOS", HELPER_INTERPRETER_NAME);
+  const frameworksTo = posix.join(helperDir, "Frameworks");
+  const cwd = posix.join(helperDir, "MacOS");
+  if (commandTouchesBundle(command, destPath) || commandTouchesBundle(frameworksTo, destPath)) {
+    return { ok: false, message: HELPER_FAILED_MESSAGE };
+  }
+  if (!isRunnableElectronNodeLayout({ command, frameworksTo })) {
     return { ok: false, message: HELPER_FAILED_MESSAGE };
   }
   return {
@@ -205,12 +232,25 @@ export function planHelperStaging({ platform, execPath, destPath, helperDir } = 
     command,
     copyInterpreter: true,
     copyFrom: execPath,
+    frameworksFrom,
+    frameworksTo,
+    cwd,
     helperDir,
     scripts,
   };
 }
 
-export function helperLaunch({ command, execPath, helperPath, planPath, destPath, platform, env = {} } = {}) {
+export function helperLaunch({
+  command,
+  execPath,
+  helperPath,
+  planPath,
+  destPath,
+  platform,
+  frameworksTo,
+  cwd,
+  env = {},
+} = {}) {
   const cleaned = {};
   for (const [key, value] of Object.entries(env ?? {})) {
     if (key === "VELARIX_API_TOKEN" || key === "GITHUB_TOKEN" || key === "GH_TOKEN") continue;
@@ -224,6 +264,22 @@ export function helperLaunch({ command, execPath, helperPath, planPath, destPath
   // Darwin: the process ditto overwrites must not be the helper interpreter.
   if (platform !== "win32" && destPath && commandTouchesBundle(launchCommand, destPath)) {
     return { ok: false, message: HELPER_FAILED_MESSAGE };
+  }
+  if (platform === "darwin") {
+    const layoutTo = frameworksTo ?? electronFrameworksPath(launchCommand);
+    if (!isRunnableElectronNodeLayout({ command: launchCommand, frameworksTo: layoutTo })) {
+      return { ok: false, message: HELPER_FAILED_MESSAGE };
+    }
+    return {
+      ok: true,
+      command: launchCommand,
+      args: [helperPath, planPath],
+      detached: true,
+      stdio: "ignore",
+      shell: false,
+      cwd: cwd ?? posix.dirname(launchCommand),
+      env: cleaned,
+    };
   }
   return {
     ok: true,

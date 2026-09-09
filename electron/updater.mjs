@@ -5,14 +5,16 @@
 // ~/.velarixbot/secrets.json (safeStorage entries decrypt here in main).
 //
 // Download verifies SHA256SUMS.txt. Install does not open the DMG/EXE:
-// helper scripts and a runnable interpreter are copied outside the
-// installed .app, then launched detached (new session, shell: false)
-// with ELECTRON_RUN_AS_NODE. The helper waits for this process to
-// exit, runs the #147 stop gate, replaces the bundle, then relaunches.
+// helper scripts plus a MacOS/ + Frameworks/ ELECTRON_RUN_AS_NODE tree
+// are copied outside the installed .app (not a bare execPath copy), then
+// launched detached (new session, shell: false). The helper waits for
+// this process to exit, runs the #147 stop gate, replaces the bundle,
+// then relaunches.
 import { spawn } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -423,8 +425,14 @@ function launchInstallHelper() {
   copyFileSync(join(__dirname, "harness-boot-suppress.mjs"), join(dir, "harness-boot-suppress.mjs"));
   if (staged.copyInterpreter) {
     try {
+      if (!staged.frameworksFrom || !staged.frameworksTo) {
+        writeUpdateResult({ ok: false, message: HELPER_FAILED_MESSAGE });
+        return { ok: false, message: HELPER_FAILED_MESSAGE };
+      }
+      mkdirSync(dirname(staged.command), { recursive: true });
       copyFileSync(staged.copyFrom, staged.command);
       chmodSync(staged.command, 0o755);
+      cpSync(staged.frameworksFrom, staged.frameworksTo, { recursive: true });
     } catch {
       writeUpdateResult({ ok: false, message: HELPER_FAILED_MESSAGE });
       return { ok: false, message: HELPER_FAILED_MESSAGE };
@@ -454,6 +462,8 @@ function launchInstallHelper() {
     planPath,
     destPath: plan.destPath,
     platform: process.platform,
+    frameworksTo: staged.frameworksTo,
+    cwd: staged.cwd,
     env: process.env,
   });
   if (!launch.ok) {
@@ -465,6 +475,7 @@ function launchInstallHelper() {
       detached: launch.detached,
       stdio: launch.stdio,
       shell: false,
+      cwd: launch.cwd,
       env: launch.env,
       windowsHide: true,
     });

@@ -76,6 +76,8 @@ describe("internal desktop releases", () => {
     expect(updater).toContain("SHA256SUMS");
     expect(updater).toContain("ELECTRON_RUN_AS_NODE");
     expect(updater).toContain("planHelperStaging");
+    expect(updater).toContain("frameworksFrom");
+    expect(updater).toContain("cpSync");
     expect(updater).toContain("verifiedDownloadRecordPath");
     expect(updater).not.toContain("openPath");
     expect(updater).not.toMatch(/shell:\s*true/);
