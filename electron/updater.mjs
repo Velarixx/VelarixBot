@@ -27,6 +27,7 @@ import {
   tokenConfigured,
 } from "./update-feed.mjs";
 import { helperLaunch, HELPER_FAILED_MESSAGE, INSTALLING_MESSAGE, parseUpdateResult, planInstallAfterQuit } from "./update-apply.mjs";
+import { writeHarnessBootSuppress } from "./harness-boot-suppress.mjs";
 import { planServiceStop } from "./service-control.mjs";
 import { verifyDownload } from "./update-verify.mjs";
 
@@ -277,6 +278,7 @@ function launchInstallHelper() {
   const applyDest = join(dir, "update-apply.mjs");
   copyFileSync(join(__dirname, "update-helper.mjs"), helperDest);
   copyFileSync(join(__dirname, "update-apply.mjs"), applyDest);
+  copyFileSync(join(__dirname, "harness-boot-suppress.mjs"), join(dir, "harness-boot-suppress.mjs"));
   const stop = planServiceStop({ running: true, platform: process.platform, uid: sessionUid() });
   const plan = planInstallAfterQuit({
     platform: process.platform,
@@ -286,6 +288,7 @@ function launchInstallHelper() {
     resultPath: resultPath(),
     stopCommand: stop.command ?? null,
     stopArgs: stop.args ?? [],
+    home: process.env.HOME,
   });
   if (!plan.ok) return { ok: false, message: plan.message };
   const planPath = join(dir, "update-plan.json");
@@ -314,6 +317,7 @@ async function install() {
   if (!downloadedPath) return publicState(state);
   setState({ status: "installing", message: INSTALLING_MESSAGE, version: state.version });
   try {
+    if (process.platform === "darwin") writeHarnessBootSuppress({ home: process.env.HOME });
     const launched = launchInstallHelper();
     if (!launched.ok) {
       return setState({ status: "error", message: launched.message ?? HELPER_FAILED_MESSAGE });

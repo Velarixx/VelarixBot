@@ -48,7 +48,7 @@ The NSIS installer registers a **per-user** Windows service named `velarixbot-ha
 
 ## Local harness service
 
-Routines and nudges tick while the **local harness service** is running — not only while the window is open, and not via a cloud scheduler. Sleep, lid-close, and power-off still miss their ticks; each routine's missed-run policy applies. The first packaged launch enables the service (macOS writes `~/Library/LaunchAgents/com.velarix.bot.harness.plist` with `LimitLoadToSessionType=Aqua`). OS login starts the service without opening the GUI; OS logout stops it.
+Routines and nudges tick while the **local harness service** is running — not only while the window is open, and not via a cloud scheduler. Sleep, lid-close, and power-off still miss their ticks; each routine's missed-run policy applies. The first packaged launch enables the service (macOS writes `~/Library/LaunchAgents/com.velarix.bot.harness.plist` with `LimitLoadToSessionType=Aqua`). OS login starts the service without opening the GUI; OS logout stops it. Closing the VelarixBot window leaves that service up; use **Quit All / Stop Background Service** in the tray (or the `launchctl bootout` / `sc.exe stop` commands below) when you want it stopped.
 
 Start or stop the service **without** launching the GUI:
 

@@ -6,7 +6,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { applyUpdate } from "./update-apply.mjs";
+import { applyUpdate, macProcessListArgs, parsePsCommandLines } from "./update-apply.mjs";
 
 function runArgv(command, args = [], { detached = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -36,14 +36,30 @@ function runArgv(command, args = [], { detached = false } = {}) {
 
 export async function runHelper(planPath, deps = {}) {
   const plan = JSON.parse(readFileSync(planPath, "utf8"));
+  const run = deps.runArgv ?? runArgv;
+  const listProcesses =
+    deps.listProcesses ??
+    (plan.platform === "darwin"
+      ? async () => {
+          const spec = macProcessListArgs();
+          const listed = await run(spec.command, spec.args);
+          return parsePsCommandLines(listed?.stdout);
+        }
+      : () => []);
   return applyUpdate(plan, {
-    runArgv: deps.runArgv ?? runArgv,
+    runArgv: run,
     listDir: deps.listDir ?? ((dir) => readdirSync(dir)),
     writeResult: async (result) => {
       if (!plan.resultPath) return;
       writeFileSync(plan.resultPath, JSON.stringify(result));
     },
     wait: deps.wait,
+    writeSuppress: deps.writeSuppress,
+    listProcesses,
+    now: deps.now,
+    delay: deps.delay,
+    timeoutMs: deps.timeoutMs,
+    selfPid: deps.selfPid,
   });
 }
 

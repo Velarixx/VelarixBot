@@ -1,8 +1,12 @@
 // Install-after-quit plan for unsigned DMG / NSIS updates.
 // Pure: no Electron import, no shell:true. Callers inject spawn/fs.
-// macOS: wait for GUI exit → stop LaunchAgent → hdiutil + ditto → relaunch.
+// macOS: wait for GUI exit → suppress + bootout → drain bundle executors
+// → hdiutil + ditto → relaunch. Do not ditto while any path under the
+// installed .app is still executing (including external-parented proxies).
 // Windows: wait for GUI exit → stop user-session service → NSIS /S → relaunch.
 import { posix, win32 } from "node:path";
+
+import { writeHarnessBootSuppress } from "./harness-boot-suppress.mjs";
 
 export const INSTALLING_MESSAGE = "Quitting to install the update…";
 export const HELPER_FAILED_MESSAGE = "Couldn't start the update helper.";
@@ -12,6 +16,87 @@ export const NO_APP_IN_DMG_MESSAGE = "Update disk image did not contain VelarixB
 export const REPLACE_FAILED_MESSAGE = "Couldn't replace the installed app.";
 export const INSTALLER_FAILED_MESSAGE = "The installer did not finish successfully.";
 export const WAIT_TIMEOUT_MESSAGE = "Timed out waiting for VelarixBot to quit.";
+export const BUNDLE_WAIT_TIMEOUT_MS = 15_000;
+export const REPLACE_BLOCKED_MESSAGE = "Replacement did not start.";
+
+export function leftoverReplaceMessage({ destPath, leftovers } = {}) {
+  const rows = Array.isArray(leftovers) ? leftovers : [];
+  const named = rows
+    .map((row) => {
+      const pid = row?.pid ?? "?";
+      const path = row?.command ?? row?.path ?? "";
+      return `${pid} (${path})`;
+    })
+    .filter(Boolean)
+    .join("; ");
+  const who = named || "unknown VelarixBot process";
+  return `Couldn't replace ${destPath || "the installed app"} because these processes are still running: ${who}. ${REPLACE_BLOCKED_MESSAGE}`;
+}
+
+export function bootoutFailedMessage({ stopArgs, leftovers } = {}) {
+  const target = Array.isArray(stopArgs) && stopArgs.length ? stopArgs.join(" ") : "launchctl bootout";
+  const rows = Array.isArray(leftovers) ? leftovers : [];
+  if (rows.length) return leftoverReplaceMessage({ destPath: "the installed app", leftovers: rows });
+  return `Couldn't stop the background service (${target}). ${REPLACE_BLOCKED_MESSAGE}`;
+}
+
+export function macProcessListArgs() {
+  return { command: "/bin/ps", args: ["-ax", "-o", "pid=", "-o", "ppid=", "-o", "command="] };
+}
+
+export function parsePsCommandLines(stdout) {
+  const rows = [];
+  for (const line of String(stdout ?? "").split(/\r?\n/)) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    if (!match) continue;
+    rows.push({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] });
+  }
+  return rows;
+}
+
+export function commandTouchesBundle(text, bundlePath) {
+  const bundle = String(bundlePath ?? "").replace(/\/+$/, "");
+  if (!bundle || !text) return false;
+  const value = String(text);
+  if (value === bundle || value.startsWith(`${bundle}/`)) return true;
+  for (const token of value.split(/\s+/)) {
+    if (token === bundle || token.startsWith(`${bundle}/`)) return true;
+  }
+  return false;
+}
+
+export function isUpdateHelperProcess(proc) {
+  return String(proc?.command ?? "").includes("update-helper.mjs");
+}
+
+export function executorsUnderBundle(processes, bundlePath, { excludePids = [] } = {}) {
+  const excluded = new Set((excludePids ?? []).map((pid) => Number(pid)));
+  return (Array.isArray(processes) ? processes : []).filter((proc) => {
+    if (!proc || excluded.has(Number(proc.pid))) return false;
+    if (isUpdateHelperProcess(proc)) return false;
+    if (commandTouchesBundle(proc.command ?? proc.exe ?? "", bundlePath)) return true;
+    return (proc.args ?? []).some((arg) => commandTouchesBundle(arg, bundlePath));
+  });
+}
+
+export async function waitForBundleExecutorsGone({
+  bundlePath,
+  listProcesses,
+  excludePids = [],
+  now = Date.now,
+  delay = async () => {},
+  intervalMs = 100,
+  timeoutMs = BUNDLE_WAIT_TIMEOUT_MS,
+} = {}) {
+  const start = now();
+  for (;;) {
+    const listed = await Promise.resolve(typeof listProcesses === "function" ? listProcesses() : []);
+    const leftovers = executorsUnderBundle(listed, bundlePath, { excludePids });
+    if (leftovers.length === 0) return [];
+    if (now() - start > timeoutMs) return leftovers;
+    await delay(intervalMs);
+  }
+}
 
 export function installedBundlePath({ platform, execPath }) {
   const exe = String(execPath ?? "");
@@ -66,6 +151,7 @@ export function planInstallAfterQuit({
   resultPath,
   stopCommand = null,
   stopArgs = [],
+  home,
 } = {}) {
   const dest = installedBundlePath({ platform, execPath });
   if (!dest) return { ok: false, message: NO_BUNDLE_MESSAGE };
@@ -84,6 +170,7 @@ export function planInstallAfterQuit({
     resultPath,
     stopCommand,
     stopArgs,
+    home,
   };
 }
 
@@ -149,6 +236,12 @@ export async function applyUpdate(plan, deps = {}) {
     runArgv,
     listDir,
     writeResult,
+    writeSuppress,
+    listProcesses,
+    now = Date.now,
+    delay,
+    timeoutMs = BUNDLE_WAIT_TIMEOUT_MS,
+    selfPid = process.pid,
   } = deps;
   const write = async (result) => {
     if (typeof writeResult === "function") await writeResult(result);
@@ -156,15 +249,26 @@ export async function applyUpdate(plan, deps = {}) {
   };
   try {
     await waitForExit({ pid: plan.waitPid, ...deps.wait });
-    if (plan.stopCommand && typeof runArgv === "function") {
-      await runArgv(plan.stopCommand, plan.stopArgs ?? []);
-    }
     if (plan.platform === "darwin") {
+      await stopDarwinBeforeReplace(plan, {
+        runArgv,
+        writeSuppress,
+        listProcesses,
+        now,
+        delay: delay ?? deps.wait?.delay,
+        timeoutMs,
+        selfPid,
+      });
       await applyMacUpdate(plan, { runArgv, listDir });
-    } else if (plan.platform === "win32") {
-      await applyWinUpdate(plan, { runArgv });
     } else {
-      throw new Error(`Updates cannot be installed on ${plan.platform}.`);
+      if (plan.stopCommand && typeof runArgv === "function") {
+        await runArgv(plan.stopCommand, plan.stopArgs ?? []);
+      }
+      if (plan.platform === "win32") {
+        await applyWinUpdate(plan, { runArgv });
+      } else {
+        throw new Error(`Updates cannot be installed on ${plan.platform}.`);
+      }
     }
     const ok = { ok: true };
     await write(ok);
@@ -183,6 +287,33 @@ export async function applyUpdate(plan, deps = {}) {
       }
     }
     return failed;
+  }
+}
+
+async function stopDarwinBeforeReplace(plan, deps) {
+  const { runArgv, writeSuppress, listProcesses, now, delay, timeoutMs, selfPid } = deps;
+  if (typeof writeSuppress === "function") {
+    writeSuppress();
+  } else if (plan.home) {
+    writeHarnessBootSuppress({ home: plan.home });
+  }
+  let stopResult = { status: 0 };
+  if (plan.stopCommand && typeof runArgv === "function") {
+    stopResult = (await runArgv(plan.stopCommand, plan.stopArgs ?? [])) ?? { status: 1 };
+  }
+  const leftovers = await waitForBundleExecutorsGone({
+    bundlePath: plan.destPath,
+    listProcesses,
+    excludePids: [selfPid],
+    now,
+    delay,
+    timeoutMs,
+  });
+  if (leftovers.length) {
+    throw new Error(leftoverReplaceMessage({ destPath: plan.destPath, leftovers }));
+  }
+  if (stopResult.status !== 0 && stopResult.status != null) {
+    throw new Error(bootoutFailedMessage({ stopArgs: plan.stopArgs, leftovers }));
   }
 }
 

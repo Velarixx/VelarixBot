@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,22 +10,29 @@ import {
   MOUNT_FAILED_MESSAGE,
   NO_APP_IN_DMG_MESSAGE,
   NO_BUNDLE_MESSAGE,
+  REPLACE_BLOCKED_MESSAGE,
   REPLACE_FAILED_MESSAGE,
   WAIT_TIMEOUT_MESSAGE,
   appBundleName,
   applyUpdate,
+  executorsUnderBundle,
   helperLaunch,
   installedBundlePath,
+  leftoverReplaceMessage,
   macAttachArgs,
   macCopyAppArgs,
   macDetachArgs,
+  macProcessListArgs,
   parseHdiutilMountPoint,
+  parsePsCommandLines,
   parseUpdateResult,
   planInstallAfterQuit,
   processAlive,
+  waitForBundleExecutorsGone,
   waitForProcessExit,
   windowsSilentInstallArgs,
 } from "./update-apply.mjs";
+import { HARNESS_BOOT_SUPPRESS_FILE, isHarnessBootSuppressed } from "./harness-boot-suppress.mjs";
 import { runHelper } from "./update-helper.mjs";
 import { planServiceStop } from "./service-control.mjs";
 
@@ -63,6 +71,7 @@ describe("install-after-quit plan", () => {
     expect(plan.relaunch).toEqual({ command: "open", args: ["-n", "/Applications/VelarixBot.app"] });
     expect(plan.stopCommand).toBe("/bin/launchctl");
     expect(plan.stopArgs).toEqual(["bootout", "gui/501/com.velarix.bot.harness"]);
+    expect(plan.stopArgs).not.toContain("kickstart");
     expect(planInstallAfterQuit({ platform: "darwin", execPath: "/usr/bin/velarix" }).ok).toBe(false);
     expect(planInstallAfterQuit({ platform: "darwin", execPath: "/usr/bin/velarix" }).message).toBe(NO_BUNDLE_MESSAGE);
   });
@@ -292,6 +301,223 @@ describe("apply after the GUI pid exits", () => {
     });
     expect(INSTALLING_MESSAGE).toMatch(/quit/i);
     expect(HELPER_FAILED_MESSAGE).toMatch(/helper/i);
+  });
+
+  it("does not ditto while a bundle proxy remains, even when PPID is outside the app", async () => {
+    const calls = [];
+    const proxy = {
+      pid: 53001,
+      ppid: 88,
+      command: "/usr/bin/node /Applications/VelarixBot.app/Contents/Resources/app.asar.unpacked/memory-proxy.js",
+    };
+    const result = await applyUpdate(
+      {
+        platform: "darwin",
+        waitPid: 9,
+        artifactPath: "/tmp/update.dmg",
+        destPath: "/Applications/VelarixBot.app",
+        stopCommand: "/bin/launchctl",
+        stopArgs: ["bootout", "gui/501/com.velarix.bot.harness"],
+        relaunch: { command: "open", args: ["-n", "/Applications/VelarixBot.app"] },
+      },
+      {
+        waitForExit: async () => {},
+        listProcesses: () => [proxy],
+        now: (() => {
+          let t = 0;
+          return () => {
+            t += 100;
+            return t;
+          };
+        })(),
+        timeoutMs: 150,
+        delay: async () => {},
+        runArgv: async (command, args) => {
+          calls.push([command, args]);
+          return { status: 0, stdout: "" };
+        },
+        writeResult: async () => {},
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("53001");
+    expect(result.message).toContain("memory-proxy.js");
+    expect(result.message).toContain(REPLACE_BLOCKED_MESSAGE);
+    expect(calls.some((row) => row[0] === "ditto")).toBe(false);
+    expect(calls[0]).toEqual(["/bin/launchctl", ["bootout", "gui/501/com.velarix.bot.harness"]]);
+    expect(JSON.stringify(calls)).not.toContain("kickstart");
+  });
+
+  it("fails closed when bootout fails and names what is still running", async () => {
+    const harness = {
+      pid: 52104,
+      ppid: 1,
+      command: "/Applications/VelarixBot.app/Contents/MacOS/VelarixBot --harness-service",
+    };
+    const calls = [];
+    const result = await applyUpdate(
+      {
+        platform: "darwin",
+        waitPid: 1,
+        artifactPath: "/tmp/update.dmg",
+        destPath: "/Applications/VelarixBot.app",
+        stopCommand: "/bin/launchctl",
+        stopArgs: ["bootout", "gui/501/com.velarix.bot.harness"],
+        relaunch: { command: "open", args: ["-n", "/Applications/VelarixBot.app"] },
+      },
+      {
+        waitForExit: async () => {},
+        listProcesses: () => [harness],
+        now: (() => {
+          let t = 0;
+          return () => {
+            t += 80;
+            return t;
+          };
+        })(),
+        timeoutMs: 100,
+        delay: async () => {},
+        runArgv: async (command, args) => {
+          calls.push([command, args]);
+          return { status: 1, stdout: "" };
+        },
+        writeResult: async () => {},
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("52104");
+    expect(result.message).toContain("--harness-service");
+    expect(result.message).toContain(REPLACE_BLOCKED_MESSAGE);
+    expect(calls.some((row) => row[0] === "ditto")).toBe(false);
+  });
+
+  it("fails closed when bootout fails even if the process list is already empty", async () => {
+    const calls = [];
+    const result = await applyUpdate(
+      {
+        platform: "darwin",
+        waitPid: 1,
+        artifactPath: "/tmp/update.dmg",
+        destPath: "/Applications/VelarixBot.app",
+        stopCommand: "/bin/launchctl",
+        stopArgs: ["bootout", "gui/501/com.velarix.bot.harness"],
+        relaunch: { command: "open", args: ["-n", "/Applications/VelarixBot.app"] },
+      },
+      {
+        waitForExit: async () => {},
+        listProcesses: () => [],
+        runArgv: async (command, args) => {
+          calls.push([command, args]);
+          return { status: 5, stdout: "" };
+        },
+        writeResult: async () => {},
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("bootout");
+    expect(result.message).toContain(REPLACE_BLOCKED_MESSAGE);
+    expect(calls.some((row) => row[0] === "ditto")).toBe(false);
+  });
+
+  it("harness-enabled update path writes the suppress marker and bootouts before replace", async () => {
+    const { mkdtempSync, mkdirSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const home = mkdtempSync(join(tmpdir(), "velarix-update-home-"));
+    mkdirSync(join(home, ".velarixbot"), { recursive: true, mode: 0o700 });
+    const calls = [];
+    const suppressWrites = [];
+    const result = await applyUpdate(
+      {
+        platform: "darwin",
+        waitPid: 9,
+        artifactPath: "/tmp/update.dmg",
+        destPath: "/Applications/VelarixBot.app",
+        stopCommand: "/bin/launchctl",
+        stopArgs: ["bootout", "gui/501/com.velarix.bot.harness"],
+        relaunch: { command: "open", args: ["-n", "/Applications/VelarixBot.app"] },
+        home,
+      },
+      {
+        waitForExit: async () => {},
+        listProcesses: () => [],
+        writeSuppress: () => {
+          suppressWrites.push("marker");
+        },
+        runArgv: async (command, args) => {
+          calls.push([command, args]);
+          if (command === "hdiutil" && args[0] === "attach") {
+            return { status: 0, stdout: "<string>/Volumes/VelarixBot 0.3.1</string>" };
+          }
+          return { status: 0, stdout: "" };
+        },
+        writeResult: async () => {},
+        listDir: () => ["VelarixBot.app"],
+      },
+    );
+    expect(result).toEqual({ ok: true });
+    expect(suppressWrites).toEqual(["marker"]);
+    expect(calls[0]).toEqual(["/bin/launchctl", ["bootout", "gui/501/com.velarix.bot.harness"]]);
+    expect(calls.some((row) => row[0] === "ditto")).toBe(true);
+    expect(JSON.stringify(calls)).not.toContain("kickstart");
+    expect(HARNESS_BOOT_SUPPRESS_FILE).toBe("harness-boot-suppress");
+    expect(isHarnessBootSuppressed({ home })).toBe(false);
+  });
+
+  it("treats external-parented bundle proxies as leftovers and ignores the update helper pid", () => {
+    const bundle = "/Applications/VelarixBot.app";
+    const parsed = parsePsCommandLines(`
+ 52104     1 /Applications/VelarixBot.app/Contents/MacOS/VelarixBot --harness-service
+ 53001    88 /usr/bin/node /Applications/VelarixBot.app/Contents/Resources/agents-proxy.js
+ 61000     1 /Applications/VelarixBot.app/Contents/MacOS/VelarixBot /tmp/velarixbot-updates/update-helper.mjs /tmp/plan.json
+  9999     1 /usr/bin/codex
+`);
+    expect(macProcessListArgs()).toEqual({
+      command: "/bin/ps",
+      args: ["-ax", "-o", "pid=", "-o", "ppid=", "-o", "command="],
+    });
+    expect(macProcessListArgs().args.join(" ")).not.toMatch(/launchctl/);
+    const leftovers = executorsUnderBundle(parsed, bundle, { excludePids: [61000] });
+    expect(leftovers.map((row) => row.pid)).toEqual([52104, 53001]);
+    expect(leftoverReplaceMessage({ destPath: bundle, leftovers })).toContain("53001");
+  });
+
+  it("waits on the injected clock until bundle executors drain — no wall-clock sleep", async () => {
+    let ticks = 0;
+    const leftovers = await waitForBundleExecutorsGone({
+      bundlePath: "/Applications/VelarixBot.app",
+      listProcesses: () => {
+        ticks += 1;
+        if (ticks < 3) {
+          return [
+            {
+              pid: 7,
+              ppid: 1,
+              command: "/Applications/VelarixBot.app/Contents/Resources/workspace-proxy.js",
+            },
+          ];
+        }
+        return [];
+      },
+      now: () => ticks * 10,
+      timeoutMs: 1000,
+      delay: async () => {},
+    });
+    expect(leftovers).toEqual([]);
+    expect(ticks).toBe(3);
+  });
+
+  it("copies the suppress sibling next to the helper and never introduces shell:true", () => {
+    const updaterSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "updater.mjs"), "utf8");
+    const helperSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "update-helper.mjs"), "utf8");
+    const applySrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "update-apply.mjs"), "utf8");
+    expect(updaterSrc).toContain("harness-boot-suppress.mjs");
+    expect(updaterSrc).toContain("writeHarnessBootSuppress");
+    expect(updaterSrc).toMatch(/shell:\s*false/);
+    expect(helperSrc).toMatch(/shell:\s*false/);
+    expect(helperSrc).not.toMatch(/shell:\s*true/);
+    expect(applySrc).toContain("waitForBundleExecutorsGone");
+    expect(applySrc).toContain("shell: false");
+    expect(applySrc).not.toMatch(/shell:\s*true[^.]/);
   });
 
   it("runs the helper entry against a plan file without spawning a shell", async () => {

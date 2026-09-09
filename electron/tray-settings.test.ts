@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { parseTrayEnabled, serializeTrayPrefs, trayBadgeText, trayTooltip } from "./tray-settings.mjs";
+import {
+  BACKGROUND_RUNNING_COPY,
+  QUIT_ALL_LABEL,
+  parseTrayEnabled,
+  serializeTrayPrefs,
+  trayBadgeText,
+  trayMenuSpec,
+  trayTooltip,
+} from "./tray-settings.mjs";
 
 describe("tray toggle", () => {
   it("defaults on when prefs are missing or empty", () => {
@@ -32,5 +40,15 @@ describe("tray unread badge", () => {
     expect(trayTooltip(0)).toBe("VelarixBot");
     expect(trayTooltip(3)).toBe("VelarixBot — 3 unread");
     expect(trayTooltip(120)).toBe("VelarixBot — 99+ unread");
+  });
+
+  it("tells the user the background service is still running without reading the plist", () => {
+    expect(trayTooltip(0, { backgroundRunning: true })).toBe("VelarixBot — background service running");
+    expect(trayTooltip(3, { backgroundRunning: true })).toBe("VelarixBot — 3 unread — background service running");
+    const menu = trayMenuSpec({ backgroundRunning: true });
+    expect(menu.some((row) => row.label === BACKGROUND_RUNNING_COPY && row.enabled === false)).toBe(true);
+    expect(menu.some((row) => row.action === "quit-all" && row.label === QUIT_ALL_LABEL)).toBe(true);
+    expect(menu.some((row) => row.action === "gui-quit" && row.label === "Quit")).toBe(true);
+    expect(JSON.stringify(menu)).not.toMatch(/plist|launchctl|KeepAlive/i);
   });
 });
