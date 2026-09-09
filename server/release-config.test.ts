@@ -75,7 +75,10 @@ describe("internal desktop releases", () => {
     expect(feed).toContain("Set a GitHub token");
     expect(updater).toContain("SHA256SUMS");
     expect(updater).toContain("ELECTRON_RUN_AS_NODE");
+    expect(updater).toContain("planHelperStaging");
+    expect(updater).toContain("verifiedDownloadRecordPath");
     expect(updater).not.toContain("openPath");
     expect(updater).not.toMatch(/shell:\s*true/);
+    expect(updater).not.toMatch(/codesign|notariz|Developer ID/i);
   });
 });

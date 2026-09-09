@@ -4,7 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { expectedHashForAsset, hashesEqual, parseSha256Sums, sha256File, verifyDownload } from "./update-verify.mjs";
+import {
+    expectedHashForAsset,
+    hashesEqual,
+    parseSha256Sums,
+    parseVerifiedDownloadRecord,
+    restoreVerifiedDownload,
+    reusePersistedDownload,
+    serializeVerifiedDownloadRecord,
+    sha256File,
+    sha256FileSync,
+    verifiedDownloadRecordPath,
+    verifyDownload,
+} from "./update-verify.mjs";
 
 describe("SHA256SUMS verification", () => {
   it("parses GNU sha256sum lines and matches the installer name", () => {
@@ -41,6 +53,7 @@ describe("SHA256SUMS verification", () => {
     });
     expect(ok).toEqual({ ok: true, sha256: digest });
     expect(await sha256File(file)).toBe(digest);
+    expect(sha256FileSync(file)).toBe(digest);
 
     const mismatch = await verifyDownload({
       filePath: file,
@@ -57,5 +70,62 @@ describe("SHA256SUMS verification", () => {
     });
     expect(missing.ok).toBe(false);
     expect(missing.message).toMatch(/no entry/i);
+  });
+
+  it("restores a persisted verified download only when the file and checksum still match", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "velarix-persist-"));
+    const file = join(dir, "VelarixBot-0.4.4-arm64.dmg");
+    writeFileSync(file, "verified-dmg");
+    const digest = createHash("sha256").update("verified-dmg").digest("hex");
+    const text = serializeVerifiedDownloadRecord({
+      path: file,
+      sha256: digest,
+      version: "0.4.4",
+      assetName: "VelarixBot-0.4.4-arm64.dmg",
+    });
+    expect(verifiedDownloadRecordPath(dir)).toBe(join(dir, "verified-download.json"));
+    const record = parseVerifiedDownloadRecord(text);
+    expect(record).toEqual({
+      path: file,
+      sha256: digest,
+      version: "0.4.4",
+      assetName: "VelarixBot-0.4.4-arm64.dmg",
+    });
+
+    const ok = await restoreVerifiedDownload(record, {
+      fileExists: (p) => p === file,
+      sha256Of: async (p) => (p === file ? digest : "nope"),
+    });
+    expect(ok).toEqual({ ok: true, path: file, sha256: digest, version: "0.4.4", assetName: "VelarixBot-0.4.4-arm64.dmg" });
+
+    const gone = await restoreVerifiedDownload(record, {
+      fileExists: () => false,
+      sha256Of: async () => digest,
+    });
+    expect(gone.ok).toBe(false);
+
+    const mismatch = await restoreVerifiedDownload(record, {
+      fileExists: () => true,
+      sha256Of: async () => "c".repeat(64),
+    });
+    expect(mismatch.ok).toBe(false);
+
+    const reused = await reusePersistedDownload({
+      record,
+      availableVersion: "0.4.4",
+      fileExists: () => true,
+      sha256Of: async () => digest,
+    });
+    expect(reused.ok).toBe(true);
+
+    const otherVersion = await reusePersistedDownload({
+      record,
+      availableVersion: "0.4.5",
+      fileExists: () => true,
+      sha256Of: async () => digest,
+    });
+    expect(otherVersion.ok).toBe(false);
+    expect(parseVerifiedDownloadRecord("{not json")).toBeNull();
+    expect(parseVerifiedDownloadRecord(JSON.stringify({ path: file, sha256: "short" }))).toBeNull();
   });
 });

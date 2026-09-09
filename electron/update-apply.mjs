@@ -1,7 +1,7 @@
 // Install-after-quit plan for unsigned DMG / NSIS updates.
 // Pure: no Electron import, no shell:true. Callers inject spawn/fs.
 // macOS: wait for GUI exit → suppress + bootout → drain bundle executors
-// → hdiutil + ditto → relaunch. Do not ditto while any path under the
+// → hdiutil + ditto → clear quarantine → relaunch. Do not ditto while any path under the
 // installed .app is still executing (including external-parented proxies).
 // Windows: wait for GUI exit → stop user-session service → NSIS /S → relaunch.
 import { posix, win32 } from "node:path";
@@ -18,6 +18,8 @@ export const INSTALLER_FAILED_MESSAGE = "The installer did not finish successful
 export const WAIT_TIMEOUT_MESSAGE = "Timed out waiting for VelarixBot to quit.";
 export const BUNDLE_WAIT_TIMEOUT_MS = 15_000;
 export const REPLACE_BLOCKED_MESSAGE = "Replacement did not start.";
+export const UPDATE_INTERRUPTED_MESSAGE = "Update was interrupted before install finished.";
+export const HELPER_INTERPRETER_NAME = "velarix-update-node";
 
 export function leftoverReplaceMessage({ destPath, leftovers } = {}) {
   const rows = Array.isArray(leftovers) ? leftovers : [];
@@ -66,7 +68,8 @@ export function commandTouchesBundle(text, bundlePath) {
 }
 
 export function isUpdateHelperProcess(proc) {
-  return String(proc?.command ?? "").includes("update-helper.mjs");
+  const command = String(proc?.command ?? "");
+  return command.includes("update-helper.mjs") || command.includes(HELPER_INTERPRETER_NAME);
 }
 
 export function executorsUnderBundle(processes, bundlePath, { excludePids = [] } = {}) {
@@ -132,6 +135,11 @@ export function macCopyAppArgs(fromApp, toApp) {
   return { command: "ditto", args: [fromApp, toApp] };
 }
 
+/** After a verified ditto. Clears Gatekeeper quarantine; not signing. */
+export function macClearQuarantineArgs(destPath) {
+  return { command: "xattr", args: ["-dr", "com.apple.quarantine", destPath] };
+}
+
 export function parseHdiutilMountPoint(plistText) {
   const matches = String(plistText ?? "").match(/\/Volumes\/[^<"\n]+/g);
   if (!matches?.length) return null;
@@ -174,21 +182,74 @@ export function planInstallAfterQuit({
   };
 }
 
-export function helperLaunch({ execPath, helperPath, planPath, env = {} } = {}) {
+/** Stage helper scripts + a runnable interpreter outside destPath.
+ * Darwin copies execPath to helperDir so ditto cannot kill the helper.
+ * Windows keeps the existing NSIS path (no interpreter copy). */
+export function planHelperStaging({ platform, execPath, destPath, helperDir } = {}) {
+  const scripts = ["update-helper.mjs", "update-apply.mjs", "harness-boot-suppress.mjs"];
+  if (platform === "win32") {
+    return { ok: true, command: execPath, copyInterpreter: false, helperDir, scripts };
+  }
+  if (platform !== "darwin" || !helperDir || !execPath) {
+    return { ok: false, message: HELPER_FAILED_MESSAGE };
+  }
+  if (commandTouchesBundle(helperDir, destPath)) {
+    return { ok: false, message: HELPER_FAILED_MESSAGE };
+  }
+  const command = posix.join(helperDir, HELPER_INTERPRETER_NAME);
+  if (commandTouchesBundle(command, destPath)) {
+    return { ok: false, message: HELPER_FAILED_MESSAGE };
+  }
+  return {
+    ok: true,
+    command,
+    copyInterpreter: true,
+    copyFrom: execPath,
+    helperDir,
+    scripts,
+  };
+}
+
+export function helperLaunch({ command, execPath, helperPath, planPath, destPath, platform, env = {} } = {}) {
   const cleaned = {};
   for (const [key, value] of Object.entries(env ?? {})) {
     if (key === "VELARIX_API_TOKEN" || key === "GITHUB_TOKEN" || key === "GH_TOKEN") continue;
     cleaned[key] = value;
   }
   cleaned.ELECTRON_RUN_AS_NODE = "1";
+  const launchCommand = command || execPath;
+  if (!launchCommand || !helperPath || !planPath) {
+    return { ok: false, message: HELPER_FAILED_MESSAGE };
+  }
+  // Darwin: the process ditto overwrites must not be the helper interpreter.
+  if (platform !== "win32" && destPath && commandTouchesBundle(launchCommand, destPath)) {
+    return { ok: false, message: HELPER_FAILED_MESSAGE };
+  }
   return {
-    command: execPath,
+    ok: true,
+    command: launchCommand,
     args: [helperPath, planPath],
     detached: true,
     stdio: "ignore",
     shell: false,
     env: cleaned,
   };
+}
+
+/** Next GUI launch after the helper wrote update-result.json. */
+export function nextLaunchUpdaterState({ priorResult, restoredDownload } = {}) {
+  if (priorResult?.ok === true) {
+    return { status: "idle", downloadedPath: null, clearPersist: true };
+  }
+  const downloadedPath = restoredDownload?.ok ? restoredDownload.path : null;
+  const version = restoredDownload?.ok ? restoredDownload.version : undefined;
+  if (priorResult && priorResult.ok === false && priorResult.message) {
+    return { status: "error", message: priorResult.message, downloadedPath, version };
+  }
+  if (downloadedPath) {
+    return { status: "downloaded", downloadedPath, version, percent: 100 };
+  }
+  return { status: "idle", downloadedPath: null };
 }
 
 export function processAlive(pid, { kill = process.kill } = {}) {
@@ -334,6 +395,12 @@ async function applyMacUpdate(plan, { runArgv, listDir }) {
   } finally {
     const detach = macDetachArgs(mount);
     await runArgv(detach.command, detach.args);
+  }
+  const quarantine = macClearQuarantineArgs(plan.destPath);
+  try {
+    await runArgv(quarantine.command, quarantine.args);
+  } catch {
+    /* clearing quarantine is allowed after a verified copy; not required */
   }
 }
 
