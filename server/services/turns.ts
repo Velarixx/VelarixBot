@@ -1853,6 +1853,10 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     }
     const instance = registry.get(bot.modelSelection.instanceId);
     if (!instance) return { error: "provider unavailable", status: 409 };
+    const existingCard = store.messagesFor(bot.threadId).find((msg) => msg.card?.requestId === requestId);
+    // First valid decision wins. Replay and an expired card are no-ops —
+    // they must not approve again or diverge from Telegram.
+    if (existingCard?.card?.answered) return { ok: true };
     const pending = pendingAskByRequest.get(requestId);
     if (pending?.requestType === "permission") {
       // A rule persists ONLY on an explicit Always-allow (`always: true`).

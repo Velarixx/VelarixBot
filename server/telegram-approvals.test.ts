@@ -142,7 +142,7 @@ describe("opaque callback store", () => {
     now += TELEGRAM_APPROVAL_TTL_MS;
     expect(store.expireDue()).toHaveLength(1);
     expect(store.getByRequest("req-1")?.settled).toBe("expired");
-    expect(store.getByCallback(created.allowCallbackId)).toBeNull();
+    expect(store.getByCallback(created.allowCallbackId)?.record.settled).toBe("expired");
   });
 
   it("first settle wins; replay is a no-op", () => {
@@ -159,6 +159,7 @@ describe("opaque callback store", () => {
     });
     expect(store.settle("req-1", "allow")?.settled).toBe("allow");
     expect(store.settle("req-1", "deny")?.settled).toBe("allow");
-    expect(store.getByCallback(created.allowCallbackId)).toBeNull();
+    expect(store.getByCallback(created.allowCallbackId)?.record.settled).toBe("allow");
+    expect(store.getByCallback(created.denyCallbackId)?.record.settled).toBe("allow");
   });
 });

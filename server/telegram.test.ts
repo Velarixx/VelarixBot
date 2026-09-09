@@ -555,8 +555,10 @@ describe("telegram permission approval (#149 first slice)", () => {
     const deny = sent[0]!.replyMarkup!.inline_keyboard[0]![1]!.callback_data;
     await telegram.handleUpdate(callback({ data: allow, userId: 111, chatId: 111 }));
     expect(decisions).toHaveLength(1);
+    expect(edited.at(-1)?.text).toMatch(/Decision: Allow once/);
     await telegram.handleUpdate(callback({ data: deny, userId: 111, chatId: 111, callbackId: "cq-2", updateId: 21 }));
     expect(decisions).toHaveLength(1);
+    expect(edited.at(-1)?.text).toMatch(/Decision: Allow once/);
 
     decisions.length = 0;
     edited.length = 0;

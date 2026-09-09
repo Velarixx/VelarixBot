@@ -243,7 +243,6 @@ export function createTelegramApprovalStore(deps: {
       const record = byRequest.get(requestId);
       if (!record || record.settled) return record ?? null;
       record.settled = settled;
-      forgetCallbacks(record);
       return record;
     },
     expireDue() {
@@ -252,7 +251,6 @@ export function createTelegramApprovalStore(deps: {
       for (const record of byRequest.values()) {
         if (record.settled || now < record.expiresAt) continue;
         record.settled = "expired";
-        forgetCallbacks(record);
         expired.push(record);
       }
       return expired;

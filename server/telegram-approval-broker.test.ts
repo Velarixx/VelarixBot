@@ -21,7 +21,7 @@ import { createRoutinesService, type RoutinesService } from "./services/routines
 import { makeFakeDriver } from "./testing/fake-driver.ts";
 import { createTelegramService, type TelegramService } from "./telegram.ts";
 import type { TelegramApi, TelegramApiUpdate, TelegramSendOptions } from "./telegram-api.ts";
-import { TELEGRAM_ALLOW_ONCE_LABEL, TELEGRAM_DENY_LABEL } from "./telegram-approvals.ts";
+import { TELEGRAM_ALLOW_ONCE_LABEL, TELEGRAM_APPROVAL_TTL_MS, TELEGRAM_DENY_LABEL } from "./telegram-approvals.ts";
 
 const TOOL = "shell";
 const SUMMARY = "git status";
@@ -270,6 +270,63 @@ describe("telegram approval broker path", () => {
     expect(card(bot.threadId)?.card?.answered).toBe("deny");
     expect(loadRules(bot.id)).toEqual([]);
     expect(startTurns.length).toBe(beforeTurns);
+  });
+
+  it("replay is a no-op and both surfaces keep the same terminal state", async () => {
+    const bot = bots.bots()[0]!;
+    repos.telegramConversations.upsert({
+      chatId: "111",
+      userId: "111",
+      botId: bot.id,
+      threadId: bot.threadId,
+      now,
+    });
+    bus.publish(opened(bot.threadId, "req-replay"));
+    await flush();
+    const allow = sent[0]!.replyMarkup!.inline_keyboard[0]![0]!.callback_data;
+    const deny = sent[0]!.replyMarkup!.inline_keyboard[0]![1]!.callback_data;
+    await telegram.handleUpdate(callback(allow));
+    expect(respondCalls).toHaveLength(1);
+    expect(card(bot.threadId)?.card?.answered).toBe("allow");
+    expect(edited.at(-1)?.text).toMatch(/Decision: Allow once/);
+
+    await telegram.handleUpdate(callback(deny, 111, 111));
+    const afterReplay = await turns.respond(bot.id, "req-replay", { behavior: "deny" });
+    expect(afterReplay).toEqual({ ok: true });
+    expect(respondCalls).toHaveLength(1);
+    expect(respondCalls[0]).toMatchObject({ behavior: "allow", always: false });
+    expect(card(bot.threadId)?.card?.answered).toBe("allow");
+    expect(edited.at(-1)?.text).toMatch(/Decision: Allow once/);
+    expect(edited.at(-1)?.text).not.toMatch(/Deny|expired/i);
+    expect(loadRules(bot.id)).toEqual([]);
+  });
+
+  it("expired callback does not approve; Telegram and the desktop card both show expired", async () => {
+    const bot = bots.bots()[0]!;
+    repos.telegramConversations.upsert({
+      chatId: "111",
+      userId: "111",
+      botId: bot.id,
+      threadId: bot.threadId,
+      now,
+    });
+    bus.publish(opened(bot.threadId, "req-exp"));
+    await flush();
+    expect(card(bot.threadId)?.card?.answered).toBeUndefined();
+    const allow = sent[0]!.replyMarkup!.inline_keyboard[0]![0]!.callback_data;
+    now += TELEGRAM_APPROVAL_TTL_MS;
+    await telegram.handleUpdate(callback(allow));
+    expect(respondCalls).toEqual([]);
+    expect(card(bot.threadId)?.card?.answered).toBe("expired");
+    expect(edited.at(-1)?.text).toMatch(/expired/i);
+    expect(edited.at(-1)?.text).not.toMatch(/Decision: Allow once/);
+
+    const late = await turns.respond(bot.id, "req-exp", { behavior: "allow" });
+    expect(late).toEqual({ ok: true });
+    expect(respondCalls).toEqual([]);
+    expect(card(bot.threadId)?.card?.answered).toBe("expired");
+    expect(edited.at(-1)?.text).toMatch(/expired/i);
+    expect(loadRules(bot.id)).toEqual([]);
   });
 
   it("leaves the desktop card usable when Telegram send throws", async () => {
