@@ -15,7 +15,9 @@ import { cn } from "@/lib/cn";
 import { splitAttachedFiles } from "@/lib/chat-message";
 import { tasksForBot, userActionTaskPatch, type AgentTask } from "@/lib/agent-task";
 import { formatCompactTokens, formatUsageCost, stateLabel, type BotState } from "@/lib/product";
+import { hasInspectableRun, runStartedAt } from "@/lib/run-inspector";
 import { workflowLabel, type WorkflowStatus } from "@/lib/workflow";
+import { RunInspector } from "./RunInspector";
 
 const stateTone: Record<BotState, string> = { IDLE: "bg-raised text-ink-secondary", RUNNING: "bg-accent/15 text-accent", DONE: "bg-success/15 text-success", BLOCKED: "bg-danger/15 text-danger", NEEDS_INPUT: "bg-warning/15 text-warning" };
 const workflowTone: Record<WorkflowStatus, string> = {
@@ -111,21 +113,6 @@ function StreamingBubble({ text }: { text: string }) {
       </div>
     </div>
   );
-}
-
-/** "Working for 12s" that ticks by mutating textContent on an interval —
- * no React commit per second while a turn streams (upstream trick). */
-function WorkingTimer({ since }: { since: number }) {
-  const ref = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    const tick = () => {
-      if (ref.current) ref.current.textContent = `Working for ${Math.max(0, Math.round((Date.now() - since) / 1000))}s`;
-    };
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
-  }, [since]);
-  return <span ref={ref} className="text-[12.5px] text-ink-secondary" />;
 }
 
 export function ChatView({ bot }: { bot: Bot }) {
@@ -337,21 +324,13 @@ export function ChatView({ bot }: { bot: Bot }) {
               </div>
             </div>
           )}
-          {streaming ? (
-            <StreamingBubble text={streaming} />
-          ) : (
-            bot.busy && (
-              <div className="flex justify-start">
-                <div className="flex items-center gap-2.5 rounded-2xl bg-raised px-4 py-3">
-                  <span className="flex items-center gap-1.5">
-                    <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:0ms]" />
-                    <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:150ms]" />
-                    <span className="size-1.5 animate-bounce rounded-full bg-ink-secondary [animation-delay:300ms]" />
-                  </span>
-                  <WorkingTimer since={[...bot.messages].reverse().find((m) => m.role === "user")?.at ?? Date.now()} />
-                </div>
-              </div>
-            )
+          {streaming ? <StreamingBubble text={streaming} /> : null}
+          {hasInspectableRun(bot) && (
+            <RunInspector
+              bot={bot}
+              tasks={state.tasks}
+              since={runStartedAt(bot.messages, Date.now())}
+            />
           )}
         </div>
       </div>
