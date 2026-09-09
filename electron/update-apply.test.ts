@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   HELPER_FAILED_MESSAGE,
+  HELPER_INTERPRETER_NAME,
   INSTALLING_MESSAGE,
   INSTALLER_FAILED_MESSAGE,
   MOUNT_FAILED_MESSAGE,
@@ -12,20 +13,27 @@ import {
   NO_BUNDLE_MESSAGE,
   REPLACE_BLOCKED_MESSAGE,
   REPLACE_FAILED_MESSAGE,
+  UPDATE_INTERRUPTED_MESSAGE,
   WAIT_TIMEOUT_MESSAGE,
   appBundleName,
   applyUpdate,
+  commandTouchesBundle,
+  electronFrameworksPath,
   executorsUnderBundle,
   helperLaunch,
   installedBundlePath,
+  isRunnableElectronNodeLayout,
   leftoverReplaceMessage,
   macAttachArgs,
+  macClearQuarantineArgs,
   macCopyAppArgs,
   macDetachArgs,
   macProcessListArgs,
+  nextLaunchUpdaterState,
   parseHdiutilMountPoint,
   parsePsCommandLines,
   parseUpdateResult,
+  planHelperStaging,
   planInstallAfterQuit,
   processAlive,
   waitForBundleExecutorsGone,
@@ -72,6 +80,12 @@ describe("install-after-quit plan", () => {
     expect(plan.stopCommand).toBe("/bin/launchctl");
     expect(plan.stopArgs).toEqual(["bootout", "gui/501/com.velarix.bot.harness"]);
     expect(plan.stopArgs).not.toContain("kickstart");
+    expect(macAttachArgs(plan.artifactPath)).toEqual({
+      command: "hdiutil",
+      args: ["attach", "-nobrowse", "-plist", plan.artifactPath],
+    });
+    expect(JSON.stringify(plan)).not.toMatch(/drag/i);
+    expect(JSON.stringify(plan.relaunch)).not.toContain(".dmg");
     expect(planInstallAfterQuit({ platform: "darwin", execPath: "/usr/bin/velarix" }).ok).toBe(false);
     expect(planInstallAfterQuit({ platform: "darwin", execPath: "/usr/bin/velarix" }).message).toBe(NO_BUNDLE_MESSAGE);
   });
@@ -99,11 +113,73 @@ describe("install-after-quit plan", () => {
     expect(nsis.args.at(-1)).toBe("/D=C:\\Users\\sam\\AppData\\Local\\Programs\\VelarixBot");
   });
 
-  it("launches the helper as argv-only ELECTRON_RUN_AS_NODE without tokens", () => {
-    const launch = helperLaunch({
+  it("stages a darwin interpreter outside the installed .app that ditto will overwrite", () => {
+    const destPath = "/Applications/VelarixBot.app";
+    const helperDir = "/tmp/velarixbot-updates";
+    const staged = planHelperStaging({
+      platform: "darwin",
       execPath: EXE_MAC,
+      destPath,
+      helperDir,
+    });
+    expect(staged.ok).toBe(true);
+    expect(staged.copyInterpreter).toBe(true);
+    expect(staged.copyFrom).toBe(EXE_MAC);
+    expect(staged.command).toBe(`${helperDir}/MacOS/${HELPER_INTERPRETER_NAME}`);
+    expect(staged.command).not.toBe(EXE_MAC);
+    expect(commandTouchesBundle(staged.command, destPath)).toBe(false);
+    expect(staged.frameworksFrom).toBe(`${destPath}/Contents/Frameworks`);
+    expect(staged.frameworksTo).toBe(`${helperDir}/Frameworks`);
+    expect(staged.cwd).toBe(`${helperDir}/MacOS`);
+    expect(isRunnableElectronNodeLayout(staged)).toBe(true);
+    expect(staged.scripts).toEqual(["update-helper.mjs", "update-apply.mjs", "harness-boot-suppress.mjs"]);
+    expect(
+      planHelperStaging({
+        platform: "darwin",
+        execPath: EXE_MAC,
+        destPath,
+        helperDir: "/Applications/VelarixBot.app/Contents/Resources/updates",
+      }).ok,
+    ).toBe(false);
+    expect(
+      planHelperStaging({
+        platform: "win32",
+        execPath: EXE_WIN,
+        destPath: "C:\\Users\\sam\\AppData\\Local\\Programs\\VelarixBot",
+        helperDir: "C:\\Temp\\velarixbot-updates",
+      }),
+    ).toMatchObject({ ok: true, command: EXE_WIN, copyInterpreter: false });
+  });
+
+  it("fails if helperLaunch still sets command to the in-bundle execPath that ditto overwrites", () => {
+    const destPath = "/Applications/VelarixBot.app";
+    const launch = helperLaunch({
+      command: EXE_MAC,
       helperPath: "/tmp/update-helper.mjs",
-      planPath: "/tmp/update-plan.json",
+      planPath: "/tmp/plan.json",
+      destPath,
+      platform: "darwin",
+    });
+    expect(launch.ok).toBe(false);
+    expect(launch.command).not.toBe(EXE_MAC);
+    expect(launch.message).toBe(HELPER_FAILED_MESSAGE);
+  });
+
+  it("launches the helper as argv-only ELECTRON_RUN_AS_NODE without tokens", () => {
+    const destPath = "/Applications/VelarixBot.app";
+    const helperDir = "/tmp/velarixbot-updates";
+    const staged = planHelperStaging({
+      platform: "darwin",
+      execPath: EXE_MAC,
+      destPath,
+      helperDir,
+    });
+    const launch = helperLaunch({
+      command: staged.command,
+      helperPath: `${helperDir}/update-helper.mjs`,
+      planPath: `${helperDir}/update-plan.json`,
+      destPath,
+      platform: "darwin",
       env: {
         PATH: "/usr/bin",
         VELARIX_API_TOKEN: "secret-token",
@@ -112,15 +188,96 @@ describe("install-after-quit plan", () => {
         HOME: "/Users/sam",
       },
     });
-    expect(launch.command).toBe(EXE_MAC);
-    expect(launch.args).toEqual(["/tmp/update-helper.mjs", "/tmp/update-plan.json"]);
+    expect(launch.ok).toBe(true);
+    expect(launch.command).toBe(`${helperDir}/MacOS/${HELPER_INTERPRETER_NAME}`);
+    expect(launch.command).not.toBe(EXE_MAC);
+    expect(commandTouchesBundle(launch.command, destPath)).toBe(false);
+    expect(launch.cwd).toBe(`${helperDir}/MacOS`);
+    expect(launch.args).toEqual([`${helperDir}/update-helper.mjs`, `${helperDir}/update-plan.json`]);
     expect(launch.shell).toBe(false);
     expect(launch.detached).toBe(true);
+    expect(launch.stdio).toBe("ignore");
     expect(launch.env.ELECTRON_RUN_AS_NODE).toBe("1");
     expect(launch.env.HOME).toBe("/Users/sam");
     expect(JSON.stringify(launch)).not.toContain("secret-token");
     expect(JSON.stringify(launch)).not.toContain("ghp_");
     expect(JSON.stringify(launch)).not.toContain("gh_not_logged");
+  });
+
+  it("keeps the Windows helper on the packaged exe for the existing NSIS /S path", () => {
+    const launch = helperLaunch({
+      execPath: EXE_WIN,
+      helperPath: "C:\\Temp\\update-helper.mjs",
+      planPath: "C:\\Temp\\plan.json",
+      destPath: "C:\\Users\\sam\\AppData\\Local\\Programs\\VelarixBot",
+      platform: "win32",
+      env: { VELARIX_API_TOKEN: "secret-token" },
+    });
+    expect(launch.ok).toBe(true);
+    expect(launch.command).toBe(EXE_WIN);
+    expect(launch.shell).toBe(false);
+    expect(launch.detached).toBe(true);
+    expect(JSON.stringify(launch)).not.toContain("secret-token");
+  });
+
+  it("requires a Frameworks sibling so ELECTRON_RUN_AS_NODE can start — a bare execPath copy fails", () => {
+    const destPath = "/Applications/VelarixBot.app";
+    const helperDir = "/tmp/velarixbot-updates";
+    expect(electronFrameworksPath(EXE_MAC)).toBe(`${destPath}/Contents/Frameworks`);
+    expect(
+      isRunnableElectronNodeLayout({
+        command: `${helperDir}/${HELPER_INTERPRETER_NAME}`,
+      }),
+    ).toBe(false);
+    expect(
+      isRunnableElectronNodeLayout({
+        command: `${helperDir}/${HELPER_INTERPRETER_NAME}`,
+        frameworksTo: `${helperDir}/Frameworks`,
+      }),
+    ).toBe(false);
+    expect(
+      isRunnableElectronNodeLayout({
+        command: EXE_MAC,
+        frameworksTo: `${destPath}/Contents/Frameworks`,
+      }),
+    ).toBe(true);
+
+    const staged = planHelperStaging({
+      platform: "darwin",
+      execPath: EXE_MAC,
+      destPath,
+      helperDir,
+    });
+    expect(isRunnableElectronNodeLayout(staged)).toBe(true);
+    expect(staged.frameworksFrom).toBe(`${destPath}/Contents/Frameworks`);
+    expect(staged.frameworksTo).toBe(`${helperDir}/Frameworks`);
+    expect(staged.cwd).toBe(`${helperDir}/MacOS`);
+    expect(commandTouchesBundle(staged.command, destPath)).toBe(false);
+    expect(commandTouchesBundle(staged.frameworksTo, destPath)).toBe(false);
+
+    const bare = helperLaunch({
+      command: `${helperDir}/${HELPER_INTERPRETER_NAME}`,
+      helperPath: `${helperDir}/update-helper.mjs`,
+      planPath: `${helperDir}/update-plan.json`,
+      destPath,
+      platform: "darwin",
+    });
+    expect(bare.ok).toBe(false);
+    expect(bare.message).toBe(HELPER_FAILED_MESSAGE);
+
+    const launch = helperLaunch({
+      command: staged.command,
+      helperPath: `${helperDir}/update-helper.mjs`,
+      planPath: `${helperDir}/update-plan.json`,
+      destPath,
+      platform: "darwin",
+      frameworksTo: staged.frameworksTo,
+      cwd: staged.cwd,
+    });
+    expect(launch.ok).toBe(true);
+    expect(launch.cwd).toBe(`${helperDir}/MacOS`);
+    expect(launch.env.ELECTRON_RUN_AS_NODE).toBe("1");
+    expect(isRunnableElectronNodeLayout({ command: launch.command, frameworksTo: staged.frameworksTo })).toBe(true);
   });
 });
 
@@ -159,8 +316,11 @@ describe("apply after the GUI pid exits", () => {
     expect(calls[1]).toEqual(Object.values(macAttachArgs("/tmp/update.dmg")));
     expect(calls[2]).toEqual(Object.values(macCopyAppArgs("/Volumes/VelarixBot 0.3.1/VelarixBot.app", "/Applications/VelarixBot.app")));
     expect(calls[3]).toEqual(Object.values(macDetachArgs("/Volumes/VelarixBot 0.3.1")));
-    expect(calls[4]).toEqual(["result", { ok: true }]);
-    expect(calls[5]).toEqual(["open", ["-n", "/Applications/VelarixBot.app"]]);
+    expect(calls[4]).toEqual(Object.values(macClearQuarantineArgs("/Applications/VelarixBot.app")));
+    expect(calls[5]).toEqual(["result", { ok: true }]);
+    expect(calls[6]).toEqual(["open", ["-n", "/Applications/VelarixBot.app"]]);
+    expect(calls.some((row) => row[0] === "open" && String(row[1]?.[1] ?? "").endsWith(".dmg"))).toBe(false);
+    expect(calls.some((row) => row[0] === "codesign")).toBe(false);
     expect(parseHdiutilMountPoint("no mount")).toBeNull();
     expect(appBundleName(["README.txt"])).toBeNull();
   });
@@ -192,6 +352,45 @@ describe("apply after the GUI pid exits", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toBe(NO_APP_IN_DMG_MESSAGE);
     expect(written[0]).toEqual({ ok: false, message: NO_APP_IN_DMG_MESSAGE });
+    expect(written[0].ok).not.toBe(true);
+  });
+
+  it("failed replace is an error on next launch and does not report installed", () => {
+    const restored = {
+      ok: true,
+      path: "/tmp/velarixbot-updates/VelarixBot-0.4.4-arm64.dmg",
+      sha256: "a".repeat(64),
+      version: "0.4.4",
+    };
+    const failed = nextLaunchUpdaterState({
+      priorResult: { ok: false, message: REPLACE_FAILED_MESSAGE },
+      restoredDownload: restored,
+    });
+    expect(failed.status).toBe("error");
+    expect(failed.message).toBe(REPLACE_FAILED_MESSAGE);
+    expect(failed.downloadedPath).toBe(restored.path);
+    expect(failed.clearPersist).toBeUndefined();
+
+    const interrupted = nextLaunchUpdaterState({
+      priorResult: { ok: false, message: UPDATE_INTERRUPTED_MESSAGE },
+      restoredDownload: restored,
+    });
+    expect(interrupted.status).toBe("error");
+    expect(interrupted.message).toBe(UPDATE_INTERRUPTED_MESSAGE);
+    expect(interrupted.downloadedPath).toBe(restored.path);
+
+    const installed = nextLaunchUpdaterState({
+      priorResult: { ok: true },
+      restoredDownload: restored,
+    });
+    expect(installed.status).toBe("idle");
+    expect(installed.downloadedPath).toBeNull();
+    expect(installed.clearPersist).toBe(true);
+
+    const pending = nextLaunchUpdaterState({ priorResult: null, restoredDownload: restored });
+    expect(pending.status).toBe("downloaded");
+    expect(pending.downloadedPath).toBe(restored.path);
+    expect(pending.version).toBe("0.4.4");
   });
 
   it("runs NSIS silently after the Windows GUI exits", async () => {
@@ -479,6 +678,15 @@ describe("apply after the GUI pid exits", () => {
     const leftovers = executorsUnderBundle(parsed, bundle, { excludePids: [61000] });
     expect(leftovers.map((row) => row.pid)).toEqual([52104, 53001]);
     expect(leftoverReplaceMessage({ destPath: bundle, leftovers })).toContain("53001");
+
+    const stagedHelper = {
+      pid: 62000,
+      ppid: 1,
+      command: `/tmp/velarixbot-updates/MacOS/${HELPER_INTERPRETER_NAME} /tmp/velarixbot-updates/update-helper.mjs /tmp/plan.json`,
+    };
+    expect(executorsUnderBundle([stagedHelper, parsed[0], parsed[1]], bundle).map((row) => row.pid)).toEqual([
+      52104, 53001,
+    ]);
   });
 
   it("waits on the injected clock until bundle executors drain — no wall-clock sleep", async () => {
@@ -512,12 +720,28 @@ describe("apply after the GUI pid exits", () => {
     const applySrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "update-apply.mjs"), "utf8");
     expect(updaterSrc).toContain("harness-boot-suppress.mjs");
     expect(updaterSrc).toContain("writeHarnessBootSuppress");
+    expect(updaterSrc).toContain("planHelperStaging");
+    expect(updaterSrc).toContain("copyInterpreter");
+    expect(updaterSrc).toContain("chmodSync");
+    expect(updaterSrc).toContain("cpSync");
+    expect(updaterSrc).toContain("frameworksFrom");
+    expect(updaterSrc).toContain("frameworksTo");
+    expect(updaterSrc).toContain("verifiedDownloadRecordPath");
+    expect(updaterSrc).toContain("nextLaunchUpdaterState");
+    expect(updaterSrc).toContain("UPDATE_INTERRUPTED_MESSAGE");
+    expect(updaterSrc.indexOf("launchInstallHelper()")).toBeLessThan(updaterSrc.indexOf("app.quit()"));
     expect(updaterSrc).toMatch(/shell:\s*false/);
+    expect(updaterSrc).toContain("cwd: launch.cwd");
+    expect(updaterSrc).not.toMatch(/codesign|notariz|Developer ID/i);
     expect(helperSrc).toMatch(/shell:\s*false/);
     expect(helperSrc).not.toMatch(/shell:\s*true/);
     expect(applySrc).toContain("waitForBundleExecutorsGone");
     expect(applySrc).toContain("shell: false");
     expect(applySrc).not.toMatch(/shell:\s*true[^.]/);
+    expect(applySrc).toContain("macClearQuarantineArgs");
+    expect(applySrc).toContain("isRunnableElectronNodeLayout");
+    expect(applySrc).toContain("electronFrameworksPath");
+    expect(applySrc).not.toMatch(/codesign|notariz|Developer ID/i);
   });
 
   it("runs the helper entry against a plan file without spawning a shell", async () => {

@@ -5,10 +5,23 @@
 // ~/.velarixbot/secrets.json (safeStorage entries decrypt here in main).
 //
 // Download verifies SHA256SUMS.txt. Install does not open the DMG/EXE:
-// a helper launched with ELECTRON_RUN_AS_NODE waits for this process to
-// exit, replaces the installed bundle, then relaunches.
+// helper scripts plus a MacOS/ + Frameworks/ ELECTRON_RUN_AS_NODE tree
+// are copied outside the installed .app (not a bare execPath copy), then
+// launched detached (new session, shell: false). The helper waits for
+// this process to exit, runs the #147 stop gate, replaces the bundle,
+// then relaunches.
 import { spawn } from "node:child_process";
-import { copyFileSync, createWriteStream, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -16,6 +29,7 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { app, ipcMain, safeStorage } from "electron";
 import {
+  compareVersions,
   DEV_NOOP_MESSAGE,
   NO_TOKEN_MESSAGE,
   newestNewerRelease,
@@ -26,10 +40,29 @@ import {
   releasesUrl,
   tokenConfigured,
 } from "./update-feed.mjs";
-import { helperLaunch, HELPER_FAILED_MESSAGE, INSTALLING_MESSAGE, parseUpdateResult, planInstallAfterQuit } from "./update-apply.mjs";
+import {
+  HELPER_FAILED_MESSAGE,
+  INSTALLING_MESSAGE,
+  UPDATE_INTERRUPTED_MESSAGE,
+  helperLaunch,
+  installedBundlePath,
+  nextLaunchUpdaterState,
+  parseUpdateResult,
+  planHelperStaging,
+  planInstallAfterQuit,
+} from "./update-apply.mjs";
 import { writeHarnessBootSuppress } from "./harness-boot-suppress.mjs";
 import { planServiceStop } from "./service-control.mjs";
-import { verifyDownload } from "./update-verify.mjs";
+import {
+  hashesEqual,
+  parseVerifiedDownloadRecord,
+  restoreVerifiedDownload,
+  serializeVerifiedDownloadRecord,
+  sha256File,
+  sha256FileSync,
+  verifiedDownloadRecordPath,
+  verifyDownload,
+} from "./update-verify.mjs";
 
 const UA = "VelarixBot";
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +82,65 @@ function secretsPath() {
 
 function resultPath() {
   return join(app.getPath("userData"), "update-result.json");
+}
+
+function persistPath() {
+  return verifiedDownloadRecordPath(app.getPath("userData"));
+}
+
+function writeUpdateResult(result) {
+  writeFileSync(resultPath(), JSON.stringify(result));
+}
+
+function readVerifiedDownloadRecord() {
+  try {
+    return parseVerifiedDownloadRecord(readFileSync(persistPath(), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function writeVerifiedDownloadRecord(record) {
+  writeFileSync(persistPath(), serializeVerifiedDownloadRecord(record));
+}
+
+function clearVerifiedDownloadRecord() {
+  try {
+    unlinkSync(persistPath());
+  } catch {
+    /* none persisted */
+  }
+}
+
+async function tryRestoreVerifiedDownload({ availableVersion } = {}) {
+  const record = readVerifiedDownloadRecord();
+  if (!record) return { ok: false };
+  if (availableVersion && record.version && record.version !== availableVersion) return { ok: false };
+  const restored = await restoreVerifiedDownload(record, {
+    fileExists: (filePath) => existsSync(filePath),
+    sha256Of: (filePath) => sha256File(filePath),
+  });
+  if (!restored.ok) return restored;
+  if (!availableVersion && restored.version && compareVersions(restored.version, app.getVersion()) <= 0) {
+    clearVerifiedDownloadRecord();
+    return { ok: false };
+  }
+  return restored;
+}
+
+function tryRestoreVerifiedDownloadSync() {
+  const record = readVerifiedDownloadRecord();
+  if (!record || !existsSync(record.path)) return { ok: false };
+  try {
+    if (!hashesEqual(sha256FileSync(record.path), record.sha256)) return { ok: false };
+  } catch {
+    return { ok: false };
+  }
+  if (record.version && compareVersions(record.version, app.getVersion()) <= 0) {
+    clearVerifiedDownloadRecord();
+    return { ok: false };
+  }
+  return { ok: true, ...record };
 }
 
 function currentToken() {
@@ -99,12 +191,38 @@ function consumePriorResult() {
   try {
     const prior = parseUpdateResult(readFileSync(resultPath(), "utf8"));
     unlinkSync(resultPath());
-    if (prior && prior.ok === false && prior.message) {
-      setState({ status: "error", message: prior.message, percent: undefined });
-    }
+    return prior;
   } catch {
-    /* no leftover result */
+    return null;
   }
+}
+
+function bootUpdaterState() {
+  const prior = consumePriorResult();
+  const restored = tryRestoreVerifiedDownloadSync();
+  const initial = nextLaunchUpdaterState({ priorResult: prior, restoredDownload: restored });
+  if (initial.clearPersist) clearVerifiedDownloadRecord();
+  downloadedPath = initial.downloadedPath;
+  if (restored.ok && restored.assetName) {
+    asset = { ...(asset ?? {}), name: restored.assetName, url: asset?.url };
+  }
+  if (initial.status === "error") {
+    return setState({
+      status: "error",
+      message: initial.message,
+      version: initial.version,
+      percent: undefined,
+    });
+  }
+  if (initial.status === "downloaded") {
+    return setState({
+      status: "downloaded",
+      version: initial.version,
+      percent: 100,
+      message: undefined,
+    });
+  }
+  return emit();
 }
 
 export function registerUpdaterIpc() {
@@ -119,8 +237,7 @@ export function registerUpdaterIpc() {
 
 export function startUpdater(win) {
   mainWindow = win;
-  consumePriorResult();
-  emit();
+  bootUpdaterState();
 }
 
 async function fetchReleaseBytes(url, token) {
@@ -161,6 +278,8 @@ async function check() {
     if (!newer) {
       asset = null;
       checksumAsset = null;
+      downloadedPath = null;
+      clearVerifiedDownloadRecord();
       return setState({ status: "idle", message: undefined, version: undefined });
     }
     const chosen = pickAsset(newer, process.platform, process.arch);
@@ -185,9 +304,15 @@ async function check() {
     }
     asset = { url: chosen.url, name: chosen.name };
     checksumAsset = { url: sums.url, name: sums.name };
+    const version = String(newer.tag_name || newer.name).replace(/^v/i, "");
+    const reused = await tryRestoreVerifiedDownload({ availableVersion: version });
+    if (reused.ok) {
+      downloadedPath = reused.path;
+      return setState({ status: "downloaded", percent: 100, version, message: undefined });
+    }
     return setState({
       status: "available",
-      version: String(newer.tag_name || newer.name).replace(/^v/i, ""),
+      version,
       message: undefined,
     });
   } catch {
@@ -228,6 +353,11 @@ async function download() {
   }
   if (!asset?.url) await check();
   if (!asset?.url || !checksumAsset?.url || state.status === "error") return publicState(state);
+  const reused = await tryRestoreVerifiedDownload({ availableVersion: state.version });
+  if (reused.ok) {
+    downloadedPath = reused.path;
+    return setState({ status: "downloaded", percent: 100, version: state.version, message: undefined });
+  }
   setState({ status: "downloading", percent: 0, version: state.version, message: undefined });
   const dir = join(app.getPath("temp"), "velarixbot-updates");
   mkdirSync(dir, { recursive: true });
@@ -258,9 +388,16 @@ async function download() {
         /* already gone */
       }
       downloadedPath = null;
+      clearVerifiedDownloadRecord();
       return setState({ status: "error", message: verified.message, percent: undefined });
     }
     downloadedPath = dest;
+    writeVerifiedDownloadRecord({
+      path: dest,
+      sha256: verified.sha256,
+      version: state.version,
+      assetName: asset.name,
+    });
     return setState({ status: "downloaded", percent: 100, version: state.version, message: undefined });
   } catch {
     return setState({ status: "error", message: "Download failed.", percent: undefined });
@@ -274,11 +411,33 @@ function sessionUid() {
 function launchInstallHelper() {
   const dir = join(app.getPath("temp"), "velarixbot-updates");
   mkdirSync(dir, { recursive: true });
+  const destPath = installedBundlePath({ platform: process.platform, execPath: process.execPath });
+  const staged = planHelperStaging({
+    platform: process.platform,
+    execPath: process.execPath,
+    destPath,
+    helperDir: dir,
+  });
+  if (!staged.ok) return { ok: false, message: staged.message ?? HELPER_FAILED_MESSAGE };
   const helperDest = join(dir, "update-helper.mjs");
-  const applyDest = join(dir, "update-apply.mjs");
   copyFileSync(join(__dirname, "update-helper.mjs"), helperDest);
-  copyFileSync(join(__dirname, "update-apply.mjs"), applyDest);
+  copyFileSync(join(__dirname, "update-apply.mjs"), join(dir, "update-apply.mjs"));
   copyFileSync(join(__dirname, "harness-boot-suppress.mjs"), join(dir, "harness-boot-suppress.mjs"));
+  if (staged.copyInterpreter) {
+    try {
+      if (!staged.frameworksFrom || !staged.frameworksTo) {
+        writeUpdateResult({ ok: false, message: HELPER_FAILED_MESSAGE });
+        return { ok: false, message: HELPER_FAILED_MESSAGE };
+      }
+      mkdirSync(dirname(staged.command), { recursive: true });
+      copyFileSync(staged.copyFrom, staged.command);
+      chmodSync(staged.command, 0o755);
+      cpSync(staged.frameworksFrom, staged.frameworksTo, { recursive: true });
+    } catch {
+      writeUpdateResult({ ok: false, message: HELPER_FAILED_MESSAGE });
+      return { ok: false, message: HELPER_FAILED_MESSAGE };
+    }
+  }
   const stop = planServiceStop({ running: true, platform: process.platform, uid: sessionUid() });
   const plan = planInstallAfterQuit({
     platform: process.platform,
@@ -290,29 +449,58 @@ function launchInstallHelper() {
     stopArgs: stop.args ?? [],
     home: process.env.HOME,
   });
-  if (!plan.ok) return { ok: false, message: plan.message };
+  if (!plan.ok) {
+    writeUpdateResult({ ok: false, message: plan.message });
+    return { ok: false, message: plan.message };
+  }
   const planPath = join(dir, "update-plan.json");
   writeFileSync(planPath, JSON.stringify(plan));
+  writeUpdateResult({ ok: false, message: UPDATE_INTERRUPTED_MESSAGE });
   const launch = helperLaunch({
-    execPath: process.execPath,
+    command: staged.command,
     helperPath: helperDest,
     planPath,
+    destPath: plan.destPath,
+    platform: process.platform,
+    frameworksTo: staged.frameworksTo,
+    cwd: staged.cwd,
     env: process.env,
   });
-  const child = spawn(launch.command, launch.args, {
-    detached: launch.detached,
-    stdio: launch.stdio,
-    shell: false,
-    env: launch.env,
-    windowsHide: true,
-  });
-  child.unref();
-  return { ok: true };
+  if (!launch.ok) {
+    writeUpdateResult({ ok: false, message: launch.message ?? HELPER_FAILED_MESSAGE });
+    return { ok: false, message: launch.message ?? HELPER_FAILED_MESSAGE };
+  }
+  try {
+    const child = spawn(launch.command, launch.args, {
+      detached: launch.detached,
+      stdio: launch.stdio,
+      shell: false,
+      cwd: launch.cwd,
+      env: launch.env,
+      windowsHide: true,
+    });
+    child.on("error", () => {
+      try {
+        writeUpdateResult({ ok: false, message: HELPER_FAILED_MESSAGE });
+      } catch {
+        /* GUI may already be quitting */
+      }
+    });
+    child.unref();
+    return { ok: true };
+  } catch {
+    writeUpdateResult({ ok: false, message: HELPER_FAILED_MESSAGE });
+    return { ok: false, message: HELPER_FAILED_MESSAGE };
+  }
 }
 
 async function install() {
   if (!app.isPackaged) {
     return setState({ status: "error", message: DEV_NOOP_MESSAGE });
+  }
+  if (!downloadedPath) {
+    const restored = await tryRestoreVerifiedDownload({ availableVersion: state.version });
+    if (restored.ok) downloadedPath = restored.path;
   }
   if (!downloadedPath) return publicState(state);
   setState({ status: "installing", message: INSTALLING_MESSAGE, version: state.version });
@@ -320,10 +508,12 @@ async function install() {
     if (process.platform === "darwin") writeHarnessBootSuppress({ home: process.env.HOME });
     const launched = launchInstallHelper();
     if (!launched.ok) {
+      writeUpdateResult({ ok: false, message: launched.message ?? HELPER_FAILED_MESSAGE });
       return setState({ status: "error", message: launched.message ?? HELPER_FAILED_MESSAGE });
     }
     app.quit();
   } catch {
+    writeUpdateResult({ ok: false, message: HELPER_FAILED_MESSAGE });
     return setState({ status: "error", message: HELPER_FAILED_MESSAGE });
   }
 }
