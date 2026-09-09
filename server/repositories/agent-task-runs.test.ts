@@ -44,23 +44,24 @@ describe("agent task result ledger", () => {
     }
   });
 
-  function seedTask() {
+  function seedTask(assignment = "audit the repo") {
     return createAgentTask({
       assigneeBotId: "helper",
       fromBotId: "lead",
       fromName: "Lead",
       sourceThreadId: "t-lead",
-      assignment: "audit the repo",
+      assignment,
       now: 1_000,
     });
   }
 
-  function createBound(now = 2_000) {
-    const task = seedTask();
+  function createBound(now = 2_000, over: { workerThreadId?: string; assignment?: string } = {}) {
+    const task = seedTask(over.assignment);
+    const workerThreadId = over.workerThreadId ?? "t-helper";
     const run = repos.agentTaskRuns.createPending({
       taskId: task.id,
       workerBotId: "helper",
-      workerThreadId: "t-helper",
+      workerThreadId,
       sourceBotId: "lead",
       sourceThreadId: "t-lead",
       parentThreadId: "t-lead",
@@ -71,7 +72,7 @@ describe("agent task result ledger", () => {
       runId: run.id,
       taskId: task.id,
       workerBotId: "helper",
-      workerThreadId: "t-helper",
+      workerThreadId,
       sourceBotId: "lead",
       sourceThreadId: "t-lead",
       parentThreadId: "t-lead",
@@ -437,7 +438,7 @@ describe("agent task result ledger", () => {
     expect(repos.agentTaskRuns.get(empty.run.id)?.executionState).toBe("running");
     expect(repos.agentTasks.get(empty.task.id)?.state).toBe("pending");
 
-    const done = createBound();
+    const done = createBound(2_000, { workerThreadId: "t-helper-done", assignment: "write the brief" });
     const sealed = repos.agentTaskRuns.finalize({
       identity: done.identity,
       result: { text: "audit complete", outcome: "completed" },
