@@ -19,8 +19,14 @@ import {
   telegramWorkflowNotice,
   type TelegramService,
 } from "./telegram.ts";
-import type { TelegramApi, TelegramApiUpdate } from "./telegram-api.ts";
-import { redactTelegramToken } from "./telegram-api.ts";
+import type { TelegramApi, TelegramApiUpdate, TelegramSendOptions } from "./telegram-api.ts";
+import { createTelegramApi, redactTelegramToken, TELEGRAM_ALLOWED_UPDATES } from "./telegram-api.ts";
+import {
+  TELEGRAM_ALLOW_ONCE_LABEL,
+  TELEGRAM_APPROVAL_TTL_MS,
+  TELEGRAM_CALLBACK_DATA_MAX_BYTES,
+  TELEGRAM_DENY_LABEL,
+} from "./telegram-approvals.ts";
 
 const selection = () => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
@@ -147,7 +153,10 @@ describe("telegram service", () => {
       },
       async sendMessage(_token, chatId, text) {
         sent.push({ chatId, text });
+        return { messageId: sent.length };
       },
+      async editMessageText() {},
+      async answerCallbackQuery() {},
     };
     telegram = createTelegramService({
       cfg: () => cfg,
@@ -316,5 +325,279 @@ describe("telegram config status after a sealed save", () => {
     const cfg = loadConfig();
     expect(cfg.telegram?.token).toBe(token);
     expect(JSON.stringify({ configured: Boolean(cfg.telegram?.token) })).not.toContain(token);
+  });
+});
+
+describe("telegram long-poll API", () => {
+  it("asks getUpdates for callback_query and never puts the token in errors", async () => {
+    const token = telegramToken();
+    let seen = "";
+    const ok = createTelegramApi(async (input) => {
+      seen = String(input);
+      return new Response(JSON.stringify({ ok: true, result: [] }), { status: 200 });
+    });
+    await ok.getUpdates(token, 0);
+    const allowed = new URL(seen).searchParams.get("allowed_updates");
+    expect(JSON.parse(allowed ?? "[]")).toEqual(["message", "callback_query"]);
+    expect(TELEGRAM_ALLOWED_UPDATES).toEqual(["message", "callback_query"]);
+
+    const failing = createTelegramApi(async () => {
+      return new Response(`unauthorized ${token}`, { status: 401 });
+    });
+    await expect(failing.getUpdates(token, 0)).rejects.toThrow(/rejected the bot token/i);
+    try {
+      await failing.getUpdates(token, 0);
+      throw new Error("expected getUpdates to reject");
+    } catch (error) {
+      expect(String(error)).not.toContain(token);
+    }
+  });
+});
+
+describe("telegram permission approval (#149 first slice)", () => {
+  let db: SqliteDatabase;
+  let repos: Repositories;
+  let bots: BotsService;
+  let cfg: AppConfig;
+  let now: number;
+  let sent: Array<{ chatId: string; text: string; replyMarkup?: TelegramSendOptions["replyMarkup"] }>;
+  let edited: Array<{ chatId: string; messageId: number; text: string }>;
+  let answers: Array<{ id: string; text?: string }>;
+  let decisions: Array<{ botId: string; requestId: string; behavior: string; always?: boolean }>;
+  let terminals: Array<{ botId: string; requestId: string; answered: string }>;
+  let sendError: Error | null;
+  let updates: TelegramApiUpdate[];
+  let telegram: TelegramService;
+  let botId: string;
+  let threadId: string;
+
+  function link(chatId: string, userId: string | null) {
+    repos.telegramConversations.upsert({
+      chatId,
+      userId,
+      botId,
+      threadId,
+      now,
+    });
+  }
+
+  function callback(input: {
+    data: string;
+    userId: number;
+    chatId: number;
+    callbackId?: string;
+    updateId?: number;
+  }): TelegramApiUpdate {
+    return {
+      update_id: input.updateId ?? 20,
+      callback_query: {
+        id: input.callbackId ?? "cq-1",
+        from: { id: input.userId },
+        message: { message_id: 1, chat: { id: input.chatId } },
+        data: input.data,
+      },
+    };
+  }
+
+  async function deliver(requestId = "req-1", extra?: { tool?: string; summary?: string }) {
+    telegram.notifyPermissionApproval({
+      botId,
+      requestId,
+      tool: extra?.tool ?? "shell",
+      summary: extra?.summary ?? "git status",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  beforeEach(async () => {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    db = openDatabase(defaultDbPath());
+    repos = createRepositories(db);
+    bots = createBotsService({ repos, defaultSelection: selection });
+    const agent = bots.createBot();
+    bots.patchBot(agent.id, { name: "Scout", title: "Ops" });
+    botId = agent.id;
+    threadId = agent.threadId;
+    now = 1_700_000_000_000;
+    cfg = {
+      telegram: {
+        token: telegramToken(),
+        enabled: true,
+        defaultBotId: agent.id,
+        allowlist: [String(111)],
+      },
+    };
+    sent = [];
+    edited = [];
+    answers = [];
+    decisions = [];
+    terminals = [];
+    sendError = null;
+    updates = [];
+    const api: TelegramApi = {
+      async getUpdates() {
+        const batch = updates;
+        updates = [];
+        return batch;
+      },
+      async sendMessage(_token, chatId, text, options) {
+        if (sendError) throw sendError;
+        sent.push({ chatId, text, replyMarkup: options?.replyMarkup });
+        return { messageId: sent.length };
+      },
+      async editMessageText(_token, chatId, messageId, text) {
+        edited.push({ chatId, messageId, text });
+      },
+      async answerCallbackQuery(_token, id, text) {
+        answers.push({ id, ...(text ? { text } : {}) });
+      },
+    };
+    telegram = createTelegramService({
+      cfg: () => cfg,
+      api,
+      conversations: repos.telegramConversations,
+      bots,
+      startTurn: async () => ({ threadId, messageId: "m1" }),
+      now: () => now,
+      answerPermission: async (id, requestId, behavior) => {
+        decisions.push({ botId: id, requestId, behavior });
+      },
+      markPermissionTerminal: (id, requestId, answered) => {
+        terminals.push({ botId: id, requestId, answered });
+      },
+    });
+  });
+
+  afterEach(() => {
+    telegram.stop();
+    try {
+      db.close();
+    } catch {
+      /* already closed */
+    }
+  });
+
+  it("sends one Allow once / Deny message to the sole linked chat", async () => {
+    link("111", "111");
+    await deliver();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.chatId).toBe("111");
+    expect(sent[0]?.text).toContain("Agent: Scout");
+    expect(sent[0]?.text).toContain("Project: Ops");
+    expect(sent[0]?.text).toContain("Action: shell");
+    expect(sent[0]?.text).toContain("Target: git status");
+    const buttons = sent[0]?.replyMarkup?.inline_keyboard.flat() ?? [];
+    expect(buttons.map((btn) => btn.text)).toEqual([TELEGRAM_ALLOW_ONCE_LABEL, TELEGRAM_DENY_LABEL]);
+    expect(sent[0]?.text).not.toMatch(/Always allow|workspace|Stop/i);
+    expect(JSON.stringify(sent)).not.toContain(telegramToken());
+    for (const btn of buttons) {
+      expect(Buffer.byteLength(btn.callback_data, "utf8")).toBeLessThanOrEqual(TELEGRAM_CALLBACK_DATA_MAX_BYTES);
+      expect(btn.callback_data).not.toContain(telegramToken());
+      expect(btn.callback_data).not.toMatch(/git status|allow|deny|111/i);
+    }
+  });
+
+  it("does not send when unbound, userId is null, or more than one chat is linked", async () => {
+    await deliver("req-none");
+    expect(sent).toEqual([]);
+
+    link("111", null);
+    await deliver("req-null");
+    expect(sent).toEqual([]);
+
+    repos.telegramConversations.upsert({ chatId: "111", userId: "111", botId, threadId, now });
+    repos.telegramConversations.upsert({
+      chatId: "222",
+      userId: "222",
+      botId,
+      threadId,
+      now,
+    });
+    await deliver("req-many");
+    expect(sent).toEqual([]);
+  });
+
+  it("rejects a callback that is not the bound user and chat, leaving the run unchanged", async () => {
+    link("111", "111");
+    await deliver();
+    const data = sent[0]!.replyMarkup!.inline_keyboard[0]![0]!.callback_data;
+    await telegram.handleUpdate(callback({ data, userId: 999, chatId: 111 }));
+    expect(decisions).toEqual([]);
+    await telegram.handleUpdate(callback({ data, userId: 111, chatId: 222, callbackId: "cq-2", updateId: 21 }));
+    expect(decisions).toEqual([]);
+    expect(edited).toEqual([]);
+  });
+
+  it("Allow once answers the broker with always not true; Deny denies; neither starts a turn", async () => {
+    link("111", "111");
+    await deliver();
+    const allow = sent[0]!.replyMarkup!.inline_keyboard[0]![0]!.callback_data;
+    await telegram.handleUpdate(callback({ data: allow, userId: 111, chatId: 111 }));
+    expect(decisions).toEqual([{ botId, requestId: "req-1", behavior: "allow" }]);
+    expect(edited[0]?.text).toMatch(/Decision: Allow once/);
+    expect(JSON.stringify(decisions)).not.toContain("always");
+
+    sent.length = 0;
+    decisions.length = 0;
+    edited.length = 0;
+    await deliver("req-deny");
+    const deny = sent[0]!.replyMarkup!.inline_keyboard[0]![1]!.callback_data;
+    await telegram.handleUpdate(callback({ data: deny, userId: 111, chatId: 111, callbackId: "cq-deny", updateId: 22 }));
+    expect(decisions).toEqual([{ botId, requestId: "req-deny", behavior: "deny" }]);
+    expect(edited[0]?.text).toMatch(/Decision: Deny/);
+  });
+
+  it("replays and expired callbacks do not approve again", async () => {
+    link("111", "111");
+    await deliver();
+    const allow = sent[0]!.replyMarkup!.inline_keyboard[0]![0]!.callback_data;
+    const deny = sent[0]!.replyMarkup!.inline_keyboard[0]![1]!.callback_data;
+    await telegram.handleUpdate(callback({ data: allow, userId: 111, chatId: 111 }));
+    expect(decisions).toHaveLength(1);
+    await telegram.handleUpdate(callback({ data: deny, userId: 111, chatId: 111, callbackId: "cq-2", updateId: 21 }));
+    expect(decisions).toHaveLength(1);
+
+    decisions.length = 0;
+    edited.length = 0;
+    terminals.length = 0;
+    await deliver("req-exp");
+    now += TELEGRAM_APPROVAL_TTL_MS;
+    const exp = sent[1]!.replyMarkup!.inline_keyboard[0]![0]!.callback_data;
+    await telegram.handleUpdate(callback({ data: exp, userId: 111, chatId: 111, callbackId: "cq-exp", updateId: 22 }));
+    expect(decisions).toEqual([]);
+    expect(terminals).toEqual([{ botId, requestId: "req-exp", answered: "expired" }]);
+    expect(edited.at(-1)?.text).toMatch(/expired/i);
+  });
+
+  it("desktop card still works when Telegram send throws", async () => {
+    link("111", "111");
+    sendError = new Error("Could not reach api.telegram.org (ECONNREFUSED). Check your network.");
+    await deliver();
+    expect(sent).toEqual([]);
+    expect(decisions).toEqual([]);
+    expect(terminals).toEqual([]);
+    await telegram.notifyPermissionApproval({
+      botId,
+      requestId: "req-1",
+      tool: "shell",
+      summary: "git status",
+    });
+    expect(sent).toEqual([]);
+  });
+
+  it("updates the Telegram message when the desktop card already answered", async () => {
+    link("111", "111");
+    await deliver();
+    telegram.onBroadcast({
+      kind: "message.patch",
+      threadId,
+      message: { card: { requestId: "req-1", answered: "allow" } },
+    });
+    await Promise.resolve();
+    expect(edited[0]?.text).toMatch(/Decision: Allow once/);
+    const allow = sent[0]!.replyMarkup!.inline_keyboard[0]![0]!.callback_data;
+    await telegram.handleUpdate(callback({ data: allow, userId: 111, chatId: 111 }));
+    expect(decisions).toEqual([]);
   });
 });

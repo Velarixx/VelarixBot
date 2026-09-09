@@ -148,6 +148,8 @@ export interface TurnsServiceDeps {
   usage?: UsageService;
   /** P0 #150: durable delegated-result ledger. Optional so existing turn tests stay unchanged. */
   delegatedResults?: DelegatedResultsService;
+  /** #149: second surface for a pending permission card. Optional. */
+  onPermissionApproval?: (input: { botId: string; requestId: string; tool: string; summary: string }) => void;
 }
 
 export interface TurnsService {
@@ -1148,6 +1150,14 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
           },
         });
         if (event.requestId) askMessageByRequest.set(event.requestId, message.id);
+        if (permission && !credential && event.requestId) {
+          deps.onPermissionApproval?.({
+            botId: bot.id,
+            requestId: event.requestId,
+            tool: event.tool,
+            summary: event.summary,
+          });
+        }
         bots.patchBot(bot.id, { state: "NEEDS_INPUT" });
         proactive.noteState(bot.id, "NEEDS_INPUT");
         const peerCtx = delegatedContext(bot);

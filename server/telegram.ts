@@ -9,10 +9,24 @@ import {
 import type { AppConfig } from "./config.ts";
 import { redactSecrets } from "./redact-text.ts";
 import type { BotsService } from "./services/bots.ts";
+import { getSidebarSection } from "./sidebar-sections.ts";
 import type { TelegramApi, TelegramApiUpdate } from "./telegram-api.ts";
 import type { TelegramConversationsRepository } from "./repositories/telegram-conversations.ts";
 import type { LineageService } from "./services/lineage.ts";
 import {
+  createTelegramApprovalStore,
+  formatTelegramApprovalText,
+  soleBoundTelegramConversation,
+  telegramApprovalKeyboard,
+  telegramApprovalProjectLabel,
+  telegramApprovalTerminalLabel,
+  terminalFromCardAnswer,
+  type TelegramApprovalChoice,
+  type TelegramApprovalRecord,
+  type TelegramApprovalTerminal,
+} from "./telegram-approvals.ts";
+import {
+  AUTONOMY_STOP,
   isWorkflowStatus,
   waitingLabel,
   workflowLabel,
@@ -192,8 +206,43 @@ export function parseTelegramUpdate(update: TelegramApiUpdate): TelegramInbound 
   };
 }
 
+export interface TelegramCallback {
+  updateId: number;
+  callbackQueryId: string;
+  data: string;
+  fromUserId: string;
+  chatId: string;
+  messageId?: number;
+}
+
+export function parseTelegramCallback(update: TelegramApiUpdate): TelegramCallback | null {
+  const query = update.callback_query;
+  if (!query || typeof update.update_id !== "number") return null;
+  const data = typeof query.data === "string" ? query.data.trim() : "";
+  if (!data) return null;
+  const chatId = query.message?.chat?.id;
+  if (chatId === undefined || chatId === null) return null;
+  const fromId = query.from?.id;
+  if (fromId === undefined || fromId === null) return null;
+  return {
+    updateId: update.update_id,
+    callbackQueryId: query.id,
+    data,
+    fromUserId: String(fromId),
+    chatId: String(chatId),
+    ...(typeof query.message?.message_id === "number" ? { messageId: query.message.message_id } : {}),
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export interface TelegramPermissionApprovalInput {
+  botId: string;
+  requestId: string;
+  tool: string;
+  summary: string;
 }
 
 export interface TelegramService {
@@ -202,6 +251,7 @@ export interface TelegramService {
   handleUpdate(update: TelegramApiUpdate): Promise<void>;
   pollOnce(): Promise<void>;
   onBroadcast(payload: unknown): void;
+  notifyPermissionApproval(input: TelegramPermissionApprovalInput): void;
   stop(): void;
 }
 
@@ -214,6 +264,8 @@ export function createTelegramService(deps: {
   now: () => number;
   onStatusChange?: () => void;
   lineage?: LineageService;
+  answerPermission?: (botId: string, requestId: string, behavior: TelegramApprovalChoice) => Promise<unknown>;
+  markPermissionTerminal?: (botId: string, requestId: string, answered: string) => void;
 }): TelegramService {
   let running = false;
   let abort: AbortController | null = null;
@@ -222,6 +274,7 @@ export function createTelegramService(deps: {
   let runtimeDetail = TELEGRAM_COPY.disconnected;
   const originByThread = new Map<string, string>();
   const lastWorkflow = new Map<string, string>();
+  const approvals = createTelegramApprovalStore({ now: () => deps.now() });
 
   function settings() {
     return decodeTelegramSettings(deps.cfg().telegram);
@@ -279,8 +332,129 @@ export function createTelegramService(deps: {
     if (!token || !isLive()) return;
     const prepared = prepareTelegramSend({ text, attachments });
     if (!prepared.ok || !prepared.text) return;
-    await deps.api.sendMessage(token, chatId, prepared.text);
+    try {
+      await deps.api.sendMessage(token, chatId, prepared.text);
+    } catch {
+      return;
+    }
     if (requestId) deps.lineage?.noteOutbound(requestId, `telegram:${chatId}`);
+  }
+
+  function approvalText(record: TelegramApprovalRecord, terminal?: TelegramApprovalTerminal): string {
+    return formatTelegramApprovalText({
+      agentName: record.agentName,
+      projectLabel: record.projectLabel,
+      action: record.action,
+      target: record.target,
+      ...(terminal ? { terminal: telegramApprovalTerminalLabel(terminal) } : {}),
+    });
+  }
+
+  async function answerQuietly(callbackQueryId: string, text?: string): Promise<void> {
+    const { token } = settings();
+    if (!token || !isLive()) return;
+    try {
+      await deps.api.answerCallbackQuery(token, callbackQueryId, text);
+    } catch {
+      /* acknowledging a tap must not change agent state */
+    }
+  }
+
+  async function editApprovalMessage(record: TelegramApprovalRecord, terminal: TelegramApprovalTerminal): Promise<void> {
+    const { token } = settings();
+    if (!token || !record.messageId) return;
+    try {
+      await deps.api.editMessageText(token, record.chatId, record.messageId, approvalText(record, terminal));
+    } catch {
+      /* desktop card is the source of truth if Telegram edit fails */
+    }
+  }
+
+  async function markExpired(record: TelegramApprovalRecord): Promise<void> {
+    if (!record.settled) approvals.settle(record.requestId, "expired");
+    deps.markPermissionTerminal?.(record.botId, record.requestId, "expired");
+    await editApprovalMessage(record, "expired");
+  }
+
+  async function expireApprovals(): Promise<void> {
+    for (const record of approvals.expireDue()) {
+      await markExpired(record);
+    }
+  }
+
+  async function deliverPermissionApproval(input: TelegramPermissionApprovalInput): Promise<void> {
+    if (!isLive()) return;
+    const bot = deps.bots.bot(input.botId);
+    if (!bot || bot.hidden) return;
+    const linked = soleBoundTelegramConversation(deps.conversations.listByBot(bot.id));
+    if (!linked?.userId) return;
+    if (approvals.getByRequest(input.requestId)) return;
+    const { token } = settings();
+    if (!token) return;
+    const projectLabel = telegramApprovalProjectLabel({
+      title: bot.title,
+      sectionName: bot.sectionId ? getSidebarSection(bot.sectionId)?.name : undefined,
+    });
+    const record = approvals.create({
+      requestId: input.requestId,
+      botId: bot.id,
+      threadId: bot.threadId,
+      chatId: linked.chatId,
+      userId: linked.userId,
+      agentName: bot.name,
+      ...(projectLabel ? { projectLabel } : {}),
+      action: input.tool,
+      target: input.summary,
+    });
+    try {
+      const sent = await deps.api.sendMessage(token, linked.chatId, approvalText(record), {
+        replyMarkup: telegramApprovalKeyboard(record.allowCallbackId, record.denyCallbackId),
+      });
+      if (sent.messageId) approvals.attachMessage(input.requestId, sent.messageId);
+      lastWorkflow.set(linked.chatId, "blocked");
+    } catch {
+      approvals.discard(input.requestId);
+    }
+  }
+
+  function notifyPermissionApproval(input: TelegramPermissionApprovalInput): void {
+    void deliverPermissionApproval(input);
+  }
+
+  async function handleCallback(callback: TelegramCallback): Promise<void> {
+    if (!isLive()) return;
+    await expireApprovals();
+    const mapped = approvals.getByCallback(callback.data);
+    if (!mapped) {
+      await answerQuietly(callback.callbackQueryId);
+      return;
+    }
+    const { record, choice } = mapped;
+    if (callback.fromUserId !== record.userId || callback.chatId !== record.chatId) {
+      await answerQuietly(callback.callbackQueryId, "You cannot approve this request.");
+      return;
+    }
+    if (record.settled) {
+      await answerQuietly(callback.callbackQueryId);
+      return;
+    }
+    if (deps.now() >= record.expiresAt) {
+      await markExpired(record);
+      await answerQuietly(callback.callbackQueryId, "This approval expired.");
+      return;
+    }
+    const settled = approvals.settle(record.requestId, choice);
+    if (!settled || settled.settled !== choice) {
+      await answerQuietly(callback.callbackQueryId);
+      return;
+    }
+    try {
+      await deps.answerPermission?.(record.botId, record.requestId, choice);
+    } catch {
+      /* first valid decision already won; do not start another turn */
+    }
+    await editApprovalMessage(record, choice);
+    await answerQuietly(callback.callbackQueryId);
   }
 
   function resolveAgent(): { id: string; name: string; threadId: string } | null {
@@ -349,6 +523,11 @@ export function createTelegramService(deps: {
 
   async function handleUpdate(update: TelegramApiUpdate): Promise<void> {
     if (!isLive()) return;
+    const callback = parseTelegramCallback(update);
+    if (callback) {
+      await handleCallback(callback);
+      return;
+    }
     const inbound = parseTelegramUpdate(update);
     if (!inbound) return;
     await handleInbound(inbound);
@@ -367,6 +546,7 @@ export function createTelegramService(deps: {
       const updates = await deps.api.getUpdates(token, offset, abort?.signal);
       if (!isLive()) return;
       setRuntime("connected", TELEGRAM_COPY.connected);
+      await expireApprovals();
       for (const update of updates) {
         if (!isLive()) return;
         if (typeof update.update_id === "number") offset = Math.max(offset, update.update_id + 1);
@@ -429,8 +609,22 @@ export function createTelegramService(deps: {
     return [];
   }
 
+  function syncDesktopDecision(payload: unknown) {
+    if (!isRecord(payload) || (payload.kind !== "message" && payload.kind !== "message.patch")) return;
+    if (!isRecord(payload.message) || !isRecord(payload.message.card)) return;
+    const requestId = typeof payload.message.card.requestId === "string" ? payload.message.card.requestId : "";
+    const answered = typeof payload.message.card.answered === "string" ? payload.message.card.answered : "";
+    if (!requestId || !answered) return;
+    const terminal = terminalFromCardAnswer(answered);
+    const record = approvals.getByRequest(requestId);
+    if (!record || !terminal) return;
+    if (!record.settled) approvals.settle(requestId, terminal);
+    if (record.settled) void editApprovalMessage(record, record.settled);
+  }
+
   function onBroadcast(payload: unknown) {
     if (!isLive() || !isRecord(payload)) return;
+    syncDesktopDecision(payload);
     if (payload.kind === "bot" && isRecord(payload.bot)) {
       const bot = payload.bot;
       const threadId = typeof bot.threadId === "string" ? bot.threadId : "";
@@ -444,6 +638,9 @@ export function createTelegramService(deps: {
         ? (bot.workflowWaitingFor as WorkflowWaitingFor[])
         : undefined;
       const stopReason = typeof bot.workflowStopReason === "string" ? bot.workflowStopReason : undefined;
+      // Permission cards send their own Allow once / Deny message. Do not
+      // also broadcast the blocked workflow notice.
+      if (status === "blocked" && stopReason === AUTONOMY_STOP.approval) return;
       const notice = telegramWorkflowNotice(status, waiting, stopReason);
       const requestId = deps.lineage?.forThread(threadId);
       for (const chatId of chats) {
@@ -481,7 +678,10 @@ export function createTelegramService(deps: {
           }
           return;
         }
-        if (requestType === "question" || requestType === "permission") {
+        if (requestType === "permission") {
+          return;
+        }
+        if (requestType === "question") {
           for (const chatId of chats) void sendSafe(chatId, telegramWorkflowNotice("needs_input"), undefined, requestId);
         }
       }
@@ -494,6 +694,7 @@ export function createTelegramService(deps: {
     handleUpdate,
     pollOnce,
     onBroadcast,
+    notifyPermissionApproval,
     stop,
   };
 }
