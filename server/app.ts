@@ -319,6 +319,7 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     lineage,
     usage,
     delegatedResults,
+    onPermissionApproval: (input) => telegramRef?.notifyPermissionApproval(input),
   });
 
   const lanes = createLaneScheduler({
@@ -390,6 +391,17 @@ export async function createApplication(input: CreateApplicationInput): Promise<
   channels.register(discordConnector);
 
   let integrationsRef: ReturnType<typeof createIntegrationsRoutes> | null = null;
+  function markPermissionTerminal(botId: string, requestId: string, answered: string) {
+    const bot = bots.bot(botId);
+    if (!bot) return;
+    const existing = bots.messagesFor(bot.threadId).find((msg) => msg.card?.requestId === requestId);
+    if (!existing?.card || existing.card.answered) return;
+    const patched = bots.patchMessage(bot.threadId, existing.id, {
+      card: { ...existing.card, answered },
+    });
+    if (patched) broadcast({ kind: "message.patch", threadId: bot.threadId, message: patched });
+  }
+
   const telegram = createTelegramService({
     cfg: () => cfg,
     api: input.telegramApi ?? createTelegramApi(),
@@ -398,6 +410,8 @@ export async function createApplication(input: CreateApplicationInput): Promise<
     startTurn: (botId, text, opts) => enqueueLane("channel", botId, text, opts),
     now: () => clock.now(),
     lineage,
+    answerPermission: (botId, requestId, behavior) => turns.respond(botId, requestId, { behavior }),
+    markPermissionTerminal,
     onStatusChange: () => {
       const snapshot = integrationsRef?.configStatus();
       if (snapshot) broadcast({ kind: "config", ...snapshot });
