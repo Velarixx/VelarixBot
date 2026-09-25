@@ -89,8 +89,8 @@ function validateGate(bundle, runtimeMajor) {
   if (pkg.packageManager !== "pnpm@10.33.0") {
     failures.push("package.json: packageManager must remain pinned to pnpm@10.33.0");
   }
-  if (pkg.devDependencies?.yaml !== "2.8.1") {
-    failures.push("package.json: yaml parser must remain pinned to 2.8.1");
+  if (pkg.devDependencies?.yaml !== "2.8.3") {
+    failures.push("package.json: yaml parser must remain pinned to 2.8.3");
   }
 
   const exactScripts = {
