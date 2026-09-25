@@ -65,3 +65,12 @@ retry, and recovery. Every terminal state asserts request counts, protected
 content handling, focus/live-region behavior, disabled controls, redacted error
 details, and a local axe-core WCAG A/AA scan. The scan temporarily excludes only
 the independently audited accent-action contrast defect tracked by DHV-63.
+
+The desktop workflow reliability matrix builds the desktop client and uses an
+isolated harness with controlled snapshot, stream, and failure responses. It
+covers per-conversation multiline drafts, pasted attachments, retry and editing
+after failed delivery, Stop/resume across reload, bounded history pages, stalled
+computer previews, and recovery for bot creation, engine discovery, and routine
+history. The preview test advances Playwright's clock instead of waiting for
+polling intervals. It runs as part of `pnpm test:e2e`; run only this matrix with
+`pnpm exec playwright test e2e/workflow-reliability.spec.ts --workers=1`.

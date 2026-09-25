@@ -2,7 +2,9 @@
 // exchange. Not a room, bulletin, or voice product.
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
-import { useStore, formatTime, type Group } from "@/state/store";
+import { useStore, useStreamingText, formatTime, type Group } from "@/state/store";
+import { useHistoryWindow } from "@/lib/history-window";
+import { HistoryControls } from "./HistoryControls";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { ActivityChip } from "./ActivityChip";
 import { UserAttachments } from "./UserAttachments";
@@ -35,7 +37,8 @@ function dayLabel(at: number): string {
 
 export function GroupView({ group }: { group: Group }) {
   const { state } = useStore();
-  const streaming = state.streaming[group.threadId];
+  const streaming = useStreamingText(group.threadId);
+  const history = useHistoryWindow(group.threadId, group.messages, group.hasMore);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
   const members = group.memberIds
@@ -48,16 +51,16 @@ export function GroupView({ group }: { group: Group }) {
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el || !follow) return;
+    if (!el || !follow || !history.latest) return;
     el.scrollTo({ top: el.scrollHeight });
-  }, [group.id, group.messages.length, streaming, follow]);
+  }, [group.id, group.messages.length, streaming, follow, history.latest]);
 
   const atEnd = () => {
     const el = scrollRef.current;
     return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
-  const first = group.messages[0];
+  const first = history.messages[0];
 
   return (
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
@@ -74,7 +77,7 @@ export function GroupView({ group }: { group: Group }) {
         ref={scrollRef}
         className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-5 pt-4"
         onWheel={(e) => {
-          if (e.deltaY < 0) setFollow(false);
+          if (e.deltaY < 0) { history.hold(); setFollow(false); }
           else if (atEnd()) setFollow(true);
         }}
         onScroll={() => {
@@ -92,7 +95,8 @@ export function GroupView({ group }: { group: Group }) {
               Messages between these bots appear here.
             </div>
           )}
-          {group.messages.map((m) => {
+          <HistoryControls history={history} onEarlier={() => setFollow(false)} />
+          {history.messages.map((m) => {
             if (m.kind === "activity") return <ActivityChip key={m.id} message={m} />;
             if (m.kind !== "text" || !m.text) return null;
             const user = m.role === "user";
@@ -112,7 +116,7 @@ export function GroupView({ group }: { group: Group }) {
               </div>
             );
           })}
-          {streaming && (
+          {streaming && history.latest && (
             <div className="flex w-full justify-start">
               <div className="min-w-0 max-w-[70%] overflow-hidden rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
                 <ChatMarkdown text={streaming} streaming />
@@ -122,9 +126,10 @@ export function GroupView({ group }: { group: Group }) {
         </div>
       </div>
 
-      {!follow && (
+      {(!follow || !history.latest) && (
         <button
           onClick={() => {
+            history.jumpToLatest();
             setFollow(true);
             scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
           }}

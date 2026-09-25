@@ -58,10 +58,11 @@ describe("composer prompt queue (store path)", () => {
     state = reducer(state, { type: "flushQueue", botId: "bot-1" });
     expect(state.queued["bot-1"]?.map((item) => item.id)).toEqual(["q-1", "q-2"]);
 
-    // interrupt/stop does not clear the queue (wrapper still POSTs /interrupt)
+    // Stop preserves queued text but pauses automatic dispatch.
     const afterInterrupt = reducer(state, { type: "interrupt", botId: "bot-1" });
     expect(afterInterrupt.queued["bot-1"]?.map((item) => item.id)).toEqual(["q-1", "q-2"]);
     expect(afterInterrupt.bots[0]?.busy).toBe(true);
+    expect(afterInterrupt.queuePaused["bot-1"]).toBe(true);
 
     // turn ends (SSE botPatched) — same condition the store useEffect walks
     state = reducer(state, { type: "botPatched", bot: { id: "bot-1", busy: false, state: "DONE" } });
@@ -69,6 +70,8 @@ describe("composer prompt queue (store path)", () => {
     expect(nextFlushBotIds(state.bots, state.queued)).toEqual(["bot-1"]);
 
     state = reducer(state, { type: "flushQueue", botId: "bot-1" });
+    expect(state.queued["bot-1"]?.[0].status).toBe("sending");
+    state = reducer(state, { type: "promptSent", botId: "bot-1", id: "q-1" });
     expect(state.queued["bot-1"]?.map((item) => item.id)).toEqual(["q-2"]);
     expect(state.bots[0]?.busy).toBe(true);
     // still working on the drained prompt — do not take q-2 yet
@@ -93,6 +96,8 @@ describe("composer prompt queue (store path)", () => {
     state = reducer(state, { type: "botPatched", bot: { id: "bot-1", busy: false } });
     expect(nextFlushBotIds(state.bots, state.queued)).toEqual(["bot-1"]);
     state = reducer(state, { type: "flushQueue", botId: "bot-1" });
+    expect(state.queued["bot-1"]?.[0].status).toBe("sending");
+    state = reducer(state, { type: "promptSent", botId: "bot-1", id: "q-1" });
     expect(state.queued["bot-1"]).toEqual([]);
     expect(state.bots[0]?.busy).toBe(true);
   });
@@ -224,12 +229,12 @@ describe("one-step named create", () => {
     );
   });
 
-  it("Plus opens the modal; confirm closes it; botAdded paints the typed name first", () => {
+  it("keeps the modal while creating; accepted botAdded paints the typed name first", () => {
     let state = reducer(initialState, { type: "toggleCreateBot", open: true });
     expect(state.createBotOpen).toBe(true);
     expect(state.bots).toEqual([]);
     state = reducer(state, { type: "newBot", name: "Scout", title: "Field scout", color: "green" });
-    expect(state.createBotOpen).toBe(false);
+    expect(state.createBotOpen).toBe(true);
     const created = bot({ id: "bot-scout", name: "Scout", title: "Field scout", color: "green" });
     state = reducer(state, { type: "botAdded", bot: created });
     expect(state.bots[0]?.name).toBe("Scout");

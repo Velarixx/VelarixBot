@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, Loader2, Monitor, Square } from "lucide-react";
-import { api, useStore, formatTime, type Bot, type Message } from "@/state/store";
+import { api, useStore, useStreamingText, formatTime, type Bot, type Message } from "@/state/store";
 import { BotFace } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { ChatMarkdown } from "./ChatMarkdown";
@@ -18,6 +18,10 @@ import { formatCompactTokens, formatUsageCost, stateLabel, type BotState } from 
 import { hasInspectableRun, runStartedAt } from "@/lib/run-inspector";
 import { workflowLabel, type WorkflowStatus } from "@/lib/workflow";
 import { RunInspector } from "./RunInspector";
+import { useHistoryWindow } from "@/lib/history-window";
+import { HistoryControls } from "./HistoryControls";
+
+const scrollPositions = new Map<string, { top: number; follow: boolean }>();
 
 const stateTone: Record<BotState, string> = { IDLE: "bg-raised text-ink-secondary", RUNNING: "bg-accent/15 text-accent", DONE: "bg-success/15 text-success", BLOCKED: "bg-danger/15 text-danger", NEEDS_INPUT: "bg-warning/15 text-warning" };
 const workflowTone: Record<WorkflowStatus, string> = {
@@ -92,11 +96,12 @@ function UserBubbleBody({
   );
 }
 
-function ScreenFrame({ png, mime }: { png: string; mime?: string }) {
+function ScreenFrame({ png, mime, src }: { png?: string; mime?: string; src?: string }) {
   return (
     <div className="flex justify-start">
       <img
-        src={`data:${mime ?? "image/png"};base64,${png}`}
+        src={png ? `data:${mime ?? "image/png"};base64,${png}` : src}
+        loading="lazy"
         alt="Bot's screen"
         className="max-w-[70%] rounded-2xl border border-hairline/40"
       />
@@ -119,7 +124,8 @@ export function ChatView({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const streaming = state.streaming[bot.threadId];
+  const streaming = useStreamingText(bot.threadId);
+  const history = useHistoryWindow(bot.threadId, bot.messages, bot.hasMore);
   const provisioning = state.provisioning[bot.id];
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const participants = (bot.threadParticipants ?? [])
@@ -131,27 +137,67 @@ export function ChatView({ bot }: { bot: Bot }) {
   // scroll position checks — streamed content growth flickers "at bottom"
   // false for a frame, and breaking there kills follow permanently
   // (upstream-verified failure). Scrolling back to the end re-arms it.
-  const [follow, setFollow] = useState(true);
+  const [follow, setFollow] = useState(() => scrollPositions.get(bot.threadId)?.follow ?? true);
+  const followRef = useRef(follow);
+  followRef.current = follow;
   const touchY = useRef(0);
 
-  useEffect(() => setFollow(true), [bot.id]);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const saved = scrollPositions.get(bot.threadId);
+    if (el && saved) el.scrollTop = saved.top;
+    return () => { if (el) scrollPositions.set(bot.threadId, { top: el.scrollTop, follow: followRef.current }); };
+  }, [bot.threadId]);
   useEffect(() => {
-    if (follow) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [bot.id, bot.messages.length, streaming, bot.busy, follow]);
+    if (follow && history.latest) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [bot.id, bot.messages.length, streaming, bot.busy, follow, history.latest]);
 
   const atEnd = () => {
     const el = scrollRef.current;
     return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 48;
   };
   const jumpToLatest = () => {
+    history.jumpToLatest();
     setFollow(true);
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   };
 
-  const first = bot.messages[0];
+  const first = history.messages[0];
   const assigned = tasksForBot(state.tasks, bot.id);
   const workflowStatus = bot.workflowStatus;
   const stopReason = bot.workflowStopReason;
+  const messageViews = useMemo(() => history.messages.map((m) => {
+    if (m.report) {
+      return (
+        <AgentReportView
+          key={m.id}
+          message={m}
+          onOpenAgent={(id) => dispatch({ type: "select", id })}
+          onOpenTask={(id) => {
+            const task = state.tasks.find((item) => item.id === id);
+            if (task) dispatch({ type: "select", id: task.assigneeBotId });
+            dispatch({ type: "selectTask", id });
+          }}
+        />
+      );
+    }
+    switch (m.kind) {
+      case "options":
+        return <OptionCard key={m.id} botId={bot.id} message={m} />;
+      case "activity":
+        return (
+          <ActivityChip
+            key={m.id}
+            message={m}
+            onOpenGroup={(id) => dispatch({ type: "selectGroup", id })}
+          />
+        );
+      case "screen":
+        return m.png || m.hasImage ? <ScreenFrame key={m.id} png={m.png} mime={m.mime} src={`/api/threads/${encodeURIComponent(bot.threadId)}/messages/${encodeURIComponent(m.id)}/image`} /> : null;
+      default:
+        return <Bubble key={m.id} message={m} />;
+    }
+  }), [history.messages, bot.id, bot.threadId, dispatch, state.tasks]);
 
   return (
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
@@ -265,18 +311,22 @@ export function ChatView({ bot }: { bot: Bot }) {
         ref={scrollRef}
         className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
         onWheel={(e) => {
-          if (e.deltaY < 0) setFollow(false);
+          if (e.deltaY < 0) { history.hold(); setFollow(false); }
           else if (atEnd()) setFollow(true);
         }}
         onTouchStart={(e) => (touchY.current = e.touches[0]?.clientY ?? 0)}
         onTouchMove={(e) => {
           const y = e.touches[0]?.clientY ?? 0;
-          if (y > touchY.current + 4) setFollow(false);
+          if (y > touchY.current + 4) { history.hold(); setFollow(false); }
           else if (atEnd()) setFollow(true);
         }}
         onScroll={() => {
           if (!follow && atEnd()) setFollow(true);
         }}
+        tabIndex={0}
+        aria-label="Conversation history"
+        onKeyDown={(event) => { if (["PageUp", "Home", "ArrowUp"].includes(event.key)) { history.hold(); setFollow(false); } }}
+        onPointerDown={(event) => { if (event.target === event.currentTarget) { history.hold(); setFollow(false); } }}
       >
         <div className="mx-auto flex min-w-0 max-w-[900px] flex-col gap-3 pb-4">
           {first && (
@@ -284,38 +334,8 @@ export function ChatView({ bot }: { bot: Bot }) {
               Today {formatTime(first.at)}
             </div>
           )}
-          {bot.messages.map((m) => {
-            if (m.report) {
-              return (
-                <AgentReportView
-                  key={m.id}
-                  message={m}
-                  onOpenAgent={(id) => dispatch({ type: "select", id })}
-                  onOpenTask={(id) => {
-                    const task = state.tasks.find((item) => item.id === id);
-                    if (task) dispatch({ type: "select", id: task.assigneeBotId });
-                    dispatch({ type: "selectTask", id });
-                  }}
-                />
-              );
-            }
-            switch (m.kind) {
-              case "options":
-                return <OptionCard key={m.id} botId={bot.id} message={m} />;
-              case "activity":
-                return (
-                  <ActivityChip
-                    key={m.id}
-                    message={m}
-                    onOpenGroup={(id) => dispatch({ type: "selectGroup", id })}
-                  />
-                );
-              case "screen":
-                return m.png ? <ScreenFrame key={m.id} png={m.png} mime={m.mime} /> : null;
-              default:
-                return <Bubble key={m.id} message={m} />;
-            }
-          })}
+          <HistoryControls history={history} onEarlier={() => setFollow(false)} />
+          {messageViews}
           {provisioning && (
             <div className="flex justify-start">
               <div className="flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary">
@@ -324,7 +344,7 @@ export function ChatView({ bot }: { bot: Bot }) {
               </div>
             </div>
           )}
-          {streaming ? <StreamingBubble text={streaming} /> : null}
+          {streaming && history.latest ? <StreamingBubble text={streaming} /> : null}
           {hasInspectableRun(bot) && (
             <RunInspector
               bot={bot}
@@ -336,7 +356,7 @@ export function ChatView({ bot }: { bot: Bot }) {
       </div>
 
       {/* Reading scrollback while new content arrives — one tap back to live */}
-      {!follow && (bot.busy || Boolean(streaming)) && (
+      {(!follow || !history.latest) && (
         <button
           onClick={jumpToLatest}
           className="absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"

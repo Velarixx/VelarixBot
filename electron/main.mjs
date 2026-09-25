@@ -594,6 +594,11 @@ ipcMain.handle("speech:stop", () => {
   if (IS_MAC) stopSpeech();
 });
 
+ipcMain.handle("fs:clipboard-image", async (_event, payload) => {
+  const { saveClipboardImage } = await import("./attachments.mjs");
+  return saveClipboardImage(join(app.getPath("userData"), "attachments"), payload);
+});
+
 ipcMain.handle("fs:open-files", async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const result = await dialog.showOpenDialog(win ?? undefined, {

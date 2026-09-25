@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Mic, Square, Paperclip, X } from "lucide-react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Plus, Mic, Square, Paperclip, X, ArrowUp } from "lucide-react";
 import { api, useStore, type Bot, type Skill } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { BotFace } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
-import { chipFromDroppedFile, sendPayload, type AttachmentChip } from "@/lib/attachments";
+import { chipFromDroppedFile, prepareDroppedFiles, sendPayload } from "@/lib/attachments";
+import { updateDraft, useComposerDraft } from "@/lib/composer-drafts";
 import { enabledSkillIds } from "@/lib/skills";
 import {
   filterMentionCandidates,
@@ -22,24 +23,37 @@ import {
   type SlashMenuItem,
 } from "@/lib/slash-commands";
 
-export function Composer({ bot }: { bot: Bot }) {
+export const Composer = memo(function Composer({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
-  const [text, setText] = useState("");
+  const { draft, setText, setChips, setSkills: setSkillChips } = useComposerDraft(bot.threadId);
+  const { text, chips, skills: skillChips } = draft;
   const [recording, setRecording] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const showMic = !window.ogb || window.ogb.platform === "darwin";
   const [caret, setCaret] = useState(0);
   const [highlight, setHighlight] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null); // Esc'd this @
-  const [chips, setChips] = useState<AttachmentChip[]>([]);
-  const [skillChips, setSkillChips] = useState<Array<{ id: string; name: string }>>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [preparing, setPreparing] = useState(false);
+  const [routineSending, setRoutineSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
-  const chipSeq = useRef(0);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const routinePosting = useRef(false);
+  const attachmentJobs = useRef(0);
   // what was typed before the mic went on — partials append after it
   const baseText = useRef("");
 
   const queued = state.queued[bot.id] ?? [];
+  const paused = state.queuePaused[bot.id];
+  const canSend = Boolean(text.trim() || chips.length || skillChips.length);
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+  }, [text]);
 
   useEffect(() => {
     api("/api/skills")
@@ -94,7 +108,7 @@ export function Composer({ bot }: { bot: Bot }) {
     setChips((current) => {
       const next = [...current];
       for (const file of files) {
-        const chip = chipFromDroppedFile(file, `att-${chipSeq.current++}`);
+        const chip = chipFromDroppedFile(file, crypto.randomUUID());
         if (!chip) continue;
         if (next.some((c) => c.path === chip.path)) continue;
         next.push(chip);
@@ -107,17 +121,20 @@ export function Composer({ bot }: { bot: Bot }) {
     // Keep the local draft intact while the SSE/API connection is down.
     // Clearing before a failed POST makes recovery feel like data loss.
     if (!state.connected) return;
+    if (attachmentJobs.current || routinePosting.current) return;
+    setSendError(null);
     const payload = sendPayload(text, chips);
     const mentionSkills = skillChips.map((chip) => chip.id);
     const routineSend = routineSendFromText(payload.text, state.routines, state.bots);
     if (routineSend) {
+      routinePosting.current = true;
+      setRoutineSending(true);
       void api(`/api/routines/${routineSend.routineId}/run`, {
         method: "POST",
         body: JSON.stringify(routineSend.prompt ? { prompt: routineSend.prompt } : {}),
-      }).catch(() => {});
-      setText("");
-      setChips([]);
-      setSkillChips([]);
+      }).then(() => { setText(""); setChips([]); setSkillChips([]); })
+        .catch((error) => setSendError(error instanceof Error ? error.message : String(error)))
+        .finally(() => { routinePosting.current = false; setRoutineSending(false); });
       return;
     }
     if (!payload.text && !payload.attachments.length && !mentionSkills.length) return;
@@ -174,20 +191,21 @@ export function Composer({ bot }: { bot: Bot }) {
     setRecording((r) => !r);
   };
 
-  const onDropFiles = (list: FileList | null) => {
+  const onDropFiles = async (list: FileList | null) => {
     if (!list?.length) return;
-    addFiles(
-      [...list].map((file) => ({
-        name: file.name,
-        path: (file as File & { path?: string }).path,
-        type: file.type,
-      })),
-    );
+    attachmentJobs.current++;
+    setPreparing(true);
+    setAttachmentError(null);
+    try {
+      const result = await prepareDroppedFiles([...list], window.ogb);
+      addFiles(result.files);
+      setAttachmentError(result.errors.join(" ") || null);
+    } finally { attachmentJobs.current--; setPreparing(attachmentJobs.current > 0); }
   };
 
   const pickFiles = () => {
     if (window.ogb?.openFiles) {
-      void window.ogb.openFiles().then((files) => addFiles(files ?? []));
+      void window.ogb.openFiles().then((files) => addFiles(files ?? [])).catch((error) => setAttachmentError(String(error)));
       return;
     }
     const input = document.createElement("input");
@@ -261,6 +279,9 @@ export function Composer({ bot }: { bot: Bot }) {
         </div>
       )}
       <div className="relative mx-auto max-w-[900px]">
+        {(attachmentError || sendError) && <div role="alert" className="mb-2 rounded-lg border border-danger/30 bg-danger/10 p-3 text-[13px] text-danger">{attachmentError || sendError}</div>}
+        {preparing && <div role="status" className="mb-2 text-[13px] text-ink-secondary">Preparing attachments…</div>}
+        {paused && queued.length > 0 && <div className="mb-2 flex items-center justify-between text-[13px] text-ink-secondary"><span>Queued messages paused</span><button disabled={!state.connected || bot.busy} onClick={() => dispatch({ type: "resumeQueue", botId: bot.id })} className="text-accent disabled:opacity-50">Resume queue</button></div>}
         {queued.length > 0 && (
           <div className="mb-2 flex flex-col gap-1.5">
             {queued.map((item, i) => (
@@ -269,11 +290,22 @@ export function Composer({ bot }: { bot: Bot }) {
                 className="flex items-center gap-2 rounded-xl border border-dashed border-hairline/50 bg-raised/40 px-3 py-2"
               >
                 <span className="shrink-0 rounded bg-inset px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">
-                  Queued {i + 1}
+                  {item.status === "failed" ? "Failed" : item.status === "sending" ? "Sending…" : `Queued ${i + 1}`}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{item.text || "Attachment"}</span>
+                <span className="min-w-0 flex-1 text-[13px] text-ink"><span className="block truncate">{item.text || "Attachment"}</span>{item.error && <span role="alert" className="block text-danger">{item.error}</span>}</span>
+                {item.status === "failed" && <button disabled={!state.connected || bot.busy} onClick={() => dispatch({ type: "retryPrompt", botId: bot.id, id: item.id })} className="text-[13px] text-accent disabled:opacity-50">Retry</button>}
+                {item.status === "failed" && <button disabled={canSend || preparing} title={canSend ? "Send or clear the current draft first" : "Edit this message"} onClick={() => {
+                  updateDraft(bot.threadId, () => ({
+                    text: item.text,
+                    chips: item.attachments.map((attachment) => ({ ...attachment, id: crypto.randomUUID(), name: attachment.path.split(/[/\\]/).pop() || attachment.path })),
+                    skills: (item.mentionSkillIds ?? []).map((id) => ({ id, name: skills.find((skill) => skill.id === id)?.name ?? id })),
+                  }));
+                  dispatch({ type: "editQueued", botId: bot.id, id: item.id });
+                  inputRef.current?.focus();
+                }} className="text-[13px] text-accent disabled:opacity-50">Edit</button>}
                 <button
                   type="button"
+                  disabled={item.status === "sending"}
                   onClick={() => dispatch({ type: "cancelQueued", botId: bot.id, id: item.id })}
                   className="rounded-full p-0.5 text-ink-secondary hover:bg-raised hover:text-ink"
                   title="Cancel queued prompt"
@@ -415,8 +447,11 @@ export function Composer({ bot }: { bot: Bot }) {
         >
           <Paperclip size={16} />
         </button>
-        <input
+        <textarea
           ref={inputRef}
+          rows={1}
+          aria-label={`Message ${bot.name}`}
+          disabled={routineSending}
           value={text}
           onChange={(e) => {
             setText(e.target.value);
@@ -426,9 +461,11 @@ export function Composer({ bot }: { bot: Bot }) {
           onPaste={(e) => {
             if (e.clipboardData?.files?.length) onDropFiles(e.clipboardData.files);
           }}
-          onKeyUp={(e) => setCaret((e.target as HTMLInputElement).selectionStart ?? 0)}
-          onClick={(e) => setCaret((e.target as HTMLInputElement).selectionStart ?? 0)}
+          onKeyUp={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
+          onClick={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart ?? 0)}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+            if (e.key === "Enter" && e.shiftKey) return;
             if (slashOpen) {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
@@ -465,7 +502,7 @@ export function Composer({ bot }: { bot: Bot }) {
                 return;
               }
             }
-            if (e.key === "Enter") send();
+            if (e.key === "Enter") { e.preventDefault(); send(); }
             if (e.key === "Escape" && recording) setRecording(false);
           }}
           placeholder={
@@ -477,8 +514,9 @@ export function Composer({ bot }: { bot: Bot }) {
                   ? `Queue a follow-up for ${bot.name}`
                   : `Message ${bot.name}`
           }
-          className="w-full bg-transparent text-[15px] text-ink placeholder:text-ink-secondary focus:outline-none"
+          className="max-h-[180px] min-h-6 w-full resize-none bg-transparent text-[15px] leading-6 text-ink placeholder:text-ink-secondary focus:outline-none"
         />
+        {canSend && <button type="button" aria-label={bot.busy || paused ? "Queue message" : "Send message"} title="Send message" disabled={!state.connected || preparing || routineSending} onClick={send} className="flex size-8 shrink-0 items-center justify-center rounded-full bg-action-primary text-white disabled:opacity-40"><ArrowUp size={18} /></button>}
         {bot.busy ? (
           <button
             onClick={() => dispatch({ type: "interrupt", botId: bot.id })}
@@ -506,4 +544,4 @@ export function Composer({ bot }: { bot: Bot }) {
       </div>
     </div>
   );
-}
+});

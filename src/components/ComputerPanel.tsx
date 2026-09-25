@@ -5,6 +5,7 @@
 // preload bridge — box endpoints are never touched); off → parked. Auto
 // (unset) prefers the cloud box when one exists, else local inside the app.
 import { useEffect, useRef, useState } from "react";
+import { freshFrame, newestFrame, type ComputerFrame } from "@/lib/computer-frame";
 import {
   CalendarClock,
   ExternalLink,
@@ -29,7 +30,7 @@ import { ApiKeyRow } from "./ApiKeys";
 import { cn } from "@/lib/cn";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
+  const res = await fetch(path, { headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(15_000), ...init });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
   return body;
@@ -63,12 +64,18 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
     busy: boolean;
     note: string | null;
   } | null>(null);
-  const [polledFrame, setPolledFrame] = useState<{ png: string; mime: string } | null>(null);
+  const [polledFrame, setPolledFrame] = useState<ComputerFrame | null>(null);
+  const [frameNow, setFrameNow] = useState(Date.now);
   const [localFrame, setLocalFrame] = useState<string | null>(null);
   const [pending, setPending] = useState<"join" | "sleep" | null>(null);
   const [error, setError] = useState<string | null>(null);
   // bumped when a Box token is saved inline, to re-run the spin-up flow
   const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    dispatch({ type: "clearScreen", botId: bot.id });
+    const timer = setInterval(() => setFrameNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [bot.id, bot.computer, dispatch]);
   const [teaching, setTeaching] = useState(false);
   const [teachBusy, setTeachBusy] = useState(false);
   const [teachDraft, setTeachDraft] = useState<{ name: string; markdown: string; sessionId?: string } | null>(null);
@@ -173,7 +180,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
 
   // cloud preview: SSE frames win while the bot works; otherwise poll
   const live = state.screens[bot.id];
-  const sseFlowing = Boolean(bot.busy && live);
+  const sseFlowing = Boolean(bot.busy && freshFrame(live, frameNow));
   const inFlight = useRef(false);
   useEffect(() => {
     if (phase !== "ready" || sseFlowing) return;
@@ -183,7 +190,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
       inFlight.current = true;
       try {
         const { png, format } = await api(`/api/bots/${bot.id}/computer/screenshot`, { method: "POST" });
-        if (alive) setPolledFrame({ png, mime: format === "jpeg" ? "image/jpeg" : "image/png" });
+        if (alive && png) setPolledFrame({ png, mime: format === "jpeg" ? "image/jpeg" : "image/png", at: Date.now() });
       } catch {
         /* box mid-command or asleep — next tick */
       } finally {
@@ -226,10 +233,8 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
   }, [phase]);
 
   const lastScreenMessage = [...bot.messages].reverse().find((m) => m.kind === "screen" && m.png);
-  const cloudFrame =
-    live ??
-    polledFrame ??
-    (lastScreenMessage ? { png: lastScreenMessage.png!, mime: lastScreenMessage.mime ?? "image/png" } : null);
+  const cloudFrame = newestFrame(live, polledFrame,
+    lastScreenMessage ? { png: lastScreenMessage.png!, mime: lastScreenMessage.mime ?? "image/png", at: lastScreenMessage.at } : null);
   const frameSrc =
     phase === "local"
       ? localFrame
@@ -332,6 +337,7 @@ export function ComputerPanel({ bot }: { bot: Bot }) {
           )}
         </div>
 
+        {phase === "ready" && cloudFrame && <div className="mt-2 flex items-center justify-between text-[12px] text-ink-secondary"><span>Last updated {Math.max(0, Math.floor((frameNow - cloudFrame.at) / 1000))}s ago</span><button onClick={() => { dispatch({ type: "clearScreen", botId: bot.id }); setRetry((n) => n + 1); }} className="text-accent">Refresh preview</button></div>}
         {error && (
           <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">
             {error}

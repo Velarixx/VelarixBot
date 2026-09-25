@@ -84,7 +84,7 @@ describe("macOS permission policy", () => {
     expect(onboarding).toContain("permRequestMic");
     expect(onboarding).toContain("Only requested for dictation");
     expect(onboarding).toMatch(/onClick=\{\(\) => window\.ogb\?\.permRequestMic/);
-    const effect = onboarding.slice(onboarding.indexOf("useEffect("), onboarding.indexOf("}, [step, instances]"));
+    const effect = onboarding.slice(onboarding.indexOf("useEffect("), onboarding.indexOf("const finish ="));
     expect(effect).toContain("permStatus");
     expect(effect).not.toContain("permRequestMic");
   });

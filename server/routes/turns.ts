@@ -1,6 +1,7 @@
 // Turn lifecycle over HTTP: send a message, answer a pending card, interrupt.
 import { attachmentPathRefs, expandAttachmentPaths } from "../attachments.ts";
 import { newId } from "../contracts.ts";
+import { basename } from "node:path";
 import type { LaneScheduler } from "../services/lanes.ts";
 import type { LineageService } from "../services/lineage.ts";
 import type { TurnsService } from "../services/turns.ts";
@@ -19,6 +20,11 @@ export function createTurnsRoutes(deps: { turns: TurnsService; lanes: LaneSchedu
         if (item && typeof item.path === "string" && item.path.trim()) {
           mimeByPath.set(item.path.trim(), typeof item.mime === "string" ? item.mime : undefined);
         }
+      }
+      const rejected = [...mimeByPath.keys()].filter((path) => expandAttachmentPaths([path], { maxFiles: 1 }).length === 0);
+      if (rejected.length) {
+        json(res, 400, { error: `Couldn’t read attachment: ${rejected.map((path) => basename(path)).join(", ")}. Reattach the file and try again.` });
+        return true;
       }
       const paths = expandAttachmentPaths([...mimeByPath.keys()]);
       const text = attachmentPathRefs(rawText, paths);
