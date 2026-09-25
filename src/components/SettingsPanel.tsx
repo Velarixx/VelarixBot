@@ -64,6 +64,8 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   >([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [memory, setMemory] = useState({ user: "", distilled: "", workspace: "" });
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memorySaving, setMemorySaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [candidates, setCandidates] = useState<string[]>(bot.avatarCandidates ?? []);
   const [generating, setGenerating] = useState(false);
@@ -174,10 +176,13 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 
   const persistMemory = (next: { user: string; distilled: string; workspace: string }) => {
     setMemory(next);
+    setMemoryError(null);
+    setMemorySaving(true);
     void api(`/api/bots/${bot.id}/memory`, {
       method: "PUT",
       body: JSON.stringify(next),
-    }).catch(() => {});
+    }).catch(() => setMemoryError("Couldn’t save memory. Your edits are still here."))
+      .finally(() => setMemorySaving(false));
   };
 
   return (
@@ -200,6 +205,8 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 pb-5">
+        {memorySaving && <div role="status" className="text-[13px] text-ink-secondary">Saving memory…</div>}
+        {memoryError && <div role="alert" className="rounded-lg bg-danger/10 p-3 text-[13px] text-danger">{memoryError}<button onClick={() => persistMemory(memory)} className="ml-2 underline">Retry save</button></div>}
         <div className="flex justify-center py-5">
           <BotFace
             bot={bot}

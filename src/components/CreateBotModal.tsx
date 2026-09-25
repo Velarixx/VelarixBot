@@ -77,6 +77,7 @@ export function CreateBotModal() {
   const [modelSelection, setModelSelection] = useState<ModelSelection>(() => emptySelection(state.instances));
   const [created, setCreated] = useState<Bot | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<string[]>([]);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
@@ -91,11 +92,11 @@ export function CreateBotModal() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") dispatch({ type: "toggleCreateBot", open: false });
+      if (e.key === "Escape" && !submitting) dispatch({ type: "toggleCreateBot", open: false });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dispatch]);
+  }, [dispatch, submitting]);
 
   const payload: NewBotInit = useMemo(() => {
     const init: NewBotInit = { name: name.trim(), color };
@@ -109,7 +110,7 @@ export function CreateBotModal() {
 
   const preview = draftBot({ name, title, description, color, modelSelection, created });
 
-  const close = () => dispatch({ type: "toggleCreateBot", open: false });
+  const close = () => { if (!submitting) dispatch({ type: "toggleCreateBot", open: false }); };
 
   const ensureCreated = async (): Promise<Bot> => {
     if (created) return created;
@@ -126,7 +127,8 @@ export function CreateBotModal() {
       return;
     }
     setSubmitting(true);
-    dispatch({ type: "newBot", ...payload });
+    setCreateError(null);
+    dispatch({ type: "newBot", ...payload, onError: (message) => { setSubmitting(false); setCreateError(message); } });
   };
 
   const generatePortraits = () => {
@@ -173,6 +175,8 @@ export function CreateBotModal() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 pb-5">
+          {createError && <div role="alert" className="mb-3 rounded-lg bg-danger/10 p-3 text-[13px] text-danger">Couldn’t create this bot. {createError} Your details are saved here; try Create again.</div>}
+          {submitting && <div role="status" className="mb-3 text-[13px] text-ink-secondary">Creating bot…</div>}
           <div className="flex justify-center py-3">
             <BotFace bot={preview} state={stateForBot(preview)} size={96} />
           </div>

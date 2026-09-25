@@ -9,6 +9,7 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import type { MausColor, MausMotion } from "@/lib/mascot";
@@ -19,8 +20,9 @@ import {
   cancelPrompt,
   enqueuePrompt,
   nextFlushBotIds,
-  shouldEnqueueSend,
   takeNext,
+  restorePromptQueue,
+  persistPromptQueue,
   type QueuedPrompt,
 } from "@/lib/prompt-queue";
 import { advanceCursor, eventsUrl, INITIAL_CURSOR, shouldApplyFrame, type SseCursor } from "@/lib/sse-resume";
@@ -28,6 +30,8 @@ import type { AgentTask } from "@/lib/agent-task";
 import type { TelegramConfigStatus } from "@/lib/telegram";
 import type { DiscordConfigStatus } from "@/lib/discord";
 import type { WorkflowStatus, WorkflowWaitingFor } from "@/lib/workflow";
+import { createStreamText } from "@/lib/stream-text";
+import type { ComputerFrame } from "@/lib/computer-frame";
 
 export type { AgentTask } from "@/lib/agent-task";
 
@@ -60,6 +64,7 @@ export interface Message {
   tool?: { name: string; ok?: boolean; status?: "completed" | "failed" | "cancelled" | "timed_out"; command?: string };
   /** screen messages: a frame of the bot's computer (base64) */
   png?: string;
+  hasImage?: boolean;
   mime?: string;
   at: number;
   from?: { botId: string; name: string; color?: MausColor };
@@ -84,6 +89,7 @@ export interface Group {
   createdAt: number;
   dm?: boolean;
   messages: Message[];
+  hasMore?: boolean;
 }
 
 export interface ModelSelection {
@@ -155,6 +161,7 @@ export interface Bot {
   /** First-class Conversations section. Missing/null = Unassigned. */
   sectionId?: string | null;
   messages: Message[];
+  hasMore?: boolean;
 }
 
 /** GET /api/config — configured flags only; secrets are never echoed. */
@@ -283,7 +290,7 @@ interface AppState {
    * the machine-readable response-option trailer. */
   streamingRaw: Record<string, string>;
   /** latest live frame of a bot's computer, per botId */
-  screens: Record<string, { png: string; mime: string }>;
+  screens: Record<string, ComputerFrame>;
   /** bots whose cloud computer is being provisioned */
   provisioning: Record<string, boolean>;
   connected: boolean;
@@ -297,6 +304,7 @@ interface AppState {
   } | null;
   /** Composer follow-ups waiting for the current turn to finish, per bot. */
   queued: Record<string, QueuedPrompt[]>;
+  queuePaused: Record<string, boolean>;
 }
 
 type Action =
@@ -311,7 +319,13 @@ type Action =
   | { type: "send"; botId: string; text: string; attachments?: Array<{ path: string; mime?: string }>; mentionSkillIds?: string[] }
   | { type: "enqueue"; botId: string; item: QueuedPrompt }
   | { type: "cancelQueued"; botId: string; id: string }
+  | { type: "editQueued"; botId: string; id: string }
   | { type: "flushQueue"; botId: string }
+  | { type: "resumeQueue"; botId: string }
+  | { type: "retryPrompt"; botId: string; id: string }
+  | { type: "promptSent"; botId: string; id: string }
+  | { type: "promptFailed"; botId: string; id: string; error: string }
+  | { type: "historyLoaded"; threadId: string; messages: Message[]; hasMore: boolean }
   | {
       type: "answerCard";
       botId: string;
@@ -332,7 +346,7 @@ type Action =
       onSuccess?: () => void;
       onError?: (message: string) => void;
     }
-  | { type: "newBot"; name: string; title?: string; description?: string; model?: string; color?: string }
+  | { type: "newBot"; name: string; title?: string; description?: string; model?: string; color?: string; onSuccess?: () => void; onError?: (message: string) => void }
   | { type: "toggleCreateBot"; open?: boolean }
   | { type: "botAdded"; bot: Bot; select?: boolean }
   | { type: "deleteBot"; botId: string }
@@ -343,7 +357,8 @@ type Action =
   | { type: "messagePatched"; threadId: string; message: Message }
   | { type: "streamDelta"; threadId: string; delta: string }
   | { type: "streamClear"; threadId: string }
-  | { type: "screenFrame"; botId: string; png: string; mime: string }
+  | { type: "screenFrame"; botId: string; png: string; mime: string; at?: number }
+  | { type: "clearScreen"; botId: string }
   | { type: "provisioning"; botId: string; on: boolean }
   | { type: "setModel"; botId: string; selection: ModelSelection }
   | { type: "interrupt"; botId: string }
@@ -395,6 +410,13 @@ function updateBot(state: AppState, botId: string, fn: (b: Bot) => Bot): AppStat
   return { ...state, bots: state.bots.map((b) => (b.id === botId ? fn(b) : b)) };
 }
 
+function mergeHydratedHistory<T extends { messages: Message[]; hasMore?: boolean }>(next: T, previous?: T): T {
+  if (!previous?.messages.length || !next.messages.length) return next;
+  const overlap = previous.messages.findIndex((message) => message.id === next.messages[0].id);
+  if (overlap < 0) return next;
+  return { ...next, messages: [...previous.messages.slice(0, overlap), ...next.messages], hasMore: previous.hasMore };
+}
+
 function withMascotMotion(
   state: AppState,
   botId: string,
@@ -428,11 +450,19 @@ export function reducer(state: AppState, action: Action): AppState {
           : (action.bots[0]?.id ?? "");
       return {
         ...state,
-        bots: action.bots,
-        groups: action.groups ?? state.groups,
+        bots: action.bots.map((bot) => mergeHydratedHistory(bot, state.bots.find((b) => b.threadId === bot.threadId))),
+        groups: action.groups?.map((group) => mergeHydratedHistory(group, state.groups.find((g) => g.threadId === group.threadId))) ?? state.groups,
         tasks: action.tasks ?? state.tasks,
         selectedId,
       };
+    }
+    case "historyLoaded": {
+      const prepend = <T extends { threadId: string; messages: Message[]; hasMore?: boolean }>(row: T): T => {
+        if (row.threadId !== action.threadId) return row;
+        const known = new Set(row.messages.map((m) => m.id));
+        return { ...row, messages: [...action.messages.filter((m) => !known.has(m.id)), ...row.messages], hasMore: action.hasMore };
+      };
+      return { ...state, bots: state.bots.map(prepend), groups: state.groups.map(prepend) };
     }
     case "selectTask":
       return { ...state, selectedTaskId: action.id };
@@ -636,9 +666,13 @@ export function reducer(state: AppState, action: Action): AppState {
     case "screenFrame":
       return {
         ...withMascotMotion(state, action.botId, "success"),
-        screens: { ...state.screens, [action.botId]: { png: action.png, mime: action.mime } },
+        screens: { ...state.screens, [action.botId]: { png: action.png, mime: action.mime, at: action.at ?? 0 } },
         provisioning: { ...state.provisioning, [action.botId]: false },
       };
+    case "clearScreen": {
+      const { [action.botId]: _, ...screens } = state.screens;
+      return { ...state, screens };
+    }
     case "provisioning":
       return {
         ...(action.on ? withMascotMotion(state, action.botId, "launch") : state),
@@ -743,6 +777,7 @@ export function reducer(state: AppState, action: Action): AppState {
         },
       };
     case "cancelQueued":
+    case "promptSent":
       return {
         ...state,
         queued: {
@@ -752,13 +787,28 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     case "flushQueue": {
       const bot = state.bots.find((b) => b.id === action.botId);
-      const { next, rest } = takeNext(state.queued[action.botId] ?? []);
-      if (!bot || bot.busy || !next) return state;
+      const { next } = takeNext(state.queued[action.botId] ?? []);
+      if (!bot || bot.busy || state.queuePaused[action.botId] || !next || next.status) return state;
       return {
         ...withMascotMotion(updateBot(state, action.botId, (b) => ({ ...b, busy: true })), action.botId, "working"),
-        queued: { ...state.queued, [action.botId]: rest },
+        queued: { ...state.queued, [action.botId]: state.queued[action.botId].map((item) => item.id === next.id ? { ...item, status: "sending" } : item) },
       };
     }
+    case "promptFailed":
+      return {
+        ...updateBot(state, action.botId, (bot) => ({ ...bot, busy: false })),
+        queued: { ...state.queued, [action.botId]: (state.queued[action.botId] ?? []).map((item) => item.id === action.id ? { ...item, status: "failed", error: action.error } : item) },
+      };
+    case "editQueued": {
+      const remaining = cancelPrompt(state.queued[action.botId] ?? [], action.id);
+      return { ...state, queuePaused: { ...state.queuePaused, [action.botId]: Boolean(state.queuePaused[action.botId] || remaining.length) }, queued: { ...state.queued, [action.botId]: remaining } };
+    }
+    case "retryPrompt":
+      return { ...state, queuePaused: { ...state.queuePaused, [action.botId]: false }, queued: { ...state.queued, [action.botId]: (state.queued[action.botId] ?? []).map((item) => item.id === action.id ? { ...item, status: undefined, error: undefined } : item) } };
+    case "resumeQueue":
+      return { ...state, queuePaused: { ...state.queuePaused, [action.botId]: false } };
+    case "interrupt":
+      return { ...state, queuePaused: { ...state.queuePaused, [action.botId]: true } };
     // wrapper POSTs; busy flips now so a follow-up Enter queues instead of racing
     case "send":
       return withMascotMotion(
@@ -766,11 +816,10 @@ export function reducer(state: AppState, action: Action): AppState {
         action.botId,
         "working",
       );
-    // Confirm closes the one modal; the wrapper POSTs the named JSON body.
+    // Keep the form mounted until the server accepts it.
     case "newBot":
-      return { ...state, createBotOpen: false };
+      return state;
     case "duplicateBot":
-    case "interrupt":
       return state;
   }
 }
@@ -803,12 +852,14 @@ export const initialState: AppState = {
   error: null,
   mascotMotion: null,
   queued: {},
+  queuePaused: {},
 };
 
 // ── API client ─────────────────────────────────────────────────────────
 export async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, {
     headers: { "content-type": "application/json" },
+    signal: init?.signal ?? AbortSignal.timeout(30_000),
     ...init,
   });
   const body = await res.json().catch(() => ({}));
@@ -850,9 +901,17 @@ const StoreContext = createContext<{
   state: AppState;
   dispatch: React.Dispatch<Action>;
 } | null>(null);
+const StreamContext = createContext<ReturnType<typeof createStreamText> | null>(null);
+
+export function useStreamingText(threadId: string): string {
+  const stream = useContext(StreamContext);
+  if (!stream) throw new Error("useStreamingText outside provider");
+  return useSyncExternalStore((listener) => stream.subscribe(threadId, listener), () => stream.get(threadId), () => "");
+}
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, rawDispatch] = useReducer(reducer, initialState);
+  const [state, rawDispatch] = useReducer(reducer, initialState, (initial) => ({ ...initial, ...restorePromptQueue() }));
+  const stream = useMemo(createStreamText, []);
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -874,54 +933,52 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify(patch),
       }).catch(() => {});
     };
-    let queueSeq = 0;
     const posting = new Set<string>();
+    const stopped = new Set<string>();
     const postMessage = (
       botId: string,
-      text: string,
-      attachments?: Array<{ path: string; mime?: string }>,
-      mentionSkillIds?: string[],
+      item: QueuedPrompt,
     ) => {
       posting.add(botId);
       const bot = stateRef.current.bots.find((row) => row.id === botId);
       if (bot?.computer === "local" && typeof window !== "undefined") void window.ogb?.ensureCua?.();
       api(`/api/bots/${botId}/messages`, {
         method: "POST",
-        body: JSON.stringify({ text, attachments: attachments ?? [], mentionSkillIds: mentionSkillIds ?? [] }),
+        body: JSON.stringify({ text: item.text, attachments: item.attachments, mentionSkillIds: item.mentionSkillIds ?? [], idempotencyKey: item.id }),
       })
+        .then(async (result) => {
+          // Stop may arrive while this request is still being accepted.
+          if (stopped.has(botId)) await api(`/api/bots/${botId}/interrupt`, { method: "POST" });
+          if (result.status === "duplicate") {
+            const snapshot = await api("/api/bots?messages=0");
+            const current = snapshot.bots.find((row: Bot) => row.id === botId);
+            if (current) rawDispatch({ type: "botPatched", bot: current });
+          }
+          rawDispatch({ type: "promptSent", botId, id: item.id });
+        })
         .catch((e) => {
-          rawDispatch({ type: "botPatched", bot: { id: botId, busy: false } });
-          showError(e);
+          rawDispatch({ type: "promptFailed", botId, id: item.id, error: e instanceof Error ? e.message : String(e) });
         })
         .finally(() => posting.delete(botId));
     };
 
     const wrapped: React.Dispatch<Action> = (action) => {
       if (action.type === "send") {
-        const bot = stateRef.current.bots.find((b) => b.id === action.botId);
-        if (shouldEnqueueSend(bot?.busy === true, posting.has(action.botId))) {
-          rawDispatch({
-            type: "enqueue",
-            botId: action.botId,
-            item: {
-              id: `q-${++queueSeq}`,
-              text: action.text,
-              attachments: action.attachments ?? [],
-              mentionSkillIds: action.mentionSkillIds ?? [],
-            },
-          });
-          return;
-        }
-        rawDispatch(action);
-        postMessage(action.botId, action.text, action.attachments, action.mentionSkillIds);
+        if (!stateRef.current.connected) return;
+        rawDispatch({
+          type: "enqueue", botId: action.botId,
+          item: { id: crypto.randomUUID(), text: action.text, attachments: action.attachments ?? [], mentionSkillIds: action.mentionSkillIds ?? [] },
+        });
         return;
       }
+      if (action.type === "interrupt") stopped.add(action.botId);
+      if (action.type === "resumeQueue" || action.type === "retryPrompt") stopped.delete(action.botId);
       if (action.type === "flushQueue") {
         const bot = stateRef.current.bots.find((b) => b.id === action.botId);
         const { next } = takeNext(stateRef.current.queued[action.botId] ?? []);
-        if (!bot || bot.busy || posting.has(action.botId) || !next) return;
+        if (!stateRef.current.connected || !bot || bot.busy || stateRef.current.queuePaused[action.botId] || posting.has(action.botId) || !next || next.status) return;
         rawDispatch(action);
-        postMessage(action.botId, next.text, next.attachments, next.mentionSkillIds);
+        postMessage(action.botId, next);
         return;
       }
       if (action.type === "answerCard") {
@@ -1000,8 +1057,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
         case "newBot":
           postNewBot(action)
-            .then(({ bot }) => rawDispatch({ type: "botAdded", bot }))
-            .catch(showError);
+            .then(({ bot }) => {
+              rawDispatch({ type: "botAdded", bot });
+              rawDispatch({ type: "toggleCreateBot", open: false });
+              action.onSuccess?.();
+            })
+            .catch((error) => action.onError ? action.onError(error instanceof Error ? error.message : String(error)) : showError(error));
           break;
         case "duplicateBot": {
           const source = stateRef.current.bots.find((b) => b.id === action.botId);
@@ -1072,13 +1133,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return wrapped;
   }, []);
 
-  // Drain one queued follow-up when a bot becomes idle. Interrupt leaves
-  // the queue in place; cancelQueued removes an item before this runs.
+  useEffect(() => { persistPromptQueue(state.queued); }, [state.queued]);
+
+  // Failed, offline and stopped work stays visible until explicitly retried.
   useEffect(() => {
-    for (const botId of nextFlushBotIds(state.bots, state.queued)) {
+    if (!state.connected) return;
+    for (const botId of nextFlushBotIds(state.bots, state.queued, state.queuePaused)) {
       dispatch({ type: "flushQueue", botId });
     }
-  }, [state.bots, state.queued, dispatch]);
+  }, [state.bots, state.queued, state.queuePaused, state.connected, dispatch]);
 
   // ── initial load + SSE fold (P1.3 resumable stream) ──────────────────
   // Snapshot + cursor + Last-Event-ID replay: hydrate from
@@ -1106,7 +1169,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     let pendingDuringResync: any[] | null = null;
     const resync = () => {
       pendingDuringResync ??= [];
-      return api("/api/events/snapshot")
+      return api("/api/events/snapshot?messages=50")
         .then((snap) => {
           if (!alive) return;
           rawDispatch({
@@ -1164,6 +1227,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       cursor = advanceCursor(cursor, frame);
       switch (frame.kind) {
         case "message":
+          if (frame.message.role === "bot" && frame.message.kind === "text") stream.clear(frame.threadId);
           rawDispatch({ type: "messageAdded", threadId: frame.threadId, message: frame.message });
           break;
         case "message.patch":
@@ -1189,9 +1253,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "runtime": {
           const event = frame.event;
           if (event.type === "content.delta" && event.streamKind === "assistant_text") {
-            rawDispatch({ type: "streamDelta", threadId: event.threadId, delta: event.delta });
+            stream.append(event.threadId, event.delta);
           } else if (event.type === "turn.completed") {
-            rawDispatch({ type: "streamClear", threadId: event.threadId });
+            stream.clear(event.threadId);
           }
           const bot = stateRef.current.bots.find((b) => b.threadId === event.threadId);
           const copy = bot ? notifyCopy(bot, event) : null;
@@ -1217,7 +1281,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         }
         case "screen":
-          rawDispatch({ type: "screenFrame", botId: frame.botId, png: frame.png, mime: frame.mime ?? "image/png" });
+          rawDispatch({ type: "screenFrame", botId: frame.botId, png: frame.png, mime: frame.mime ?? "image/png", at: Date.now() });
           break;
         case "computer":
           rawDispatch({ type: "provisioning", botId: frame.botId, on: frame.state === "provisioning" });
@@ -1282,7 +1346,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [state.bots]);
 
   const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
-  return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
+  return <StreamContext.Provider value={stream}><StoreContext.Provider value={value}>{children}</StoreContext.Provider></StreamContext.Provider>;
 }
 
 export function useStore() {

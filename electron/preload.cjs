@@ -1,6 +1,6 @@
 // Renderer bridge. contextIsolation stays on; the renderer only ever sees
 // this narrow surface (window.ogb), never Node or ipcRenderer itself.
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("ogb", {
   platform: process.platform,
@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld("ogb", {
     return () => ipcRenderer.removeListener("notify:click", handler);
   },
   openFiles: () => ipcRenderer.invoke("fs:open-files"),
+  attachmentPath: (file) => webUtils.getPathForFile(file),
+  saveClipboardImage: (payload) => ipcRenderer.invoke("fs:clipboard-image", payload),
 
   loginItem: {
     get: () => ipcRenderer.invoke("login:get"),

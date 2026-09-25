@@ -116,7 +116,7 @@ test.describe("fake-engine primary workflow", () => {
       await offlineComposer.fill(DRAFT);
       await offlineComposer.press("Enter");
       await expect(offlineComposer).toHaveValue(DRAFT);
-      await expect(page.getByText(DRAFT, { exact: true })).toHaveCount(0);
+      await expect(page.getByLabel("Conversation history").getByText(DRAFT, { exact: true })).toHaveCount(0);
 
       await page.evaluate(() => {
         const stream = (window as typeof window & { __smokeEventSource?: EventSource }).__smokeEventSource;
@@ -128,7 +128,7 @@ test.describe("fake-engine primary workflow", () => {
       await onlineComposer.press("Enter");
 
       await expect(onlineComposer).toHaveValue("");
-      await expect(page.getByText(DRAFT, { exact: true })).toBeVisible();
+      await expect(page.getByLabel("Conversation history").getByText(DRAFT, { exact: true })).toBeVisible();
       await expect(page.getByText("hello from fake claude", { exact: true }).last()).toBeVisible({ timeout: 20_000 });
       await expect(page.getByText("SUBAGENT NOISE", { exact: true })).toHaveCount(0);
     } finally {

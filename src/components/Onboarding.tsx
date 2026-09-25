@@ -30,11 +30,17 @@ function StatusRow({ ok, title, detail }: { ok: boolean; title: string; detail: 
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
   const [instances, setInstances] = useState<InstanceRow[] | null>(null);
+  const [engineError, setEngineError] = useState<string | null>(null);
+  const [engineRetry, setEngineRetry] = useState(0);
   const [perms, setPerms] = useState<{ mic: string } | null>(null);
 
   useEffect(() => {
+    let alive = true;
     if (step === 1 && !instances) {
-      fetch("/api/instances").then((r) => r.json()).then((d) => setInstances(d.instances ?? [])).catch(() => setInstances([]));
+      setEngineError(null);
+      fetch("/api/instances").then((r) => { if (!r.ok) throw new Error("Couldn’t check local engines. Check the connection and try again."); return r.json(); })
+        .then((d) => { if (alive) setInstances(d.instances ?? []); })
+        .catch(() => { if (alive) setEngineError("Couldn’t check local engines. Check the connection and try again."); });
     }
     if (step === 2 && isElectron) {
       const poll = () => window.ogb?.permStatus?.().then(setPerms).catch(() => {});
@@ -42,7 +48,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       const timer = setInterval(poll, 2000);
       return () => clearInterval(timer);
     }
-  }, [step, instances]);
+    return () => { alive = false; };
+  }, [step, instances, engineRetry]);
 
   const finish = () => { markOnboardingComplete(); onDone(); };
   const byKind = (kind: string) => instances?.find((instance) => instance.driverKind === kind);
@@ -72,7 +79,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           <h1 className="text-[18px] font-semibold text-ink">Local engines</h1>
           <p className="mt-1 text-[13.5px] text-ink-secondary">VelarixBot uses each CLI directly with its existing login or OAuth session. Choose a model explicitly for every bot; it never silently fails over.</p>
           <div className="mt-4 flex flex-col gap-2.5">
-            {!instances ? <div className="flex items-center gap-2 py-6 text-ink-secondary"><Loader2 size={16} className="animate-spin" /> Checking…</div> : engines.map(([kind, label, install]) => {
+            {engineError ? <div role="alert" className="rounded-lg bg-danger/10 p-3 text-[13px] text-danger">{engineError}<button onClick={() => setEngineRetry((n) => n + 1)} className="mt-2 block font-medium underline">Retry engine check</button></div> : !instances ? <div role="status" className="flex items-center gap-2 py-6 text-ink-secondary"><Loader2 size={16} className="animate-spin" /> Checking…</div> : engines.map(([kind, label, install]) => {
               const engine = byKind(kind); const ok = engine?.snapshot.state === "available";
               return <StatusRow key={kind} ok={ok} title={`${label}${engine?.snapshot.version ? ` · ${engine.snapshot.version}` : ""}`} detail={ok ? (engine?.snapshot.authenticated === false ? `Installed; finish login in the ${label} CLI.` : "Installed and available.") : `Not found. Install with: ${install}`} />;
             })}

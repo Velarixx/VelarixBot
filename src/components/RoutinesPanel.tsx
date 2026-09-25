@@ -28,10 +28,13 @@ const KIND_TABS: Array<[RoutineFormKind, string]> = [
 
 function RunHistory({ routine }: { routine: Routine }) {
   const [runs, setRuns] = useState<RoutineRun[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(() => {
-    api(`/api/routines/${routine.id}/runs`).then(({ runs: list }) => setRuns(list ?? [])).catch(() => setRuns([]));
+    setError(null);
+    api(`/api/routines/${routine.id}/runs`).then(({ runs: list }) => setRuns(list ?? [])).catch(() => setError("Couldn’t load run history."));
   }, [routine.id]);
   useEffect(() => { refresh(); }, [refresh, routine.running, routine.lastResult, routine.nextRunAt]);
+  if (error) return <div role="alert" className="mt-2 text-[12px] text-danger">{error}<button onClick={refresh} className="ml-2 underline">Retry history</button>{runs && <span className="block text-ink-secondary">Previously loaded: {runs.length} runs.</span>}</div>;
   if (runs === null) return <div className="mt-2 text-[11px] text-ink-secondary">Loading history…</div>;
   if (runs.length === 0) return <div className="mt-2 text-[11px] text-ink-secondary">No runs yet.</div>;
   return <ul className="mt-2 space-y-1.5">

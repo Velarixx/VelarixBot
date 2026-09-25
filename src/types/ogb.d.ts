@@ -27,6 +27,8 @@ declare global {
       onNotifyClick?(cb: (botId: string) => void): () => void;
       /** Desktop file picker for composer attachments (local paths). */
       openFiles?(): Promise<Array<{ path: string; name: string }>>;
+      attachmentPath?(file: File): string;
+      saveClipboardImage?(payload: { bytes: Uint8Array; mime: string }): Promise<{ path: string; name: string }>;
       /** User-session harness at login (LaunchAgent / per-user service).
        * Not the Electron GUI login item. Packaged/desktop only. */
       loginItem?: {

@@ -53,9 +53,9 @@ function Shell() {
       <div className="relative flex min-h-0 min-w-0 flex-1">
       <Sidebar />
       {group ? (
-        <GroupView group={group} />
+        <GroupView key={group.id} group={group} />
       ) : bot ? (
-        <ChatView bot={bot} />
+        <ChatView key={bot.threadId} bot={bot} />
       ) : state.connected ? (
         <main className="flex h-full min-w-0 flex-1 flex-col items-center justify-center gap-4 bg-app">
           <div className="flex size-16 items-center justify-center rounded-2xl bg-accent/10">
@@ -83,8 +83,8 @@ function Shell() {
           </div>
         </main>
       )}
-      {state.settingsOpen && bot && <SettingsPanel bot={bot} />}
-      {state.computerOpen && bot && <ComputerPanel bot={bot} />}
+      {state.settingsOpen && bot && <SettingsPanel key={bot.id} bot={bot} />}
+      {state.computerOpen && bot && <ComputerPanel key={`${bot.id}:${bot.computer}`} bot={bot} />}
       {state.appSettingsOpen && <AppSettingsPanel />}
       {state.pluginsOpen && <PluginsPanel />}
       {state.routinesOpen && <RoutinesPanel />}
