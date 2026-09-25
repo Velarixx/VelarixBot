@@ -103,13 +103,9 @@
         "title": "ls -la"
       },
       {
-        "type": "runtime.error",
-        "message": "codex exited <code> before turn/completed"
-      },
-      {
         "type": "turn.completed",
         "ok": false,
-        "stopReason": "exit_before_result",
+        "stopReason": "interrupted",
         "cost": null
       }
     ],
@@ -129,13 +125,9 @@
         "title": "ls -la"
       },
       {
-        "type": "runtime.error",
-        "message": "codex exited <code> before turn/completed"
-      },
-      {
         "type": "turn.completed",
         "ok": false,
-        "stopReason": "exit_before_result",
+        "stopReason": "interrupted",
         "cost": null
       }
     ],

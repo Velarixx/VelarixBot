@@ -92,6 +92,9 @@ function ChatMarkdownComponent({ text, streaming = false }: { text: string; stre
       <Markdown
         remarkPlugins={[remarkGfm]}
         components={{
+          p({ children }: { children?: ReactNode }) {
+            return <p className="whitespace-pre-wrap">{children}</p>;
+          },
           pre({ children }: { children?: ReactNode }) {
             // fenced code arrives as <pre><code class="language-x">…</code></pre>
             const child: any = Array.isArray(children) ? children[0] : children;

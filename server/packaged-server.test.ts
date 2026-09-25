@@ -31,7 +31,8 @@ const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
 describe("packaged server entry", () => {
   let scratch = "";
   afterEach(() => {
-    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    // Windows can briefly retain the compiled entry/native addon after exit.
+    if (scratch) rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     scratch = "";
   });
 
@@ -212,7 +213,7 @@ describe("packaged server entry", () => {
 describe("packaged server smoke", () => {
   let scratch = "";
   afterEach(() => {
-    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    if (scratch) rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     scratch = "";
   });
 

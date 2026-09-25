@@ -267,4 +267,38 @@ describe("engine-unavailable turns (clean PATH, no spawn)", () => {
     expect(sendTurns[0]!.threadId).toBe(bot.threadId);
     expect(bots.bot(bot.id)!.state).toBe("RUNNING");
   });
+
+  it("Stop stays paused when the driver acknowledges cancellation", async () => {
+    await boot({ fake: { displayName: "Fake" } }, "fake");
+    const bot = bots.createBot();
+    await turns.startTurn(bot.id, "start");
+    await turns.interrupt(bot.id);
+    fake.created.get("fake")!.emit({ eventId: "cancelled", provider: "fake", threadId: bot.threadId, turnId: "fake-turn", createdAt: new Date().toISOString(), type: "turn.completed", ok: false, stopReason: "interrupted" });
+    expect(bots.bot(bot.id)).toMatchObject({ busy: false, state: "IDLE", workflowStatus: "paused" });
+    expect(bots.bot(bot.id)?.stateDetail).toBeUndefined();
+    expect(bots.messagesFor(bot.threadId).some((message) => message.card?.requestType === "setup")).toBe(false);
+  });
+
+  it("ordinary process failures do not offer engine installation", async () => {
+    await boot({ fake: { displayName: "Fake" } }, "fake");
+    const bot = bots.createBot();
+    const live = fake.created.get("fake")!;
+    live.emit({ eventId: "crashed", provider: "fake", threadId: bot.threadId, createdAt: new Date().toISOString(), type: "runtime.error", message: "codex exited 1 before turn/completed" });
+    expect(bots.bot(bot.id)).toMatchObject({ state: "BLOCKED", stateCode: "turn_failed" });
+    expect(bots.messagesFor(bot.threadId).some((message) => message.card?.requestType === "setup")).toBe(false);
+  });
+
+  it("successful recovery dismisses stale setup cards and clears failure state", async () => {
+    await boot({ fake: { displayName: "Fake" } }, "fake");
+    const bot = bots.createBot();
+    const base = { provider: "fake", threadId: bot.threadId, createdAt: new Date().toISOString() };
+    const live = fake.created.get("fake")!;
+    live.emit({ ...base, eventId: "missing", type: "runtime.error", message: "spawn failed: ENOENT" });
+    const card = bots.messagesFor(bot.threadId).find((message) => message.card?.requestType === "setup")!;
+    expect(card).toBeTruthy();
+    live.emit({ ...base, eventId: "recovered", type: "turn.completed", ok: true });
+    expect(bots.bot(bot.id)).toMatchObject({ state: "DONE", busy: false });
+    expect(bots.bot(bot.id)?.stateDetail).toBeUndefined();
+    expect(bots.messagesFor(bot.threadId).find((message) => message.id === card.id)?.card?.dismissed).toBe(true);
+  });
 });

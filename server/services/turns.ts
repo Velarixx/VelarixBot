@@ -1243,6 +1243,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         break;
       }
       case "turn.completed": {
+        const cancelled = activityOutcome(event.ok, event.stopReason).status === "cancelled";
         // the last live frame becomes a settled inline screen message —
         // the screenshot-in-chat moment
         const frame = stopScreenPoller(bot.id);
@@ -1269,7 +1270,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         const snapshotReason = priorDetail && !isMachineStateCode(priorDetail) ? priorDetail : undefined;
         const runtimeMessage = lastRuntimeMessage.get(event.threadId);
         lastRuntimeMessage.delete(event.threadId);
-        const blocked = event.ok
+        const blocked = event.ok || cancelled
           ? null
           : userFacingBlock({
               stopReason: event.stopReason,
@@ -1277,6 +1278,13 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
               runtimeMessage,
             });
         if (blocked) maybeAppendSetupCard(event.threadId, blocked);
+        if (event.ok) {
+          for (const message of store.messagesFor(event.threadId)) {
+            if (message.card?.requestType !== "setup" || message.card.dismissed || message.card.answered) continue;
+            const patched = store.patchMessage(event.threadId, message.id, { card: { ...message.card, dismissed: true } });
+            if (patched) broadcast({ kind: "message.patch", threadId: event.threadId, message: patched });
+          }
+        }
         const settledAsPeer = (() => {
           const asPeer = delegatedContext(bot);
           if (!asPeer || asPeer.sourceThreadId === bot.threadId) return false;
@@ -1293,11 +1301,11 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
         bots.patchBot(bot.id, {
           busy: false,
           unread: true,
-          state: event.ok ? "DONE" : "BLOCKED",
-          stateDetail: event.ok ? undefined : (blocked?.stateDetail ?? event.stopReason ?? undefined),
-          ...(event.ok ? { stateCode: undefined } : blocked ? { stateCode: blocked.stateCode } : {}),
+          state: cancelled ? "IDLE" : event.ok ? "DONE" : "BLOCKED",
+          stateDetail: event.ok || cancelled ? undefined : (blocked?.stateDetail ?? event.stopReason ?? undefined),
+          ...(event.ok || cancelled ? { stateCode: undefined } : blocked ? { stateCode: blocked.stateCode } : {}),
         });
-        proactive.noteState(bot.id, event.ok ? "DONE" : "BLOCKED");
+        proactive.noteState(bot.id, cancelled ? "IDLE" : event.ok ? "DONE" : "BLOCKED");
         notifyIdle(bot.id);
         if (event.ok) {
           drainDelegations(commsBus, event.threadId, (toBotId, message, commsDepth, sourceThreadId, channel, taskId) => {
@@ -1387,6 +1395,8 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
                 workflowStopReason: bot.fullAutonomy === true ? AUTONOMY_STOP.completed : AUTONOMY_STOP.off,
               });
             }
+          } else if (cancelled) {
+            setWorkflow(bot.id, { workflowStatus: "paused", workflowStopReason: AUTONOMY_STOP.paused });
           } else {
             setWorkflow(bot.id, {
               workflowStatus: "blocked",
@@ -1895,13 +1905,12 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
     const instance = registry.get(bot.modelSelection.instanceId);
     // Abort releases the machine lease (or queued wait) and its screenshot
     // interval immediately. A later turn.completed cleanup is idempotent.
-        stopScreenPoller(botId);
-        releaseComputerLease(botId);
-        settleRunningActivities(bot.threadId, "cancelled");
-        await instance?.adapter.interruptTurn(bot.threadId);
+    stopScreenPoller(botId);
+    releaseComputerLease(botId);
+    settleRunningActivities(bot.threadId, "cancelled");
     settleDelegatedPeer(bot, { ok: false, detail: "interrupted" });
-        bots.patchBot(bot.id, { busy: false, state: "BLOCKED", stateDetail: "interrupted" });
-    proactive.noteState(bot.id, "BLOCKED");
+    bots.patchBot(bot.id, { busy: false, state: "IDLE", stateDetail: undefined, stateCode: undefined });
+    proactive.noteState(bot.id, "IDLE");
     notifyIdle(bot.id);
     discardDelegations(commsBus, bot.threadId);
     setWorkflow(bot.id, {
@@ -1909,6 +1918,7 @@ export function createTurnsService(deps: TurnsServiceDeps): TurnsService {
       workflowStopReason: AUTONOMY_STOP.paused,
     });
     broadcastBot(bot.id);
+    await instance?.adapter.interruptTurn(bot.threadId);
     return { ok: true };
   }
 

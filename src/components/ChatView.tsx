@@ -287,10 +287,10 @@ export function ChatView({ bot }: { bot: Bot }) {
         </div>
       )}
 
-      {stopReason && workflowStatus && workflowStatus !== "working" && workflowStatus !== "waiting" && (
+      {stopReason && (workflowStatus === "paused" || workflowStatus === "blocked") && (
         <div className="mx-auto w-full max-w-[900px] px-5">
           <div className="mb-2 rounded-lg border border-hairline/40 bg-raised/70 px-3 py-2">
-            <div className="mb-0.5 text-[13px] font-semibold text-ink">Autonomous execution stopped</div>
+            <div className="mb-0.5 text-[13px] font-semibold text-ink">{workflowStatus === "paused" ? "Stopped" : "Needs attention"}</div>
             <div className="text-[13px] text-ink-secondary">{stopReason}</div>
           </div>
         </div>
@@ -349,7 +349,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             <RunInspector
               bot={bot}
               tasks={state.tasks}
-              since={runStartedAt(bot.messages, Date.now())}
+              since={bot.pendingSendStartedAt ?? runStartedAt(bot.messages, Date.now())}
             />
           )}
         </div>

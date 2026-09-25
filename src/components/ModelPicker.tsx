@@ -2,14 +2,15 @@
 // There is no /api/models route — do not add one unless a real client needs it.
 // Routing is by exact instanceId only — an entry is never inferred from a
 // driver kind, and unavailable instances render disabled with the reason.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
 import { useStore, type Bot, type InstanceInfo, type ModelSelection } from "@/state/store";
 import { ProviderMark } from "./ProviderIcons";
 import { cn } from "@/lib/cn";
 
 function modelLabel(instance: InstanceInfo | undefined, model: string): string {
-  return instance?.models.options.find((o) => o.id === model)?.label ?? model;
+  return instance?.models.options.find((o) => o.id === model)?.label ?? (model || "Choose model");
 }
 
 export function ModelPicker({
@@ -26,6 +27,8 @@ export function ModelPicker({
   const [open, setOpen] = useState(false);
   const [railId, setRailId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 0, top: 0, width: 320, maxHeight: 480 });
 
   const selection = bot.modelSelection;
   const active = state.instances.find((i) => i.instanceId === selection.instanceId);
@@ -36,16 +39,44 @@ export function ModelPicker({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopImmediatePropagation();
+      setOpen(false);
+      rootRef.current?.querySelector("button")?.focus();
+    };
     window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
     return () => {
       window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
     };
   }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const anchor = rootRef.current?.getBoundingClientRect();
+      if (!anchor) return;
+      const gap = 8;
+      const width = Math.min(320, window.innerWidth - gap * 2);
+      const below = Math.max(0, window.innerHeight - anchor.bottom - gap * 2);
+      const above = Math.max(0, anchor.top - gap * 2);
+      const upward = below < 320 && above > below;
+      const maxHeight = Math.min(480, upward ? above : below);
+      const height = Math.min(menuRef.current?.scrollHeight ?? maxHeight, maxHeight);
+      setPosition({ width, maxHeight, left: Math.max(gap, Math.min(anchor.right - width, window.innerWidth - width - gap)), top: upward ? anchor.top - gap - height : anchor.bottom + gap });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, railInstance]);
 
   const apply = (next: ModelSelection) => {
     if (onSelect) onSelect(next);
@@ -73,6 +104,9 @@ export function ModelPicker({
   return (
     <div ref={rootRef} className={cn("relative", className)}>
       <button
+        type="button"
+        aria-expanded={open}
+        aria-label="Choose model"
         onClick={() => {
           setRailId(selection.instanceId);
           setOpen((o) => !o);
@@ -85,13 +119,15 @@ export function ModelPicker({
         <ChevronDown size={14} className="text-ink-secondary" />
       </button>
 
-      {open && (
+      {open && createPortal(
         <div
+          ref={menuRef}
           data-model-picker-content
-          className="absolute right-0 top-full z-30 mt-2 flex w-[320px] overflow-hidden rounded-xl border border-hairline/50 bg-card shadow-2xl shadow-black/50"
+          style={position}
+          className="fixed z-[100] flex overflow-hidden rounded-xl border border-hairline/50 bg-card shadow-2xl shadow-black/50"
         >
           {/* instance rail */}
-          <div className="flex flex-col gap-1 border-r border-hairline/40 bg-panel p-2">
+          <div className="flex shrink-0 flex-col gap-1 overflow-y-auto border-r border-hairline/40 bg-panel p-2">
             {state.instances.map((instance) => {
               const unavailable = instance.snapshot.state !== "available";
               const onRail = instance.instanceId === railInstance?.instanceId;
@@ -117,7 +153,7 @@ export function ModelPicker({
           </div>
 
           {/* model list for the rail-selected instance */}
-          <div className="min-w-0 flex-1 p-2">
+          <div className="min-w-0 flex-1 overflow-y-auto p-2">
             {railInstance ? (
               <>
                 <div className="px-2 pb-1 pt-1">
@@ -206,7 +242,7 @@ export function ModelPicker({
               </div>
             )}
           </div>
-        </div>
+        </div>, document.body
       )}
     </div>
   );

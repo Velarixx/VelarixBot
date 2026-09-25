@@ -247,6 +247,7 @@ export async function bootHarness(opts: {
       cwd: join(SERVER_DIR, "..", ".."),
       env: harnessEnv(home, { OMB_PORT: String(port), VELARIX_DEV_TOKEN: token, ...opts.env }),
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     child.stderr!.on("data", (c) => (stderr += c));
     return child;

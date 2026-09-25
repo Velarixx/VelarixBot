@@ -92,11 +92,11 @@ const TOOLS = [
   {
     name: "update_bot",
     description:
-      "Rename a sidebar bot or change its title/description (persona) or its Always-allow permissions setting. bot_id comes from list_bots. Omit fields you are not changing.",
+      "Rename a sidebar bot or change its title/description (persona) or its Always-allow permissions setting. Use bot_id 'self' to update yourself; use list_bots for another bot's id. Omit fields you are not changing.",
     inputSchema: {
       type: "object",
       properties: {
-        bot_id: { type: "string", description: "The target bot's id (from list_bots)." },
+        bot_id: { type: "string", description: "Use 'self' for this bot, or another bot's id from list_bots." },
         name: { type: "string" },
         title: { type: "string" },
         description: { type: "string", description: "Persona / about text." },
@@ -213,7 +213,8 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     };
   }
   if (name === "update_bot") {
-    const targetId = String(args.bot_id ?? "").trim();
+    const requestedId = String(args.bot_id ?? "").trim();
+    const targetId = requestedId === "self" ? BOT_ID : requestedId;
     if (!targetId) return { text: "update_bot needs bot_id.", isError: true };
     const namePatch = String(args.name ?? "").trim();
     const titlePatch = typeof args.title === "string" ? args.title : undefined;

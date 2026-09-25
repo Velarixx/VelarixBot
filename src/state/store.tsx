@@ -122,6 +122,8 @@ export interface Bot {
   avatarCandidates?: string[];
   unread: boolean;
   busy?: boolean;
+  /** Client dispatch time until the server echoes the new user message. */
+  pendingSendStartedAt?: number;
   state: BotState;
   stateDetail?: string;
   /** Machine-readable block code (spawn_error, no_engines). Not user-facing. */
@@ -576,7 +578,14 @@ export function reducer(state: AppState, action: Action): AppState {
               ? "celebrate"
               : null;
       const next = kind ? withMascotMotion(state, action.bot.id, kind) : state;
-      return updateBot(next, action.bot.id, (b) => ({ ...b, ...action.bot, messages: b.messages }));
+      return updateBot(next, action.bot.id, (b) => ({
+        ...b,
+        ...action.bot,
+        ...(action.bot.state && action.bot.state !== "BLOCKED" ? { stateDetail: undefined, stateCode: undefined } : {}),
+        ...(action.bot.workflowStatus === "working" || action.bot.workflowStatus === "waiting" ? { workflowStopReason: undefined } : {}),
+        ...(action.bot.busy === false ? { pendingSendStartedAt: undefined } : {}),
+        messages: b.messages,
+      }));
     }
     case "messageAdded": {
       const group = state.groups.find((g) => g.threadId === action.threadId);
@@ -594,7 +603,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const next = updateBot(state, bot.id, (b) =>
         b.messages.some((m) => m.id === action.message.id)
           ? b
-          : { ...b, messages: [...b.messages, action.message] },
+          : { ...b, ...(action.message.role === "user" ? { pendingSendStartedAt: undefined } : {}), messages: [...b.messages, action.message] },
       );
       const motion =
         action.message.kind === "options"
@@ -790,13 +799,13 @@ export function reducer(state: AppState, action: Action): AppState {
       const { next } = takeNext(state.queued[action.botId] ?? []);
       if (!bot || bot.busy || state.queuePaused[action.botId] || !next || next.status) return state;
       return {
-        ...withMascotMotion(updateBot(state, action.botId, (b) => ({ ...b, busy: true })), action.botId, "working"),
+        ...withMascotMotion(updateBot(state, action.botId, (b) => ({ ...b, busy: true, state: "RUNNING", stateDetail: undefined, stateCode: undefined, workflowStatus: "working", workflowStopReason: undefined, pendingSendStartedAt: Date.now() })), action.botId, "working"),
         queued: { ...state.queued, [action.botId]: state.queued[action.botId].map((item) => item.id === next.id ? { ...item, status: "sending" } : item) },
       };
     }
     case "promptFailed":
       return {
-        ...updateBot(state, action.botId, (bot) => ({ ...bot, busy: false })),
+        ...updateBot(state, action.botId, (bot) => ({ ...bot, busy: false, state: "IDLE", workflowStatus: "paused", workflowStopReason: "Message was not sent. Retry or edit the queued message.", pendingSendStartedAt: undefined })),
         queued: { ...state.queued, [action.botId]: (state.queued[action.botId] ?? []).map((item) => item.id === action.id ? { ...item, status: "failed", error: action.error } : item) },
       };
     case "editQueued": {
@@ -812,7 +821,7 @@ export function reducer(state: AppState, action: Action): AppState {
     // wrapper POSTs; busy flips now so a follow-up Enter queues instead of racing
     case "send":
       return withMascotMotion(
-        updateBot(state, action.botId, (b) => ({ ...b, busy: true })),
+        updateBot(state, action.botId, (b) => ({ ...b, busy: true, state: "RUNNING", stateDetail: undefined, stateCode: undefined, workflowStatus: "working", workflowStopReason: undefined, pendingSendStartedAt: Date.now() })),
         action.botId,
         "working",
       );

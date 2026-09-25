@@ -94,6 +94,44 @@ async function createBot(page: Page, name: string): Promise<void> {
 }
 
 test.describe("fake-engine primary workflow", () => {
+  test("Stop retains streamed output through reload and resumes a queued message once", async ({ browser }) => {
+    test.setTimeout(90_000);
+    const harness = await bootHarness({
+      instances: { smoke: { driver: "codex", displayName: "Smoke Fake Codex", config: { cli: FAKE_CODEX_CLI, fullAuto: false } } },
+      env: { FAKE_CODEX_MODE: "stream-hang", OMB_STATIC_DIR: join(REPO, process.env.UI_BUILD_DIR ?? "dist") },
+    });
+    const { context, page } = await openApp(browser, harness);
+    try {
+      await completeOnboarding(page, /Codex .* fake-codex 0\.144\.4/);
+      await createBot(page, "Stop Smoke Agent");
+      const composer = page.getByRole("textbox", { name: "Message Stop Smoke Agent", exact: true });
+      await composer.fill("Start streaming");
+      await composer.press("Enter");
+      await expect(page.getByRole("main").getByText("Unfinished answer Keep this text.", { exact: true })).toBeVisible();
+      await composer.fill("Resume smoke check");
+      await composer.press("Enter");
+      await expect(page.getByText("Queued 1", { exact: true })).toBeVisible();
+      await page.getByTitle("Stop this turn").click();
+      await expect(page.getByTestId("run-inspector-pill")).toHaveText("You paused this turn.");
+      await expect(page.getByText("Bot is blocked", { exact: true })).toHaveCount(0);
+      await expect(page.getByText("This engine is not available", { exact: true })).toHaveCount(0);
+      await page.reload();
+      await expect(page.getByRole("main").getByText("Unfinished answer Keep this text.", { exact: true })).toBeVisible();
+      await expect(page.getByText("Queued messages paused", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "Resume queue" }).click();
+      await expect(page.getByRole("main").getByText("done from fake codex", { exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Resume queue" })).toHaveCount(0);
+      const snapshot = await harness.api("GET", "/api/events/snapshot");
+      const bot = snapshot.body.bots.find((b: { name: string }) => b.name === "Stop Smoke Agent");
+      expect(bot.state).toBe("DONE");
+      expect(bot.messages.filter((m: { text?: string }) => m.text === "Resume smoke check")).toHaveLength(1);
+      expect(bot.messages.filter((m: { text?: string }) => m.text === "Unfinished answer\nKeep this text.")).toHaveLength(1);
+    } finally {
+      await context.close().catch(() => {});
+      await harness.stop();
+    }
+  });
+
   test("creates a bot, preserves an offline draft, reconnects, and completes a turn", async ({ browser }) => {
     test.setTimeout(90_000);
     const harness = await claudeHarness();

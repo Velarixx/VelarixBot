@@ -324,6 +324,9 @@ process.stdin.on("data", (chunk) => {
               ],
             },
           });
+        } else if (mode === "stream-hang") {
+          if (msg.params?.input?.some((input: { text?: string }) => input.text === "Resume smoke check")) finishTurn();
+          else notify("item/agentMessage/delta", { delta: "Unfinished answer\nKeep this text." });
         } else if (mode === "hang") {
           // leave the turn open — the keepalive interval below holds the
           // process while a test interrupts or kills the fleet

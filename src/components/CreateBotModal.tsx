@@ -5,6 +5,7 @@ import {
   postNewBot,
   useStore,
   type Bot,
+  type InstanceInfo,
   type ModelSelection,
   type NewBotInit,
 } from "@/state/store";
@@ -57,8 +58,10 @@ function draftBot(over: {
   };
 }
 
-function emptySelection(instances: { instanceId: string; models: { default: string } }[]): ModelSelection {
-  const first = instances[0];
+function emptySelection(instances: InstanceInfo[], preferred?: ModelSelection): ModelSelection {
+  const remembered = instances.find((i) => i.instanceId === preferred?.instanceId && i.snapshot.state === "available");
+  if (remembered && preferred && remembered.models.options.some((m) => m.id === preferred.model)) return preferred;
+  const first = remembered ?? instances.find((i) => i.snapshot.state === "available");
   return first ? { instanceId: first.instanceId, model: first.models.default } : { instanceId: "", model: "" };
 }
 
@@ -74,7 +77,9 @@ export function CreateBotModal() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [color, setColor] = useState<MausColor>("green");
-  const [modelSelection, setModelSelection] = useState<ModelSelection>(() => emptySelection(state.instances));
+  const preferred = state.bots.find((bot) => bot.id === state.selectedId)?.modelSelection;
+  const [modelSelection, setModelSelection] = useState<ModelSelection>(() => emptySelection(state.instances, preferred));
+  const engineReady = state.instances.some((i) => i.instanceId === modelSelection.instanceId && i.snapshot.state === "available");
   const [created, setCreated] = useState<Bot | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -87,8 +92,8 @@ export function CreateBotModal() {
   );
 
   useEffect(() => {
-    setModelSelection((current) => (current.instanceId ? current : emptySelection(state.instances)));
-  }, [state.instances]);
+    setModelSelection((current) => emptySelection(state.instances, current.instanceId ? current : preferred));
+  }, [state.instances, preferred]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -175,6 +180,7 @@ export function CreateBotModal() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 pb-5">
+          {!engineReady && <p role="status" className="mb-3 text-[13px] text-ink-secondary">No engine is ready. Set up an engine in App Settings to start chatting.</p>}
           {createError && <div role="alert" className="mb-3 rounded-lg bg-danger/10 p-3 text-[13px] text-danger">Couldn’t create this bot. {createError} Your details are saved here; try Create again.</div>}
           {submitting && <div role="status" className="mb-3 text-[13px] text-ink-secondary">Creating bot…</div>}
           <div className="flex justify-center py-3">

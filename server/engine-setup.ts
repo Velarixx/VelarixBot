@@ -178,7 +178,7 @@ export function userFacingBlock(opts: {
     (opts.stopReason && opts.stopReason.trim()) ||
     "The selected engine is not available.";
   return {
-    stateCode: "engine_unavailable",
+    stateCode: "turn_failed",
     stateDetail: detail.slice(0, 160),
   };
 }

@@ -31,6 +31,7 @@ export function notifyEventEnabled(bot: NotifyBot, type: string): boolean {
 }
 
 export function shouldNotify(bot: NotifyBot, event: NotifyEvent): boolean {
+  if (event.type === "turn.completed" && /^(interrupted|cancelled|canceled)$/.test(event.stopReason ?? "")) return false;
   return notifyEventEnabled(bot, event.type);
 }
 

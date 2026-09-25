@@ -259,11 +259,12 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
     let models = await loadCodexModelCatalog(config.cli, probeEnv);
     const listeners = new Set<RuntimeEventListener>();
     interface Turn {
-      stop: () => void;
+      stop: () => Promise<void>;
       turnId: string;
       asks: Map<string, AskFinish>;
     }
     const active = new Map<string, Turn>();
+    const children = new Set<Promise<void>>();
 
     const emit = (event: RuntimeEvent) => {
       for (const l of [...listeners]) l(event);
@@ -293,8 +294,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         stdio: ["pipe", "pipe", "pipe"],
         detached: true,
       });
+      const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+      children.add(closed);
+      void closed.then(() => children.delete(closed));
 
-      const state = { settled: false, lastText: "", sawStreamDelta: false, sawProtocol: false };
+      const state = { settled: false, pendingText: "", sawStreamDelta: false, sawProtocol: false };
       const asks = new Map<string, AskFinish>();
       let nextId = 1;
       const rpcPending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
@@ -312,17 +316,25 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           send({ jsonrpc: "2.0", id, method, params });
         });
 
-      const stop = () => killProcessTree(child.pid);
-
       const settle = (ok: boolean, stopReason: string | null) => {
         if (state.settled) return;
         state.settled = true;
+        // A stopped/crashed process cannot send item/completed. Keep the text
+        // already shown to the user before the renderer clears its stream.
+        if (state.pendingText.trim()) {
+          emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: state.pendingText });
+          state.pendingText = "";
+        }
         for (const finish of [...asks.values()]) finish("deny", "VelarixBot: the turn ended");
         for (const p of rpcPending.values()) p.reject(new Error("turn settled"));
         rpcPending.clear();
         active.delete(threadId);
         emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
-        stop(); // the app-server never exits on its own
+        killProcessTree(child.pid); // the app-server never exits on its own
+      };
+      const stop = async () => {
+        settle(false, "interrupted");
+        await closed;
       };
 
       // server→client approval request → canonical request.opened.
@@ -455,6 +467,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       };
 
       const handleNotification = (msg: any) => {
+        if (state.settled) return;
         const p = msg.params ?? {};
         switch (msg.method) {
           // token-level chat text; the item/completed frame follows with the
@@ -462,6 +475,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           case "item/agentMessage/delta": {
             const delta = typeof p.delta === "string" ? p.delta : "";
             if (delta) {
+              state.pendingText += delta;
               state.sawStreamDelta = true;
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
             }
@@ -492,7 +506,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             const item = p.item ?? {};
             if (item.type === "agentMessage") {
               if (item.text?.trim()) {
-                state.lastText = item.text;
+                state.pendingText = "";
                 if (!state.sawStreamDelta) {
                   emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: item.text });
                 }
@@ -558,6 +572,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       };
 
       const ingestLine = (line: string) => {
+        if (state.settled) return;
         if (!line.trim()) return;
         let msg: any;
         try {
@@ -600,6 +615,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         if (stderr.length > 8192) stderr = stderr.slice(-8192);
       });
       child.on("error", (e) => {
+        if (state.settled) return;
         emit({ ...base(threadId, turnId), type: "runtime.error", message: `spawn failed: ${e.message}` });
         settle(false, "spawn_error");
       });
@@ -792,7 +808,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         },
         hasSession: (threadId) => active.has(threadId),
         stopAll: async () => {
-          for (const { stop } of active.values()) stop();
+          await Promise.all([...active.values()].map(({ stop }) => stop()));
+          await Promise.all(children);
         },
         onEvent: (listener) => {
           listeners.add(listener);
@@ -800,7 +817,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         },
       },
       dispose: async () => {
-        for (const { stop } of active.values()) stop();
+        await Promise.all([...active.values()].map(({ stop }) => stop()));
+        await Promise.all(children);
         listeners.clear();
       },
     };

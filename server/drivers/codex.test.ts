@@ -190,6 +190,34 @@ posixOnly("CodexDriver model catalog (fake CLI dump) — POSIX-only: shebang fak
   });
 });
 
+describe("Codex cancellation on every platform", () => {
+  it.each([false, true])("settles once and recovers after Stop (streaming=%s)", async (streaming) => {
+    const instance = await CodexDriver.create({
+      instanceId: "stop-test", displayName: "Stop test", enabled: true,
+      environment: { FAKE_CODEX_MODE: "stream-hang" },
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    const recorder = recordEvents(instance.adapter);
+    try {
+      const first = await instance.adapter.sendTurn({ threadId: "cancel-test", text: "start" });
+      if (streaming) await recorder.until((event) => event.type === "content.delta");
+      await instance.adapter.interruptTurn("cancel-test");
+      await instance.adapter.interruptTurn("cancel-test");
+      expect(await recorder.until((event) => event.type === "turn.completed")).toMatchObject({ ok: false, stopReason: "interrupted" });
+      const partial = recorder.events.filter((event) => event.type === "item.completed" && event.itemType === "assistant_text");
+      expect(partial).toHaveLength(streaming ? 1 : 0);
+      if (streaming) expect(partial[0]).toMatchObject({ text: "Unfinished answer\nKeep this text." });
+      const next = await instance.adapter.sendTurn({ threadId: "cancel-test", text: "recover", environment: { FAKE_CODEX_MODE: "happy" } });
+      expect(await recorder.until((event) => event.type === "turn.completed" && event.turnId === next.turnId)).toMatchObject({ ok: true });
+      expect(recorder.events.filter((event) => event.type === "turn.completed" && event.turnId === first.turnId)).toHaveLength(1);
+      expect(recorder.events.filter((event) => event.type === "runtime.error")).toEqual([]);
+    } finally {
+      recorder.stop();
+      await instance.dispose();
+    }
+  });
+});
+
 posixOnly("CodexDriver turns (fake app-server) — POSIX-only: shebang fake CLI", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;

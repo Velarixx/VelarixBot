@@ -47,6 +47,76 @@ async function fixture(browser: Browser) {
   return { page, bots, context, async open() { await page.goto(harness.base); await expect(page.getByPlaceholder("Message Alpha")).toBeVisible(); }, async close() { await context.close(); await harness.stop(); } };
 }
 
+const pickerInstances = [
+  { instanceId: "missing", driverKind: "grok", displayName: "Grok", snapshot: { state: "unavailable", reason: "grok CLI not found" }, models: { default: "grok-default", options: [{ id: "grok-default", label: "Grok Default" }] } },
+  { instanceId: "ready", driverKind: "codex", displayName: "Codex", snapshot: { state: "available", version: "Test engine" }, models: { default: "codex-one", options: Array.from({ length: 20 }, (_, i) => ({ id: i === 0 ? "codex-one" : `codex-${i + 1}`, label: i === 0 ? "Codex One" : `Codex ${i + 1}` })) } },
+];
+
+test("live-test review screenshots", async ({ browser }) => {
+  const f = await fixture(browser);
+  await f.context.route("**/api/instances", (route) => route.fulfill({ json: { instances: pickerInstances } }));
+  try {
+    Object.assign(f.bots[0], { state: "DONE", workflowStatus: "completed", workflowStopReason: "Full-autonomy is off — send a message to continue." });
+    f.bots[0].messages.push({ id: "two-lines", role: "bot", kind: "text", text: "ORBIT-731\n323", at: Date.UTC(2026, 8, 25, 12) });
+    await f.open();
+    if (process.env.LIVE_UI_SCREENSHOT_DIR) {
+      mkdirSync(process.env.LIVE_UI_SCREENSHOT_DIR, { recursive: true });
+      await f.page.screenshot({ path: resolve(process.env.LIVE_UI_SCREENSHOT_DIR, "chat.png"), animations: "disabled" });
+    }
+    await f.page.getByTitle("New bot").first().click();
+    const dialog = f.page.getByRole("dialog", { name: "Create a bot" });
+    await dialog.getByLabel("Name", { exact: true }).fill("Ready to help");
+    await dialog.getByText(/^(Grok Default|Codex One)$/, { exact: true }).click();
+    if (process.env.LIVE_UI_SCREENSHOT_DIR) {
+      await f.page.screenshot({ path: resolve(process.env.LIVE_UI_SCREENSHOT_DIR, "picker.png"), animations: "disabled" });
+    }
+  } finally { await f.close(); }
+});
+
+test("defaults to an available engine and keeps the model menu inside a short viewport", async ({ browser }) => {
+  const f = await fixture(browser);
+  await f.context.route("**/api/instances", (route) => route.fulfill({ json: { instances: pickerInstances } }));
+  try {
+    await f.page.setViewportSize({ width: 900, height: 600 });
+    await f.open();
+    await f.page.getByTitle("New bot").first().click();
+    const dialog = f.page.getByRole("dialog", { name: "Create a bot" });
+    await expect(dialog.getByRole("button", { name: "Choose model" })).toHaveText("Codex One");
+    await dialog.getByRole("button", { name: "Choose model" }).click();
+    const menu = f.page.locator("[data-model-picker-content]");
+    await expect(menu).toBeVisible();
+    const box = (await menu.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(600);
+    await menu.getByRole("button", { name: "Codex 20", exact: true }).click();
+    await expect(dialog.getByRole("button", { name: "Choose model" })).toHaveText("Codex 20");
+    await dialog.getByRole("button", { name: "Choose model" }).click();
+    await f.page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(dialog).toBeVisible();
+  } finally { await f.close(); }
+});
+
+test("keeps chat line breaks and starts a new timer without a stale completion banner", async ({ browser }) => {
+  const f = await fixture(browser);
+  await f.context.route("**/api/bots/alpha/messages", (route) => route.fulfill({ status: 202, json: { ok: true } }));
+  try {
+    Object.assign(f.bots[0], { state: "DONE", workflowStatus: "completed", workflowStopReason: "Full-autonomy is off — send a message to continue." });
+    f.bots[0].messages.push({ id: "old", role: "user", kind: "text", text: "Earlier prompt", at: Date.now() - 120_000 });
+    f.bots[0].messages.push({ id: "answer", role: "bot", kind: "text", text: "ORBIT-731\n323\n\n- First\n- Second\n\n```text\none\ntwo\n```", at: Date.now() - 119_000 });
+    await f.open();
+    await expect(f.page.getByText("Autonomous execution stopped", { exact: true })).toHaveCount(0);
+    const paragraph = f.page.locator(".chat-md p").filter({ hasText: "ORBIT-731" });
+    await expect(paragraph).toHaveCSS("white-space", "pre-wrap");
+    await expect(f.page.locator(".chat-md li")).toHaveCount(2);
+    await expect(f.page.locator(".chat-md pre")).toContainText("one\ntwo");
+    await f.page.getByPlaceholder("Message Alpha").fill("A new turn");
+    await f.page.getByRole("button", { name: "Send message", exact: true }).click();
+    await expect(f.page.getByTestId("run-inspector-pill")).toHaveText(/Working for [0-9]s/);
+    await expect(f.page.getByText("Full-autonomy is off — send a message to continue.", { exact: true })).toHaveCount(0);
+  } finally { await f.close(); }
+});
+
 test("review screenshot", async ({ browser }) => {
   const f = await fixture(browser);
   try {

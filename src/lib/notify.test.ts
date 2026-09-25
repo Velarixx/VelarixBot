@@ -37,6 +37,7 @@ describe("shouldNotify", () => {
   });
 
   it("ignores other runtime events", () => {
+    expect(notifyCopy(on, { type: "turn.completed", ok: false, stopReason: "interrupted" })).toBeNull();
     expect(shouldNotify(on, { type: "content.delta" })).toBe(false);
     expect(shouldNotify(on, { type: "turn.started" })).toBe(false);
     expect(shouldNotify(on, { type: "runtime.error" })).toBe(false);

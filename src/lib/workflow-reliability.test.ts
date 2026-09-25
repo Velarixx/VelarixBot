@@ -16,6 +16,21 @@ function fakeStorage() {
 }
 
 describe("pending message delivery", () => {
+  it("starts a fresh working state before server acknowledgment and clears stale errors", () => {
+    const old = { ...bot, state: "BLOCKED" as const, stateDetail: "old failure", stateCode: "turn_failed", workflowStatus: "blocked" as const, workflowStopReason: "old failure" };
+    let state: typeof initialState = { ...initialState, bots: [old], queued: { a: [prompt] } };
+    const before = Date.now();
+    state = reducer(state, { type: "flushQueue", botId: "a" });
+    expect(state.bots[0]).toMatchObject({ busy: true, state: "RUNNING", workflowStatus: "working" });
+    expect(state.bots[0].pendingSendStartedAt).toBeGreaterThanOrEqual(before);
+    expect(state.bots[0].stateDetail).toBeUndefined();
+    expect(state.bots[0].workflowStopReason).toBeUndefined();
+    state = reducer(state, { type: "messageAdded", threadId: bot.threadId, message: { id: "accepted", role: "user", kind: "text", text: prompt.text, at: Date.now() } });
+    expect(state.bots[0].pendingSendStartedAt).toBeUndefined();
+    state = reducer({ ...state, bots: [old] }, { type: "botPatched", bot: { id: "a", state: "DONE", busy: false } });
+    expect(state.bots[0].stateDetail).toBeUndefined();
+    expect(state.bots[0].stateCode).toBeUndefined();
+  });
   it("keeps the payload until acceptance and blocks failed or stopped queue heads", () => {
     let state = reducer(initialState, { type: "hydrate", bots: [bot] });
     state = reducer(state, { type: "enqueue", botId: "a", item: prompt });

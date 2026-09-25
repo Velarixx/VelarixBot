@@ -339,6 +339,14 @@ describe("agents-proxy MCP surface", () => {
     expect(JSON.stringify(lastUpdateBody)).not.toContain(TOKEN);
   });
 
+  it("resolves self to the calling bot without a peer lookup", async () => {
+    updateResponse = { id: "bot-asker", name: "Self", title: "Updated" };
+    const result = await callTool("update_bot", { bot_id: "self", title: "Updated" });
+    expect(result.result.isError).toBeFalsy();
+    expect(lastUpdateBody).toMatchObject({ fromBotId: "bot-asker", bot_id: "bot-asker", title: "Updated", depth: 0 });
+    expect(lastUpdateBody).not.toHaveProperty("always_allow");
+  });
+
   it("update_bot surfaces a harness depth refusal as a tool error", async () => {
     updateResponse = { error: "message chains are limited to two hops" };
     const res = await callTool("update_bot", { bot_id: "bot-helper", name: "X" });
