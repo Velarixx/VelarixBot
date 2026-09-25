@@ -6,7 +6,7 @@ This release contains the fixes documented in [live-test reliability fixes](live
 
 Implementation commit: `92a60795d72612f813de181c06d2515402d85635`.
 
-The release candidate is the commit containing this record and the package version bump to 0.4.5. Its complete SHA is recorded in the release workflow's `accepted_sha` input and in the immutable GitHub permalink supplied as `acceptance_record_url`. The release workflow must verify that this SHA equals main's workflow SHA and has a successful `exact-sha-release-gate` check produced by GitHub Actions before packaging.
+The release candidate is the exact main commit supplied to the release workflow. It includes this record, the package version bump to 0.4.5, and the release-version test correction. Its complete SHA is recorded in the release workflow's `accepted_sha` input and in the immutable GitHub permalink supplied as `acceptance_record_url`. The release workflow must verify that this SHA equals main's workflow SHA and has a successful `exact-sha-release-gate` check produced by GitHub Actions before packaging.
 
 ## Owner-directed delivery
 
@@ -27,6 +27,7 @@ Developer: Codex, implementing agent. Local runtime: Node 24.19.0 on Windows.
 - Production client build and repository gate validators passed.
 - The first full local unit/integration run had 1,721 passes, 3 temporary-directory cleanup failures, and 80 existing platform skips. The cleanup failures were corrected and the affected 15-test file passed afterward.
 - Subsequent broad local test runs were interrupted because helper consoles disrupted the owner's desktop. They are not passing-suite evidence. The final shared test-server `windowsHide` setting was typechecked but not runtime-tested locally.
+- Initial 0.4.5 CI passed 1,795 tests with 8 existing skips and failed one release-version test that hard-coded the repository version as 0.4.4. That package-reading assertion now uses an isolated fixture. Actual committed-version validation and mismatched-version rejection remain covered by the CLI tests. This correction requires a new exact-SHA CI run.
 
 Screenshots and regression descriptions are in the linked implementation record. All harness tests use fake engines and isolated temporary data. The installed app and user conversations were not modified.
 

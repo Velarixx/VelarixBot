@@ -54,7 +54,10 @@ describe("release version gate", () => {
   });
 
   it("refuses to release when the input disagrees with package.json", () => {
-    expect(readPackageVersion(repoPackageJsonPath())).toBe("0.4.4");
+    scratch = mkdtempSync(join(tmpdir(), "omb-release-version-"));
+    const packageFile = join(scratch, "package.json");
+    writeFileSync(packageFile, JSON.stringify({ version: "0.4.4" }));
+    expect(readPackageVersion(packageFile)).toBe("0.4.4");
     expect(() => assertReleaseMatchesPackage("0.4.4", "0.4.4")).not.toThrow();
     expect(() => assertReleaseMatchesPackage("0.4.3", "0.4.4")).toThrow(
       /does not match package\.json version/,
